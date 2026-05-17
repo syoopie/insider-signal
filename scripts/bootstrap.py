@@ -23,14 +23,14 @@ from src.ingest.store import (
     upsert_company, insert_filing, insert_transactions,
     update_company_market_data, get_last_filed_date,
 )
-from src.market.prices import get_market_data
+from typing import Set
 from src.db.connection import apply_schema
 
 
 BACKFILL_RATE = 3.0  # req/sec — conservative for burst backfill
 
 
-def load_ticker_universe() -> set[str]:
+def load_ticker_universe() -> Set[str]:
     tickers_file = os.path.join(os.path.dirname(__file__), "..", "data", "tickers.txt")
     if not os.path.exists(tickers_file):
         print("WARNING: data/tickers.txt not found. Run scripts/update_tickers.py first.")
@@ -86,6 +86,7 @@ def main():
         filings_seen += 1
 
         raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
+        filer_cik = filing_meta.get("filer_cik", raw_cik)
         ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
 
         # Universe filter
@@ -93,10 +94,10 @@ def main():
             skipped_universe += 1
             continue
 
-        # Fetch XML
+        # Fetch XML — use filer CIK for archive URL
         xml = fetch_filing_xml(
             filing_meta["accession_number"],
-            raw_cik,
+            filer_cik,
             req_per_sec=BACKFILL_RATE,
         )
         if not xml:
@@ -121,10 +122,7 @@ def main():
         # Upsert company
         upsert_company(cik, ticker, issuer.get("name", ""))
 
-        # Fetch market data for new companies (throttled)
-        mdata = get_market_data(ticker) if ticker else {}
-        if mdata:
-            update_company_market_data(cik, mdata.get("market_cap"), mdata.get("cap_tier"))
+        # Skip market data during bootstrap — populated by daily ingest on GitHub Actions
 
         # Insert filing
         filing_id = insert_filing(

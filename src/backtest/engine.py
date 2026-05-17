@@ -12,7 +12,7 @@ Run weekly via GitHub Actions.
 """
 
 from datetime import date, timedelta
-from typing import Optional
+from typing import Optional, List, Dict
 import json
 
 from src.db.connection import get_conn
@@ -23,7 +23,7 @@ HORIZONS = [30, 60, 90, 180]
 SPY_TICKER = "SPY"
 
 
-def run_backtest(threshold: int = 65, lookback_days: int = 365) -> list[dict]:
+def run_backtest(threshold: int = 65, lookback_days: int = 365) -> List[Dict]:
     """
     Run backtest over all BUY/CLUSTER_BUY signals in the last `lookback_days` days.
     Returns list of result dicts, one per horizon.
@@ -100,7 +100,7 @@ def run_backtest(threshold: int = 65, lookback_days: int = 365) -> list[dict]:
     return results
 
 
-def save_backtest_results(results: list[dict], threshold: int) -> None:
+def save_backtest_results(results: List[Dict], threshold: int) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             for r in results:
@@ -122,7 +122,7 @@ def save_backtest_results(results: list[dict], threshold: int) -> None:
                 )
 
 
-def _get_historical_signals(since: date, threshold: int) -> list[dict]:
+def _get_historical_signals(since: date, threshold: int) -> List[Dict]:
     with get_conn() as conn:
         with conn.cursor() as conn_cur:
             conn_cur.execute(

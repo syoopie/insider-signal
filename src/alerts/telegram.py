@@ -12,12 +12,13 @@ crash the ingest pipeline).
 import os
 import requests
 from datetime import date
+from typing import Tuple
 
 
 TELEGRAM_API = "https://api.telegram.org"
 
 
-def _get_credentials() -> tuple[str, str]:
+def _get_credentials() -> Tuple[str, str]:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
     return token, chat_id

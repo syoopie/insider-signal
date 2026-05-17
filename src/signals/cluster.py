@@ -9,6 +9,7 @@ signals generate approximately double the alpha of single-insider buys.
 """
 
 from datetime import date, timedelta
+from typing import List
 from src.db.connection import get_conn
 
 
@@ -68,7 +69,7 @@ def detect_clusters_for_ticker(ticker: str, as_of_date: date) -> dict:
     }
 
 
-def get_tickers_with_recent_purchases(since_date: date) -> list[str]:
+def get_tickers_with_recent_purchases(since_date: date) -> List[str]:
     """
     Returns all tickers that have at least one open-market purchase (P)
     with a transaction_date >= since_date. Used to know which tickers

@@ -4,7 +4,7 @@ All inserts are idempotent — safe to re-run on the same data.
 """
 
 from datetime import date
-from typing import Optional
+from typing import Optional, Tuple, List
 from src.db.connection import get_conn
 
 
@@ -127,7 +127,7 @@ def mark_signal_alerted(signal_id: int) -> None:
             cur.execute("UPDATE signals SET alerted = TRUE WHERE id = %s", (signal_id,))
 
 
-def prune_old_data(months: int = 24) -> tuple[int, int]:
+def prune_old_data(months: int = 24) -> Tuple[int, int]:
     """Delete transactions and filings older than `months` months. Returns (tx_deleted, filing_deleted)."""
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -144,7 +144,7 @@ def prune_old_data(months: int = 24) -> tuple[int, int]:
     return tx_deleted, filing_deleted
 
 
-def get_unalerted_signals(min_score: int = 45) -> list[dict]:
+def get_unalerted_signals(min_score: int = 45) -> List[dict]:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(

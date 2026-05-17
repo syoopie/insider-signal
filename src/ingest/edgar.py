@@ -72,16 +72,22 @@ def fetch_form4_index(start_date: date, end_date: date = None, req_per_sec: floa
 
         for hit in hits:
             src = hit.get("_source", {})
-            # accession number is embedded in _id as "accession:filename"
-            raw_id = hit.get("_id", "")
-            accession = raw_id.split(":")[0] if ":" in raw_id else raw_id
-            cik = src.get("entity_id", src.get("file_num", "")).lstrip("0") or None
+            # adsh is the dashed accession number e.g. "0001234567-26-000001"
+            accession = src.get("adsh", "")
+            # ciks is a list; first entry is the filer (insider), last is issuer (company)
+            ciks = src.get("ciks", [])
+            filer_cik = ciks[0].lstrip("0") if ciks else ""
+            issuer_cik = ciks[-1].lstrip("0") if len(ciks) > 1 else filer_cik
+            # display_names helps identify the issuer company name
+            display_names = src.get("display_names", [])
+            entity_name = display_names[-1].split("(CIK")[0].strip() if display_names else ""
             yield {
                 "accession_number": accession,
-                "cik_raw": src.get("entity_id", ""),
-                "entity_name": src.get("entity_name", ""),
+                "cik_raw": issuer_cik,
+                "filer_cik": filer_cik,
+                "entity_name": entity_name,
                 "filed_date": src.get("file_date", ""),
-                "period_date": src.get("period_of_report", ""),
+                "period_date": src.get("period_ending", ""),
             }
 
         offset += page_size

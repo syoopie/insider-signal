@@ -19,6 +19,7 @@ from datetime import date, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from typing import Set
 from src.db.connection import apply_schema
 from src.ingest.edgar import fetch_form4_index, fetch_filing_xml, fetch_cik_ticker_map
 from src.ingest.parser import parse_form4
@@ -37,7 +38,7 @@ from src.alerts.telegram import send_signal, send_error, send_daily_summary
 INGEST_RATE = 8.0  # req/sec — normal daily mode
 
 
-def load_ticker_universe() -> set[str]:
+def load_ticker_universe() -> Set[str]:
     tickers_file = os.path.join(os.path.dirname(__file__), "..", "data", "tickers.txt")
     if not os.path.exists(tickers_file):
         return set()

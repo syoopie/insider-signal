@@ -1,47 +1,51 @@
 """
 Refreshes data/tickers.txt with current S&P 500 + Russell 2000 tickers.
 Run quarterly: python scripts/update_tickers.py
-
-Uses Wikipedia for S&P 500 (stable, well-maintained) and
-iShares IWM ETF holdings for Russell 2000 (free CSV download).
 """
 
 import sys
 import os
-import re
 import requests
+import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-SP500_WIKI = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-# iShares Russell 2000 ETF holdings (IWM) — free public CSV
-IWM_HOLDINGS = "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund"
 
 HEADERS = {"User-Agent": "InsiderSignal ticker-updater"}
 
 
-def get_sp500_tickers() -> set[str]:
-    resp = requests.get(SP500_WIKI, headers=HEADERS, timeout=30)
-    # Parse ticker symbols from the table
-    tickers = set(re.findall(r'<td><b>([A-Z]{1,5})</b>', resp.text))
-    if not tickers:
-        # Fallback: look for /wiki/ticker pattern
-        tickers = set(re.findall(r'title="([A-Z]{1,5})\s*\(', resp.text))
+def get_sp500_tickers() -> set:
+    # Fetch with browser-like User-Agent (Wikipedia blocks urllib default)
+    resp = requests.get(
+        "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+        headers={"User-Agent": "Mozilla/5.0 (compatible; InsiderSignal/1.0)"},
+        timeout=30,
+    )
+    from io import StringIO
+    tables = pd.read_html(StringIO(resp.text))
+    df = tables[0]
+    col = next((c for c in df.columns if "symbol" in str(c).lower() or "ticker" in str(c).lower()), df.columns[0])
+    tickers = set(df[col].str.upper().str.replace(".", "-", regex=False).dropna().tolist())
     print(f"  S&P 500: {len(tickers)} tickers")
     return tickers
 
 
-def get_russell2000_tickers() -> set[str]:
+def get_russell2000_tickers() -> set:
+    # iShares IWM ETF holdings CSV
+    url = (
+        "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/"
+        "1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund"
+    )
     try:
-        resp = requests.get(IWM_HOLDINGS, headers=HEADERS, timeout=60)
-        tickers = set()
+        resp = requests.get(url, headers=HEADERS, timeout=60)
         lines = resp.text.splitlines()
-        for line in lines[10:]:  # Skip header rows
+        # Skip header rows (first ~9 lines are metadata)
+        data_lines = [l for l in lines if l.count(",") >= 3]
+        tickers = set()
+        for line in data_lines[1:]:  # skip column header row
             parts = line.split(",")
-            if len(parts) >= 2:
-                ticker = parts[0].strip().strip('"').upper()
-                if re.match(r'^[A-Z]{1,5}$', ticker):
-                    tickers.add(ticker)
+            ticker = parts[0].strip().strip('"').upper()
+            if ticker and ticker.isalpha() and 1 <= len(ticker) <= 5:
+                tickers.add(ticker)
         print(f"  Russell 2000: {len(tickers)} tickers")
         return tickers
     except Exception as e:
