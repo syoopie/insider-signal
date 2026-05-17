@@ -1,35 +1,43 @@
 """
 SEC EDGAR API client for Form 4 filings.
 
-Rate limits: 10 req/sec max. We use 8 in normal mode, 3 in backfill mode.
+Rate limits: 10 req/sec max. We use 8 in normal mode.
 Required User-Agent header on every request — missing it causes IP block.
 """
 
 import re
 import time
+import threading
 import requests
-from datetime import date, timedelta
+from datetime import date
 from typing import Iterator, Optional, Dict
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 EDGAR_BASE = "https://efts.sec.gov/LATEST/search-index"
 EDGAR_ARCHIVES = "https://www.sec.gov/Archives/edgar"
+EDGAR_SUBMISSIONS = "https://data.sec.gov/submissions"
 EDGAR_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 
 USER_AGENT = "InsiderSignal sunyupei19992@gmail.com"
 HEADERS = {"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 
-# Token bucket: track last request time to stay under rate limit
 _last_request_time = 0.0
+_throttle_lock = threading.Lock()
+
+# Cache: filer_cik → {accession_number: primary_document_path}
+# Avoids re-fetching the submissions JSON for the same insider across multiple filings.
+_submissions_cache: Dict[str, Dict[str, str]] = {}
+_submissions_lock = threading.Lock()
 
 
 def _throttle(req_per_sec: float = 8.0):
     global _last_request_time
     min_gap = 1.0 / req_per_sec
-    elapsed = time.time() - _last_request_time
-    if elapsed < min_gap:
-        time.sleep(min_gap - elapsed)
-    _last_request_time = time.time()
+    with _throttle_lock:
+        elapsed = time.time() - _last_request_time
+        if elapsed < min_gap:
+            time.sleep(min_gap - elapsed)
+        _last_request_time = time.time()
 
 
 @retry(
@@ -46,10 +54,43 @@ def _get(url: str, params: dict = None, req_per_sec: float = 8.0) -> dict:
     return resp.json()
 
 
+def _get_primary_doc(filer_cik: str, accession_number: str, req_per_sec: float = 8.0) -> Optional[str]:
+    """
+    Returns the primary document path for a filing via the SEC submissions API.
+    Result is cached per filer CIK so subsequent filings from the same insider
+    are free (no extra request).
+    """
+    cik_padded = str(filer_cik).zfill(10)
+
+    with _submissions_lock:
+        already_cached = cik_padded in _submissions_cache
+    if not already_cached:
+        try:
+            data = _get(f"{EDGAR_SUBMISSIONS}/CIK{cik_padded}.json", req_per_sec=req_per_sec)
+            recent = data.get("filings", {}).get("recent", {})
+            accessions = recent.get("accessionNumber", [])
+            docs = recent.get("primaryDocument", [])
+            mapping = {}
+            for acc, doc in zip(accessions, docs):
+                # Strip xslFXXXXXX/ prefix — that path serves styled HTML, not raw XML.
+                # The actual XML lives at the root of the filing directory.
+                clean_doc = re.sub(r'^xsl[^/]+/', '', doc) if doc else doc
+                mapping[acc.replace("-", "")] = clean_doc
+            with _submissions_lock:
+                _submissions_cache[cik_padded] = mapping
+        except Exception:
+            with _submissions_lock:
+                _submissions_cache[cik_padded] = {}
+
+    acc_no_dashes = accession_number.replace("-", "")
+    with _submissions_lock:
+        return _submissions_cache[cik_padded].get(acc_no_dashes)
+
+
 def fetch_form4_index(start_date: date, end_date: date = None, req_per_sec: float = 8.0) -> Iterator[dict]:
     """
     Yield filing index records for all Form 4s in the date range.
-    Each record has: accession_number, cik, filed_date, primary_document.
+    Each record has: accession_number, cik_raw, filer_cik, entity_name, filed_date, period_date.
     """
     if end_date is None:
         end_date = date.today()
@@ -73,13 +114,10 @@ def fetch_form4_index(start_date: date, end_date: date = None, req_per_sec: floa
 
         for hit in hits:
             src = hit.get("_source", {})
-            # adsh is the dashed accession number e.g. "0001234567-26-000001"
             accession = src.get("adsh", "")
-            # ciks is a list; first entry is the filer (insider), last is issuer (company)
             ciks = src.get("ciks", [])
             filer_cik = ciks[0].lstrip("0") if ciks else ""
             issuer_cik = ciks[-1].lstrip("0") if len(ciks) > 1 else filer_cik
-            # display_names helps identify the issuer company name
             display_names = src.get("display_names", [])
             entity_name = display_names[-1].split("(CIK")[0].strip() if display_names else ""
             yield {
@@ -97,29 +135,31 @@ def fetch_form4_index(start_date: date, end_date: date = None, req_per_sec: floa
             break
 
 
-def fetch_filing_xml(accession_number: str, cik: str, req_per_sec: float = 8.0) -> Optional[str]:
+def fetch_filing_xml(accession_number: str, filer_cik: str, req_per_sec: float = 8.0) -> Optional[str]:
     """
     Fetch the raw XML content of a Form 4 filing.
-    Tries the standard accession-number filename first (1 request, fast path).
-    Falls back to parsing the filing index page to discover the actual filename
-    when the standard name doesn't exist (e.g. 'wk-form4_1234.xml').
-    Returns XML string or None if not found.
+
+    Strategy (fastest to slowest):
+    1. Look up the primary document filename from the SEC submissions API
+       (cached per filer CIK — free on subsequent calls for the same insider).
+    2. Fall back to fetching the filing index page and parsing it for .xml links.
     """
     acc_no_dashes = accession_number.replace("-", "")
-    cik_padded = str(cik).zfill(10)
+    cik_padded = str(filer_cik).zfill(10)
     base_dir = f"{EDGAR_ARCHIVES}/data/{cik_padded}/{acc_no_dashes}"
 
-    # Fast path: standard filename used by most filers
-    _throttle(req_per_sec)
-    try:
-        resp = requests.get(f"{base_dir}/{accession_number}.xml", headers=HEADERS, timeout=30)
-        if resp.status_code == 200 and resp.text.strip().startswith("<"):
-            return resp.text
-    except requests.RequestException:
-        pass
+    # Path 1: submissions API (1 cached request, then free)
+    primary_doc = _get_primary_doc(filer_cik, accession_number, req_per_sec)
+    if primary_doc:
+        _throttle(req_per_sec)
+        try:
+            resp = requests.get(f"{base_dir}/{primary_doc}", headers=HEADERS, timeout=30)
+            if resp.status_code == 200 and resp.text.strip().startswith("<?xml") or "<ownershipDocument" in resp.text[:500]:
+                return resp.text
+        except requests.RequestException:
+            pass
 
-    # Slow path: fetch filing index to discover the actual XML filename
-    xml_filename = None
+    # Path 2: fetch filing index page and scrape .xml link
     for index_suffix in [f"{accession_number}-index.htm", f"{accession_number}-index.html"]:
         _throttle(req_per_sec)
         try:
@@ -127,17 +167,11 @@ def fetch_filing_xml(accession_number: str, cik: str, req_per_sec: float = 8.0) 
             if resp.status_code == 200:
                 matches = re.findall(r'href="[^"]*?/([^"/?]+\.xml)"', resp.text, re.IGNORECASE)
                 if matches:
-                    xml_filename = matches[0]
+                    _throttle(req_per_sec)
+                    resp2 = requests.get(f"{base_dir}/{matches[0]}", headers=HEADERS, timeout=30)
+                    if resp2.status_code == 200 and resp2.text.strip().startswith("<"):
+                        return resp2.text
                     break
-        except requests.RequestException:
-            pass
-
-    if xml_filename:
-        _throttle(req_per_sec)
-        try:
-            resp = requests.get(f"{base_dir}/{xml_filename}", headers=HEADERS, timeout=30)
-            if resp.status_code == 200 and resp.text.strip().startswith("<"):
-                return resp.text
         except requests.RequestException:
             pass
 
