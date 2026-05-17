@@ -59,6 +59,15 @@ def _bool_flag(element, tag: str) -> bool:
     return val in ("1", "true", "True", "yes")
 
 
+def _clean_date(raw: Optional[str]) -> Optional[str]:
+    """Strip timezone offsets from date strings: '2026-05-12-05:00' → '2026-05-12'."""
+    if not raw:
+        return raw
+    # Match YYYY-MM-DD at the start; drop anything after (timezone offset, time, etc.)
+    m = re.match(r"(\d{4}-\d{2}-\d{2})", raw.strip())
+    return m.group(1) if m else raw
+
+
 def parse_form4(xml_content: str, filing_metadata: dict) -> dict:
     """
     Parse a Form 4 XML string into a structured dict with:
@@ -114,7 +123,7 @@ def parse_form4(xml_content: str, filing_metadata: dict) -> dict:
     # --- Non-Derivative Transactions (Table I — what we score) ---
     transactions = []
     for tx_el in root.findall(".//nonDerivativeTransaction"):
-        tx_date_str = _text(tx_el, ".//transactionDate/value") or _text(tx_el, "transactionDate")
+        tx_date_str = _clean_date(_text(tx_el, ".//transactionDate/value") or _text(tx_el, "transactionDate"))
         tx_code = _text(tx_el, ".//transactionCoding/transactionCode") or _text(tx_el, "transactionCode")
         is_10b51 = _bool_flag(tx_el, ".//transactionCoding/transactionFormType") or False
 
@@ -184,7 +193,7 @@ def parse_form4(xml_content: str, filing_metadata: dict) -> dict:
         "issuer": issuer,
         "owner": owner,
         "transactions": transactions,
-        "filed_date": filing_metadata.get("filed_date", ""),
-        "period_date": filing_metadata.get("period_date", ""),
+        "filed_date": _clean_date(filing_metadata.get("filed_date", "")),
+        "period_date": _clean_date(filing_metadata.get("period_date", "")),
         "accession_number": filing_metadata.get("accession_number", ""),
     }
