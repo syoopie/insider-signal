@@ -31,23 +31,29 @@ _submissions_lock = threading.Lock()
 
 
 def _throttle(req_per_sec: float = 8.0):
+    """Global rate limiter shared across all threads. Lock is held only for the
+    timestamp check/update — sleeping happens outside so threads can overlap."""
     global _last_request_time
     min_gap = 1.0 / req_per_sec
-    with _throttle_lock:
-        elapsed = time.time() - _last_request_time
-        if elapsed < min_gap:
-            time.sleep(min_gap - elapsed)
-        _last_request_time = time.time()
+    while True:
+        with _throttle_lock:
+            now = time.time()
+            elapsed = now - _last_request_time
+            if elapsed >= min_gap:
+                _last_request_time = now
+                return  # this thread may now make its request
+            sleep_for = min_gap - elapsed
+        time.sleep(sleep_for)  # sleep outside the lock so other threads can proceed
 
 
 @retry(
-    retry=retry_if_exception_type(requests.HTTPError),
+    retry=retry_if_exception_type((requests.HTTPError, requests.Timeout, requests.ConnectionError)),
     wait=wait_exponential(multiplier=2, min=2, max=60),
     stop=stop_after_attempt(5),
 )
-def _get(url: str, params: dict = None, req_per_sec: float = 8.0) -> dict:
+def _get(url: str, params: dict = None, req_per_sec: float = 8.0, timeout: int = 30) -> dict:
     _throttle(req_per_sec)
-    resp = requests.get(url, headers=HEADERS, params=params, timeout=30)
+    resp = requests.get(url, headers=HEADERS, params=params, timeout=timeout)
     if resp.status_code == 429 or resp.status_code == 403:
         resp.raise_for_status()
     resp.raise_for_status()
@@ -66,14 +72,22 @@ def _get_primary_doc(filer_cik: str, accession_number: str, req_per_sec: float =
         already_cached = cik_padded in _submissions_cache
     if not already_cached:
         try:
-            data = _get(f"{EDGAR_SUBMISSIONS}/CIK{cik_padded}.json", req_per_sec=req_per_sec)
+            # Single best-effort attempt, short timeout. The submissions API is
+            # a speed optimisation only — on failure we fall back to the index
+            # page, so burning time on retries here is counterproductive.
+            _throttle(req_per_sec)
+            resp = requests.get(
+                f"{EDGAR_SUBMISSIONS}/CIK{cik_padded}.json",
+                headers=HEADERS, timeout=5,
+            )
+            resp.raise_for_status()
+            data = resp.json()
             recent = data.get("filings", {}).get("recent", {})
             accessions = recent.get("accessionNumber", [])
             docs = recent.get("primaryDocument", [])
             mapping = {}
             for acc, doc in zip(accessions, docs):
                 # Strip xslFXXXXXX/ prefix — that path serves styled HTML, not raw XML.
-                # The actual XML lives at the root of the filing directory.
                 clean_doc = re.sub(r'^xsl[^/]+/', '', doc) if doc else doc
                 mapping[acc.replace("-", "")] = clean_doc
             with _submissions_lock:
