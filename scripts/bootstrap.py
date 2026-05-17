@@ -44,6 +44,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Parse only, no DB writes")
     parser.add_argument("--days", type=int, default=730, help="Number of days to backfill (default 730 = 2 years)")
+    parser.add_argument("--force", action="store_true", help="Ignore last stored date and backfill from scratch")
     args = parser.parse_args()
 
     if not args.dry_run:
@@ -65,8 +66,11 @@ def main():
     end_date = date.today()
     start_date = end_date - timedelta(days=args.days)
 
-    # Resume from last stored date if not dry-run
-    if not args.dry_run:
+    # Resume from last stored date if not dry-run and not forced.
+    # Because EDGAR returns newest-first within any date range, we process in
+    # 30-day chunks from oldest to newest so that MAX(filed_date) in the DB
+    # always reflects how far back we've fully covered — making resume safe.
+    if not args.dry_run and not args.force:
         last = get_last_filed_date()
         if last and last > start_date:
             print(f"Resuming from {last} (last stored filing date)")
@@ -82,7 +86,25 @@ def main():
     skipped_universe = 0
     parse_errors = 0
 
-    for filing_meta in fetch_form4_index(start_date, end_date, req_per_sec=BACKFILL_RATE):
+    # Build list of 30-day windows oldest-first so resume logic is safe
+    windows = []
+    chunk_start = start_date
+    while chunk_start < end_date:
+        chunk_end = min(chunk_start + timedelta(days=30), end_date)
+        windows.append((chunk_start, chunk_end))
+        chunk_start = chunk_end + timedelta(days=1)
+
+    for window_start, window_end in windows:
+        print(f"  Window: {window_start} → {window_end}")
+    print()
+
+    all_filings = (
+        filing_meta
+        for (ws, we) in windows
+        for filing_meta in fetch_form4_index(ws, we, req_per_sec=BACKFILL_RATE)
+    )
+
+    for filing_meta in all_filings:
         filings_seen += 1
 
         raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
