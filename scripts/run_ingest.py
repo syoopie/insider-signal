@@ -65,9 +65,12 @@ def main():
         print(f"CIK map failed: {e} — continuing without")
         cik_to_ticker = {}
 
-    # Date range: from last stored to today
+    # Date range: from last stored to today, capped at 7 days back.
+    # The cap prevents a long-delayed run from triggering a large backfill;
+    # any gap beyond 7 days should be filled manually via bootstrap.py.
     last_date = get_last_filed_date()
-    start_date = last_date if last_date else today - timedelta(days=3)
+    earliest_allowed = today - timedelta(days=7)
+    start_date = max(last_date, earliest_allowed) if last_date else earliest_allowed
     print(f"Fetching filings from {start_date} to {today}")
 
     filings_stored = 0
