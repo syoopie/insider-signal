@@ -97,11 +97,14 @@ def main():
             print(f"Resuming from {last} (last stored filing date)")
             start_date = last
 
-    # 30-day windows, oldest first, so resume is safe
+    # 7-day windows, oldest first, so resume is safe.
+    # EDGAR caps search results at 10,000 per query; a 30-day window has ~24,000
+    # Form 4s so we'd silently miss ~60% of them. 7 days ≈ 5,600 filings — safely
+    # under the cap with room to spare.
     windows = []
     chunk_start = start_date
     while chunk_start < end_date:
-        chunk_end = min(chunk_start + timedelta(days=30), end_date)
+        chunk_end = min(chunk_start + timedelta(days=7), end_date)
         windows.append((chunk_start, chunk_end))
         chunk_start = chunk_end + timedelta(days=1)
 
@@ -204,6 +207,8 @@ def main():
                 continue
             window_candidates.append((fm, ticker))
 
+        if window_total >= 10000:
+            print(f"   WARNING: window hit EDGAR 10K cap — some filings may be missing. Consider shrinking window size.")
         print(f"   {window_total} filings in index, {len(window_candidates)} pass universe filter — processing...")
 
         for fm, tk in window_candidates:
