@@ -17,6 +17,7 @@ DB writes remain in the main thread for psycopg2 safety.
 import sys
 import os
 import argparse
+import time
 from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -33,6 +34,7 @@ from src.db.connection import apply_schema
 
 BACKFILL_RATE = 8.0   # req/sec — shared across all threads; EDGAR limit is 10
 WORKERS = 4           # concurrent XML fetch threads
+LOG_INTERVAL = 30     # print a status line every N seconds
 
 
 def load_ticker_universe() -> Set[str]:
@@ -43,6 +45,12 @@ def load_ticker_universe() -> Set[str]:
         return set()
     with open(tickers_file) as f:
         return {line.strip().upper() for line in f if line.strip()}
+
+
+def fmt_elapsed(seconds: float) -> str:
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h{m:02d}m{s:02d}s" if h else f"{m}m{s:02d}s"
 
 
 def fetch_and_parse(filing_meta: dict, rate: float) -> Optional[Tuple[dict, dict]]:
@@ -89,16 +97,6 @@ def main():
             print(f"Resuming from {last} (last stored filing date)")
             start_date = last
 
-    print(f"Backfilling {start_date} → {end_date}  (workers={WORKERS})")
-    print(f"Dry run: {args.dry_run}")
-    print()
-
-    filings_seen = 0
-    filings_stored = 0
-    tx_stored = 0
-    skipped_universe = 0
-    parse_errors = 0
-
     # 30-day windows, oldest first, so resume is safe
     windows = []
     chunk_start = start_date
@@ -107,19 +105,42 @@ def main():
         windows.append((chunk_start, chunk_end))
         chunk_start = chunk_end + timedelta(days=1)
 
-    for ws, we in windows:
-        print(f"  Window: {ws} → {we}")
+    total_windows = len(windows)
+    print(f"Backfilling {start_date} → {end_date}  ({total_windows} windows, {WORKERS} workers)")
+    print(f"Dry run: {args.dry_run}")
     print()
 
-    # Collect filings that pass the universe filter, then process in batches
-    # using a thread pool for I/O (XML fetch+parse) while DB writes stay in
-    # the main thread.
-    BATCH = 20  # submit this many concurrent XML fetches at a time
+    run_start = time.time()
+    last_log_time = run_start
 
-    pending = []  # (filing_meta, ticker) tuples awaiting fetch
+    filings_seen = 0
+    filings_stored = 0
+    tx_stored = 0
+    skipped_universe = 0
+    parse_errors = 0
+    stored_since_last_log = 0
+
+    BATCH = 20
+    pending = []
+
+    def maybe_log(force: bool = False):
+        nonlocal last_log_time, stored_since_last_log
+        now = time.time()
+        if not force and (now - last_log_time) < LOG_INTERVAL:
+            return
+        elapsed = now - run_start
+        rate = filings_stored / elapsed if elapsed > 0 else 0
+        eta_sec = (total_windows - window_idx - 1) / max(rate / max(filings_seen, 1), 1e-9) if rate > 0 else 0
+        print(
+            f"  [{fmt_elapsed(elapsed)}]  stored={filings_stored:,}  tx={tx_stored:,}  "
+            f"seen={filings_seen:,}  skipped={skipped_universe:,}  errors={parse_errors}  "
+            f"rate={rate:.2f} f/s  window={window_idx+1}/{total_windows}"
+        )
+        last_log_time = now
+        stored_since_last_log = 0
 
     def flush_batch(batch):
-        nonlocal filings_stored, tx_stored, parse_errors
+        nonlocal filings_stored, tx_stored, parse_errors, stored_since_last_log
         if not batch:
             return
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
@@ -131,7 +152,7 @@ def main():
                 fm, tk = futures[future]
                 try:
                     result = future.result()
-                except Exception:
+                except Exception as e:
                     parse_errors += 1
                     continue
                 if result is None:
@@ -146,10 +167,10 @@ def main():
                 ticker = issuer.get("ticker") or tk
 
                 if args.dry_run:
-                    print(f"  [DRY RUN] {ticker} | {owner.get('name')} ({owner.get('role_category')}) "
-                          f"| {len(parsed['transactions'])} tx | filed {filing_meta.get('filed_date')}")
+                    print(f"  [DRY] {ticker} | {owner.get('name')} ({owner.get('role_category')}) "
+                          f"| {len(parsed['transactions'])} tx | {filing_meta.get('filed_date')}")
                     filings_stored += 1
-                    return
+                    continue
 
                 upsert_company(cik, ticker, issuer.get("name", ""))
                 filing_id = insert_filing(
@@ -161,44 +182,50 @@ def main():
                 n = insert_transactions(filing_id, owner, parsed["transactions"])
                 tx_stored += n
                 filings_stored += 1
+                stored_since_last_log += 1
 
-                if filings_stored % 100 == 0:
-                    print(f"  Progress: {filings_stored} filings stored, {tx_stored} transactions, "
-                          f"{skipped_universe} skipped (universe filter)")
+        maybe_log()
 
-    for ws, we in windows:
-        # Buffer the whole window and reverse: EDGAR returns newest-first within
-        # any date range, so reversing gives oldest-first. This keeps
-        # MAX(filed_date) in the DB pointing at the true resume boundary.
+    for window_idx, (ws, we) in enumerate(windows):
+        print(f"── Window {window_idx+1}/{total_windows}: {ws} → {we}  (fetching index...)")
+
         window_filings = list(fetch_form4_index(ws, we, req_per_sec=BACKFILL_RATE))
-        window_filings.reverse()
+        window_filings.reverse()  # EDGAR returns newest-first; flip to oldest-first
+        window_total = len(window_filings)
 
-        for filing_meta in window_filings:
+        # Count how many pass the universe filter before touching the network
+        window_candidates = []
+        for fm in window_filings:
             filings_seen += 1
-            raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
+            raw_cik = fm.get("cik_raw", "").lstrip("0")
             ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
-
             if ticker_universe and ticker and ticker not in ticker_universe:
                 skipped_universe += 1
                 continue
+            window_candidates.append((fm, ticker))
 
-            pending.append((filing_meta, ticker))
+        print(f"   {window_total} filings in index, {len(window_candidates)} pass universe filter — processing...")
+
+        for fm, tk in window_candidates:
+            pending.append((fm, tk))
             if len(pending) >= BATCH:
                 flush_batch(pending)
                 pending = []
 
-        flush_batch(pending)  # flush at end of each window so DB date advances cleanly
+        flush_batch(pending)
         pending = []
-
-    flush_batch(pending)  # drain any final remainder
+        print(f"   Window {window_idx+1} done.  Total stored so far: {filings_stored:,}  tx: {tx_stored:,}  elapsed: {fmt_elapsed(time.time()-run_start)}")
 
     print()
+    elapsed = time.time() - run_start
     print("Bootstrap complete.")
-    print(f"  Filings seen:    {filings_seen}")
-    print(f"  Filings stored:  {filings_stored}")
-    print(f"  Transactions:    {tx_stored}")
-    print(f"  Skipped:         {skipped_universe} (not in universe)")
-    print(f"  Parse errors:    {parse_errors}")
+    print(f"  Elapsed:         {fmt_elapsed(elapsed)}")
+    print(f"  Filings seen:    {filings_seen:,}")
+    print(f"  Filings stored:  {filings_stored:,}")
+    print(f"  Transactions:    {tx_stored:,}")
+    print(f"  Skipped:         {skipped_universe:,} (not in universe)")
+    print(f"  Parse errors:    {parse_errors:,}")
+    print(f"  Avg rate:        {filings_stored/elapsed:.2f} filings/sec")
 
 
 if __name__ == "__main__":
