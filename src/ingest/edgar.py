@@ -5,6 +5,7 @@ Rate limits: 10 req/sec max. We use 8 in normal mode, 3 in backfill mode.
 Required User-Agent header on every request — missing it causes IP block.
 """
 
+import re
 import time
 import requests
 from datetime import date, timedelta
@@ -99,31 +100,39 @@ def fetch_form4_index(start_date: date, end_date: date = None, req_per_sec: floa
 def fetch_filing_xml(accession_number: str, cik: str, req_per_sec: float = 8.0) -> Optional[str]:
     """
     Fetch the raw XML content of a Form 4 filing.
+    First fetches the filing index page to discover the actual XML filename,
+    then falls back to common guesses if the index isn't available.
     Returns XML string or None if not found.
     """
-    # Accession number format for URL: remove dashes
     acc_no_dashes = accession_number.replace("-", "")
     cik_padded = str(cik).zfill(10)
+    base_dir = f"{EDGAR_ARCHIVES}/data/{cik_padded}/{acc_no_dashes}"
 
-    # Try primary document listing first
-    index_url = f"{EDGAR_ARCHIVES}/data/{cik_padded}/{acc_no_dashes}/{accession_number}-index.htm"
-    _throttle(req_per_sec)
-
-    # Form 4 XML is typically named with the accession number
-    xml_url = f"{EDGAR_ARCHIVES}/data/{cik_padded}/{acc_no_dashes}/{accession_number}.xml"
-    try:
-        resp = requests.get(xml_url, headers=HEADERS, timeout=30)
-        if resp.status_code == 200 and resp.text.strip().startswith("<"):
-            return resp.text
-    except requests.RequestException:
-        pass
-
-    # Fallback: try common alternate names
-    for filename in ["ownership.xml", "form4.xml", "primary_doc.xml"]:
+    # Step 1: fetch filing index to discover the actual XML filename
+    xml_filename = None
+    for index_suffix in [f"{accession_number}-index.htm", f"{accession_number}-index.html"]:
         _throttle(req_per_sec)
         try:
-            url = f"{EDGAR_ARCHIVES}/data/{cik_padded}/{acc_no_dashes}/{filename}"
-            resp = requests.get(url, headers=HEADERS, timeout=30)
+            resp = requests.get(f"{base_dir}/{index_suffix}", headers=HEADERS, timeout=30)
+            if resp.status_code == 200:
+                # href="/Archives/edgar/data/.../some-form4.xml"
+                matches = re.findall(r'href="[^"]*?/([^"/?]+\.xml)"', resp.text, re.IGNORECASE)
+                if matches:
+                    xml_filename = matches[0]
+                    break
+        except requests.RequestException:
+            pass
+
+    # Step 2: try the discovered filename first, then common fallbacks
+    candidates = []
+    if xml_filename:
+        candidates.append(xml_filename)
+    candidates.extend([f"{accession_number}.xml", "ownership.xml", "form4.xml", "primary_doc.xml"])
+
+    for filename in candidates:
+        _throttle(req_per_sec)
+        try:
+            resp = requests.get(f"{base_dir}/{filename}", headers=HEADERS, timeout=30)
             if resp.status_code == 200 and resp.text.strip().startswith("<"):
                 return resp.text
         except requests.RequestException:

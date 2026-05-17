@@ -80,7 +80,8 @@ def main():
         if ticker_universe and ticker and ticker not in ticker_universe:
             continue
 
-        xml = fetch_filing_xml(filing_meta["accession_number"], raw_cik, req_per_sec=INGEST_RATE)
+        filer_cik = filing_meta.get("filer_cik", raw_cik)
+        xml = fetch_filing_xml(filing_meta["accession_number"], filer_cik, req_per_sec=INGEST_RATE)
         if not xml:
             continue
 
