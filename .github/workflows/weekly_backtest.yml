@@ -1,0 +1,50 @@
+name: Weekly Backtest
+
+on:
+  schedule:
+    # Every Sunday at 12:00 UTC
+    - cron: '0 12 * * 0'
+  workflow_dispatch:
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backtest
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "
+          import sys, os, traceback
+          sys.path.insert(0, '.')
+          from src.backtest.engine import run_backtest, save_backtest_results
+          from src.alerts.telegram import send_error
+          try:
+              results = run_backtest(threshold=65, lookback_days=365)
+              if results:
+                  save_backtest_results(results, threshold=65)
+                  print(f'Saved {len(results)} horizon results.')
+              else:
+                  print('No results (not enough historical data yet).')
+          except Exception as e:
+              tb = traceback.format_exc()
+              print(f'Backtest failed:\n{tb}')
+              send_error(str(e), context='weekly backtest')
+              sys.exit(1)
+          "

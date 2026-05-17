@@ -1,0 +1,22 @@
+# Never commit credentials
+.env
+.env.*
+secrets.toml
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Data files (large, regenerated)
+data/*.parquet
+data/*.csv
+
+# OS
+.DS_Store
+Thumbs.db
