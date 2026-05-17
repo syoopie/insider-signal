@@ -167,7 +167,13 @@ def main():
                           f"{skipped_universe} skipped (universe filter)")
 
     for ws, we in windows:
-        for filing_meta in fetch_form4_index(ws, we, req_per_sec=BACKFILL_RATE):
+        # Buffer the whole window and reverse: EDGAR returns newest-first within
+        # any date range, so reversing gives oldest-first. This keeps
+        # MAX(filed_date) in the DB pointing at the true resume boundary.
+        window_filings = list(fetch_form4_index(ws, we, req_per_sec=BACKFILL_RATE))
+        window_filings.reverse()
+
+        for filing_meta in window_filings:
             filings_seen += 1
             raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
             ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
@@ -181,7 +187,10 @@ def main():
                 flush_batch(pending)
                 pending = []
 
-    flush_batch(pending)  # drain remainder
+        flush_batch(pending)  # flush at end of each window so DB date advances cleanly
+        pending = []
+
+    flush_batch(pending)  # drain any final remainder
 
     print()
     print("Bootstrap complete.")
