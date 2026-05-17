@@ -8,7 +8,7 @@ Required User-Agent header on every request — missing it causes IP block.
 import time
 import requests
 from datetime import date, timedelta
-from typing import Iterator
+from typing import Iterator, Optional, Dict
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 EDGAR_BASE = "https://efts.sec.gov/LATEST/search-index"
@@ -90,7 +90,7 @@ def fetch_form4_index(start_date: date, end_date: date = None, req_per_sec: floa
             break
 
 
-def fetch_filing_xml(accession_number: str, cik: str, req_per_sec: float = 8.0) -> str | None:
+def fetch_filing_xml(accession_number: str, cik: str, req_per_sec: float = 8.0) -> Optional[str]:
     """
     Fetch the raw XML content of a Form 4 filing.
     Returns XML string or None if not found.
@@ -126,7 +126,7 @@ def fetch_filing_xml(accession_number: str, cik: str, req_per_sec: float = 8.0) 
     return None
 
 
-def fetch_cik_ticker_map(req_per_sec: float = 8.0) -> dict[str, str]:
+def fetch_cik_ticker_map(req_per_sec: float = 8.0) -> Dict[str, str]:
     """
     Returns {ticker: cik_str} mapping from SEC's official JSON.
     CIKs are returned as zero-padded 10-digit strings.
