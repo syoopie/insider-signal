@@ -27,7 +27,7 @@ from typing import Set
 from src.db.connection import apply_schema
 
 
-BACKFILL_RATE = 3.0  # req/sec — conservative for burst backfill
+BACKFILL_RATE = 8.0  # req/sec — matches daily ingest; universe filter keeps actual volume low
 
 
 def load_ticker_universe() -> Set[str]:

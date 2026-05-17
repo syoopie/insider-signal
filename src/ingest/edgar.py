@@ -100,22 +100,31 @@ def fetch_form4_index(start_date: date, end_date: date = None, req_per_sec: floa
 def fetch_filing_xml(accession_number: str, cik: str, req_per_sec: float = 8.0) -> Optional[str]:
     """
     Fetch the raw XML content of a Form 4 filing.
-    First fetches the filing index page to discover the actual XML filename,
-    then falls back to common guesses if the index isn't available.
+    Tries the standard accession-number filename first (1 request, fast path).
+    Falls back to parsing the filing index page to discover the actual filename
+    when the standard name doesn't exist (e.g. 'wk-form4_1234.xml').
     Returns XML string or None if not found.
     """
     acc_no_dashes = accession_number.replace("-", "")
     cik_padded = str(cik).zfill(10)
     base_dir = f"{EDGAR_ARCHIVES}/data/{cik_padded}/{acc_no_dashes}"
 
-    # Step 1: fetch filing index to discover the actual XML filename
+    # Fast path: standard filename used by most filers
+    _throttle(req_per_sec)
+    try:
+        resp = requests.get(f"{base_dir}/{accession_number}.xml", headers=HEADERS, timeout=30)
+        if resp.status_code == 200 and resp.text.strip().startswith("<"):
+            return resp.text
+    except requests.RequestException:
+        pass
+
+    # Slow path: fetch filing index to discover the actual XML filename
     xml_filename = None
     for index_suffix in [f"{accession_number}-index.htm", f"{accession_number}-index.html"]:
         _throttle(req_per_sec)
         try:
             resp = requests.get(f"{base_dir}/{index_suffix}", headers=HEADERS, timeout=30)
             if resp.status_code == 200:
-                # href="/Archives/edgar/data/.../some-form4.xml"
                 matches = re.findall(r'href="[^"]*?/([^"/?]+\.xml)"', resp.text, re.IGNORECASE)
                 if matches:
                     xml_filename = matches[0]
@@ -123,20 +132,14 @@ def fetch_filing_xml(accession_number: str, cik: str, req_per_sec: float = 8.0) 
         except requests.RequestException:
             pass
 
-    # Step 2: try the discovered filename first, then common fallbacks
-    candidates = []
     if xml_filename:
-        candidates.append(xml_filename)
-    candidates.extend([f"{accession_number}.xml", "ownership.xml", "form4.xml", "primary_doc.xml"])
-
-    for filename in candidates:
         _throttle(req_per_sec)
         try:
-            resp = requests.get(f"{base_dir}/{filename}", headers=HEADERS, timeout=30)
+            resp = requests.get(f"{base_dir}/{xml_filename}", headers=HEADERS, timeout=30)
             if resp.status_code == 200 and resp.text.strip().startswith("<"):
                 return resp.text
         except requests.RequestException:
-            continue
+            pass
 
     return None
 
