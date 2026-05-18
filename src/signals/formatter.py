@@ -209,7 +209,7 @@ def format_telegram_message(evidence: dict) -> str:
         lines.append("📊 " + " · ".join(factor_parts))
 
     lines.append("")
-    lines.append(f"📅 Filed {e.get('filed_date')} · Hold 60–90 days")
+    lines.append(f"📅 Filed {e.get('filed_date')}")
 
     return "\n".join(lines)
 

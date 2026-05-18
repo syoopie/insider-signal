@@ -1,30 +1,75 @@
 """
-Market data helpers using yfinance (free, no API key needed).
-Used for: market cap classification, 52-week low detection, price lookups.
+Market data helpers — direct Yahoo Finance API (no yfinance dependency).
+
+Uses the /v7/finance/quote endpoint with a crumb-based session.
+Crumb is fetched once per process and reused. Falls back to empty dict on any failure.
+Results are cached per ticker for the lifetime of the process (one ingest run).
 """
 
 import time
 import logging
-import functools
-import yfinance as yf
+import requests
 from datetime import date, timedelta
 from typing import Optional
 
-# Suppress yfinance/urllib3 chatter — 429s are handled gracefully, no need to print them
-logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 logging.getLogger("urllib3").setLevel(logging.CRITICAL)
-logging.getLogger("peewee").setLevel(logging.CRITICAL)
 
-_yf_last_call = 0.0
-_YF_MIN_GAP = 0.5  # seconds between yfinance calls — Yahoo rate limit is ~2 req/sec
+_YF_QUOTE_URL = "https://query2.finance.yahoo.com/v7/finance/quote"
+_YF_CRUMB_URL = "https://query2.finance.yahoo.com/v1/test/getcrumb"
+_YF_CHART_URL = "https://query2.finance.yahoo.com/v8/finance/chart"
+
+_session: Optional[requests.Session] = None
+_crumb: Optional[str] = None
+_cache: dict = {}
+
+_last_call = 0.0
+_MIN_GAP = 0.5  # seconds between calls
 
 
-def _yf_throttle():
-    global _yf_last_call
-    gap = time.time() - _yf_last_call
-    if gap < _YF_MIN_GAP:
-        time.sleep(_YF_MIN_GAP - gap)
-    _yf_last_call = time.time()
+def _throttle():
+    global _last_call
+    gap = time.time() - _last_call
+    if gap < _MIN_GAP:
+        time.sleep(_MIN_GAP - gap)
+    _last_call = time.time()
+
+
+def _get_session() -> requests.Session:
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json",
+        })
+    return _session
+
+
+def _get_crumb() -> Optional[str]:
+    global _crumb
+    if _crumb:
+        return _crumb
+    try:
+        s = _get_session()
+        # Seed cookies — 404 is fine, it still initialises the session state
+        s.get("https://fc.yahoo.com", timeout=5)
+        resp = s.get(_YF_CRUMB_URL, timeout=8)
+        if resp.status_code == 200 and resp.text.strip():
+            _crumb = resp.text.strip()
+        else:
+            print(f"[market] crumb fetch failed: HTTP {resp.status_code} — market data unavailable this run")
+    except Exception as e:
+        print(f"[market] crumb fetch error: {e} — market data unavailable this run")
+    return _crumb
+
+
+def _reset_crumb():
+    global _crumb
+    _crumb = None
 
 
 def get_cap_tier(market_cap: Optional[int]) -> str:
@@ -37,69 +82,117 @@ def get_cap_tier(market_cap: Optional[int]) -> str:
     return "large"
 
 
-@functools.lru_cache(maxsize=1024)
 def get_market_data(ticker: str) -> dict:
     """
-    Returns {market_cap, cap_tier, price_52wk_low, current_price} or empty dict on failure.
-    Results are cached per ticker for the lifetime of the process (one ingest run).
-
-    Uses fast_info (chart endpoint) instead of info (quoteSummary endpoint).
-    quoteSummary requires a session crumb that expires and returns HTTP 200 with
-    an error JSON body on failure — no exception raised, just silent null values.
-    fast_info uses the chart API which is crumb-free and consistently returns data.
+    Returns {market_cap, cap_tier, price_52wk_low, current_price} or {} on failure.
+    Cached per ticker for the lifetime of the process.
     """
+    if ticker in _cache:
+        return _cache[ticker]
+
     try:
-        _yf_throttle()
-        fi = yf.Ticker(ticker).fast_info
-        market_cap = getattr(fi, "market_cap", None)
-        low_52wk = getattr(fi, "year_low", None)      # fast_info uses year_low not fiftyTwoWeekLow
-        current = getattr(fi, "last_price", None)
-        cap_int = int(market_cap) if market_cap is not None else None
-        if cap_int is None and low_52wk is None and current is None:
+        _throttle()
+        crumb = _get_crumb()
+        if not crumb:
             return {}
-        return {
+
+        resp = _get_session().get(
+            _YF_QUOTE_URL,
+            params={"symbols": ticker, "crumb": crumb},
+            timeout=10,
+        )
+
+        if resp.status_code == 401:
+            _reset_crumb()
+            return {}
+
+        data = resp.json()
+        result = data.get("quoteResponse", {}).get("result", [])
+        if not result:
+            _cache[ticker] = {}
+            return {}
+
+        q = result[0]
+        market_cap = q.get("marketCap")
+        low_52wk = q.get("fiftyTwoWeekLow")
+        current = q.get("regularMarketPrice")
+
+        cap_int = int(market_cap) if market_cap else None
+        mdata = {
             "market_cap": cap_int,
             "cap_tier": get_cap_tier(cap_int),
             "price_52wk_low": low_52wk,
             "current_price": current,
         }
+        _cache[ticker] = mdata
+        return mdata
+
     except Exception:
+        _cache[ticker] = {}
         return {}
 
 
 def get_price_on_date(ticker: str, target_date: date) -> Optional[float]:
     """
-    Returns the adjusted closing price on or after target_date (up to 5 trading days later).
-    Returns None if no data found.
+    Returns the closing price on or just after target_date (up to 7 calendar days).
+    Uses the Yahoo Finance chart endpoint directly.
     """
     try:
-        end = target_date + timedelta(days=7)
-        hist = yf.Ticker(ticker).history(start=target_date.isoformat(), end=end.isoformat())
-        if hist.empty:
+        import math
+        start_ts = int(time.mktime(target_date.timetuple()))
+        end_ts = int(time.mktime((target_date + timedelta(days=7)).timetuple()))
+        crumb = _get_crumb()
+        params = {
+            "interval": "1d",
+            "period1": start_ts,
+            "period2": end_ts,
+        }
+        if crumb:
+            params["crumb"] = crumb
+        resp = _get_session().get(f"{_YF_CHART_URL}/{ticker}", params=params, timeout=10)
+        chart = resp.json().get("chart", {})
+        result = chart.get("result", [])
+        if not result:
             return None
-        return float(hist["Close"].iloc[0])
+        closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
+        closes = [c for c in closes if c is not None]
+        return float(closes[0]) if closes else None
     except Exception:
         return None
 
 
 def get_price_change_pct(ticker: str, start_date: date, end_date: date) -> Optional[float]:
     """
-    Returns percentage price change between start_date and end_date.
-    Returns None if data unavailable (e.g., delisted stock).
+    Returns percentage price change between start_date and end_date, or None if unavailable.
     """
     try:
-        end_fetch = end_date + timedelta(days=7)
-        hist = yf.Ticker(ticker).history(
-            start=start_date.isoformat(), end=end_fetch.isoformat()
-        )
-        if len(hist) < 2:
+        import math
+        start_ts = int(time.mktime(start_date.timetuple()))
+        end_ts = int(time.mktime((end_date + timedelta(days=7)).timetuple()))
+        crumb = _get_crumb()
+        params = {
+            "interval": "1d",
+            "period1": start_ts,
+            "period2": end_ts,
+        }
+        if crumb:
+            params["crumb"] = crumb
+        resp = _get_session().get(f"{_YF_CHART_URL}/{ticker}", params=params, timeout=10)
+        chart = resp.json().get("chart", {})
+        result = chart.get("result", [])
+        if not result:
             return None
-        price_start = float(hist["Close"].iloc[0])
-        # Find the closest available price to end_date
-        hist_to_end = hist[hist.index.date <= end_date]
-        if hist_to_end.empty:
+        timestamps = result[0].get("timestamp", [])
+        closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
+        pairs = [(ts, c) for ts, c in zip(timestamps, closes) if c is not None]
+        if len(pairs) < 2:
             return None
-        price_end = float(hist_to_end["Close"].iloc[-1])
+        price_start = pairs[0][1]
+        end_ts_cutoff = time.mktime(end_date.timetuple())
+        valid = [(ts, c) for ts, c in pairs if ts <= end_ts_cutoff]
+        if not valid:
+            return None
+        price_end = valid[-1][1]
         if price_start == 0:
             return None
         return (price_end - price_start) / price_start * 100
@@ -111,5 +204,4 @@ def is_near_52wk_low(current_price: Optional[float], low_52wk: Optional[float], 
     """Returns True if current_price is within threshold_pct% above the 52-week low."""
     if current_price is None or low_52wk is None or low_52wk == 0:
         return False
-    pct_above_low = (current_price - low_52wk) / low_52wk * 100
-    return pct_above_low <= threshold_pct
+    return (current_price - low_52wk) / low_52wk * 100 <= threshold_pct
