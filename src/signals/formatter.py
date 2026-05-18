@@ -71,18 +71,21 @@ def build_evidence(
     if cluster_info.get("is_cluster"):
         research_basis.append(RESEARCH_REFS["cluster"])
 
-    # Build per-insider summary
+    # Build per-insider summary from scored transactions (7-day window)
     insider_summaries = []
+    scored_names = set()
     for tx in transactions:
         owner = tx.get("owner", {})
         t = tx.get("transaction", {})
+        name = owner.get("name", "Unknown")
+        scored_names.add(name)
         shares_before = (t.get("shares_after") or 0) - (t.get("shares") or 0)
         pct_increase = None
         if shares_before and shares_before > 0:
             pct_increase = (t.get("shares") or 0) / shares_before * 100
 
         insider_summaries.append({
-            "name": owner.get("name", "Unknown"),
+            "name": name,
             "role": owner.get("role_category", "other").upper(),
             "role_raw": owner.get("role_raw", ""),
             "shares_bought": t.get("shares"),
@@ -92,7 +95,29 @@ def build_evidence(
             "pct_increase": pct_increase,
             "transaction_date": t.get("transaction_date"),
             "is_10b51": t.get("is_10b51", False),
+            "in_scoring_window": True,
         })
+
+    # For cluster signals: also include buyers from the 14-day window who
+    # didn't appear in the 7-day scoring window so the display matches the cluster count
+    if cluster_info.get("is_cluster"):
+        for ci in cluster_info.get("insiders", []):
+            name = ci.get("insider_name", "Unknown")
+            if name in scored_names:
+                continue
+            insider_summaries.append({
+                "name": name,
+                "role": (ci.get("role_category") or "other").upper(),
+                "role_raw": ci.get("role_category") or "",
+                "shares_bought": float(ci["shares"]) if ci.get("shares") else None,
+                "price": float(ci["price_per_share"]) if ci.get("price_per_share") else None,
+                "total_value": float(ci["total_value"]) if ci.get("total_value") else None,
+                "shares_after": None,
+                "pct_increase": None,
+                "transaction_date": ci.get("transaction_date"),
+                "is_10b51": False,
+                "in_scoring_window": False,
+            })
 
     current_price = market_data.get("current_price")
     low_52wk = market_data.get("price_52wk_low")
@@ -124,80 +149,67 @@ def build_evidence(
 
 
 def format_telegram_message(evidence: dict) -> str:
-    """Renders the full signal evidence block as a Telegram-ready text message."""
+    """Renders the signal as a Telegram HTML message optimised for mobile."""
     e = evidence
     sig_type = e.get("signal_type", "")
     score = e.get("score", 0)
     ticker = e.get("ticker", "")
     company = e.get("company_name", ticker)
+    cluster = e.get("cluster", {})
 
-    if sig_type == "CLUSTER_BUY":
-        icon = "🔴"
-    elif sig_type == "BUY":
-        icon = "🟢"
+    icon = {"CLUSTER_BUY": "🔴", "BUY": "🟢", "WATCH": "🟡"}.get(sig_type, "⚪")
+    label = {"CLUSTER_BUY": "CLUSTER BUY", "BUY": "BUY SIGNAL", "WATCH": "WATCH"}.get(sig_type, sig_type)
+
+    lines = [f"{icon} <b>{label} — ${ticker}</b>"]
+    if company and company != ticker:
+        lines.append(f"<i>{company}</i>")
+    lines.append(f"Score <b>{score}</b>/100")
+    lines.append("")
+
+    # Cluster header
+    if cluster.get("is_cluster"):
+        n = cluster.get("insider_count", 0)
+        lines.append(f"<b>👥 {n} insiders bought in {CLUSTER_WINDOW_DAYS_DISPLAY} days</b>")
     else:
-        icon = "🟡"
+        lines.append("<b>👤 Insider purchase</b>")
 
-    lines = [
-        f"{'━'*38}",
-        f"{icon} {sig_type} — ${ticker} ({company})",
-        f"Score: {score}/100 | Type: {sig_type}",
-        f"{'━'*38}",
-        "",
-        "WHO BOUGHT:",
-    ]
-
+    # Buyer list
     insiders = e.get("insiders", [])
     for ins in insiders:
-        role_display = ins.get("role_raw") or ins.get("role", "")
+        name = ins.get("name", "Unknown")
+        role = (ins.get("role_raw") or ins.get("role") or "").title()
         val = fmt_currency(ins.get("total_value"))
         price = f"${ins.get('price'):.2f}" if ins.get("price") else "N/A"
         shares = f"{int(ins.get('shares_bought') or 0):,}"
-        lines.append(f"  • {ins['name']} ({role_display}) — {shares} shares @ {price} = {val}")
+        note = " <i>(earlier)</i>" if not ins.get("in_scoring_window", True) else ""
+        lines.append(f"  • <b>{name}</b> ({role})")
+        lines.append(f"    {shares} sh @ {price} = {val}{note}")
 
-    cluster = e.get("cluster", {})
-    if cluster.get("is_cluster"):
-        n = cluster.get("insider_count", 0)
-        lines.append(f"  {n} insiders in a {CLUSTER_WINDOW_DAYS_DISPLAY}-day window → CLUSTER SIGNAL")
+    lines.append("")
 
-    lines += ["", "WHAT THEY NOW HOLD:"]
-    for ins in insiders:
-        if ins.get("shares_after") and ins.get("pct_increase") is not None:
-            total = f"{int(ins['shares_after']):,}"
-            pct = f"{ins['pct_increase']:.0f}%"
-            lines.append(f"  • {ins['name']}: {total} shares total (+{pct})")
-
-    lines += [
-        "",
-        "CONTEXT:",
-    ]
+    # Key context
+    ctx = []
+    cap = e.get("cap_tier")
+    if cap and cap not in ("unknown", None):
+        ctx.append(f"{cap.title()}-cap")
     if e.get("near_52wk_low"):
         pct = e.get("pct_above_52wk_low", 0)
-        low = e.get("price_52wk_low")
-        lines.append(f"  • Stock is {pct:.0f}% above 52-week low (${low:.2f})")
+        ctx.append(f"{pct:.0f}% above 52-wk low")
+    if ctx:
+        lines.append("📍 " + " · ".join(ctx))
 
-    lines.append(f"  • Filed: {e.get('filed_date')} | Signal available: {e.get('signal_date')}")
-    lines.append(f"  • All purchases are open-market (not grants/exercises)")
-    lines.append(f"  • None flagged as 10b5-1 plan")
-
-    lines += ["", "SCORE BREAKDOWN:"]
+    # Score factors — one per line, compact
     breakdown = e.get("score_breakdown", {})
-    for factor, pts in breakdown.items():
-        if isinstance(pts, int):
-            label = factor.replace("_", " ").title()
-            lines.append(f"  {label:<30} +{pts}")
-    lines.append(f"  {'─'*36}")
-    lines.append(f"  {'Total:':<30} {score}")
+    if breakdown:
+        factor_parts = []
+        for factor, pts in breakdown.items():
+            if isinstance(pts, int):
+                label_str = factor.replace("_", " ").title()
+                factor_parts.append(f"{label_str} (+{pts})")
+        lines.append("📊 " + " · ".join(factor_parts))
 
-    lines += ["", "RESEARCH BASIS:"]
-    for ref in e.get("research_basis", []):
-        lines.append(f"  • {ref}")
-
-    lines += [
-        "",
-        f"SUGGESTED HOLD: {e.get('suggested_hold_horizon', '')}",
-        f"{'━'*38}",
-    ]
+    lines.append("")
+    lines.append(f"📅 Filed {e.get('filed_date')} · Hold 60–90 days")
 
     return "\n".join(lines)
 
