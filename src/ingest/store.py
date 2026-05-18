@@ -5,9 +5,36 @@ All inserts are idempotent — safe to re-run on the same data.
 
 import json
 import decimal
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional, Tuple, List
 from src.db.connection import get_conn
+
+_SIGNAL_COOLDOWN_DAYS = 7   # suppress follow-up signals within this window
+_SIGNAL_SCORE_JUMP    = 10  # unless score increased by at least this much
+_TYPE_RANK = {"CLUSTER_BUY": 3, "BUY": 2, "WATCH": 1, "LOW": 0}
+
+
+def _is_suppressed(ticker: str, signal_date: date, score: int, signal_type: str,
+                   recent: dict) -> bool:
+    """
+    Return True if this signal should be suppressed because a recent signal for
+    the same ticker already covers the same episode.
+
+    recent: {ticker: (signal_date, score, signal_type)} for the most recent
+    signal per ticker in the last _SIGNAL_COOLDOWN_DAYS days.
+    """
+    prev = recent.get(ticker)
+    if prev is None:
+        return False
+    prev_date, prev_score, prev_type = prev
+    days_since = (signal_date - prev_date).days
+    if days_since >= _SIGNAL_COOLDOWN_DAYS:
+        return False
+    if score >= prev_score + _SIGNAL_SCORE_JUMP:
+        return False
+    if _TYPE_RANK.get(signal_type, 0) > _TYPE_RANK.get(prev_type, 0):
+        return False
+    return True
 
 
 class _JSONEncoder(json.JSONEncoder):
@@ -132,8 +159,24 @@ def get_last_filed_date() -> Optional[date]:
 
 def save_signal(ticker: str, signal_date: date, score: int, signal_type: str,
                 cluster_flag: bool, score_breakdown: dict, evidence: dict) -> int:
+    """Returns the signal id, or 0 if suppressed as a near-duplicate."""
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # Check for a recent signal for this ticker within the cooldown window.
+            cutoff = signal_date - timedelta(days=_SIGNAL_COOLDOWN_DAYS)
+            cur.execute(
+                """
+                SELECT signal_date, score, signal_type FROM signals
+                WHERE ticker = %s AND signal_date >= %s AND signal_date < %s
+                ORDER BY signal_date DESC LIMIT 1
+                """,
+                (ticker, cutoff, signal_date),
+            )
+            row = cur.fetchone()
+            recent = {ticker: row} if row else {}
+            if _is_suppressed(ticker, signal_date, score, signal_type, recent):
+                return 0
+
             cur.execute(
                 """
                 INSERT INTO signals
@@ -158,10 +201,37 @@ def batch_save_signals(signals: list) -> int:
     """
     Insert or update a list of signal dicts in a single connection.
     Each dict must have the same keys as save_signal's parameters.
+
+    Suppresses follow-up signals for the same ticker within _SIGNAL_COOLDOWN_DAYS
+    unless the score jumps ≥ _SIGNAL_SCORE_JUMP or the type upgrades. Signals are
+    processed in date order so earlier ones in the batch act as the "recent" anchor
+    for later ones.
+
     Returns the count of rows written.
     """
     if not signals:
         return 0
+
+    # Sort by (ticker, signal_date) so within-batch deduplication is date-ordered.
+    signals = sorted(signals, key=lambda s: (s["ticker"], s["signal_date"]))
+    tickers = list({s["ticker"] for s in signals})
+    min_date = min(s["signal_date"] for s in signals)
+    cutoff = min_date - timedelta(days=_SIGNAL_COOLDOWN_DAYS)
+
+    # Bulk-load the most recent pre-existing signal per ticker in the lookback window.
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (ticker) ticker, signal_date, score, signal_type
+                FROM signals
+                WHERE ticker = ANY(%s) AND signal_date >= %s AND signal_date < %s
+                ORDER BY ticker, signal_date DESC
+                """,
+                (tickers, cutoff, min_date),
+            )
+            recent = {r[0]: (r[1], r[2], r[3]) for r in cur.fetchall()}
+
     sql = """
         INSERT INTO signals
             (ticker, signal_date, score, signal_type, cluster_flag, score_breakdown, evidence)
@@ -173,16 +243,30 @@ def batch_save_signals(signals: list) -> int:
             score_breakdown = EXCLUDED.score_breakdown,
             evidence        = EXCLUDED.evidence
     """
-    rows = [
-        (
-            s["ticker"], s["signal_date"], s["score"], s["signal_type"],
-            s["cluster_flag"], _dumps(s["score_breakdown"]), _dumps(s["evidence"]),
+    rows = []
+    suppressed = 0
+    for s in signals:
+        ticker, sig_date, score, sig_type = (
+            s["ticker"], s["signal_date"], s["score"], s["signal_type"]
         )
-        for s in signals
-    ]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.executemany(sql, rows)
+        if _is_suppressed(ticker, sig_date, score, sig_type, recent):
+            suppressed += 1
+            continue
+        rows.append((
+            ticker, sig_date, score, sig_type,
+            s["cluster_flag"], _dumps(s["score_breakdown"]), _dumps(s["evidence"]),
+        ))
+        # Update recent so later signals in the same batch see this one.
+        recent[ticker] = (sig_date, score, sig_type)
+
+    if rows:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(sql, rows)
+
+    if suppressed:
+        from src.ingest.common import log
+        log(f"  Suppressed {suppressed} near-duplicate signals (cooldown={_SIGNAL_COOLDOWN_DAYS}d)")
     return len(rows)
 
 
