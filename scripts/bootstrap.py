@@ -116,9 +116,9 @@ def main():
 
     def flush_batch(batch):
         nonlocal filings_stored, tx_stored, parse_errors, stored_since_last_log, skipped_duplicate, candidates_done
-        candidates_done += len(batch)
         if not batch:
             return
+        candidates_done += len(batch)
 
         # Pre-filter: skip accessions already in DB so we don't waste XML fetches.
         # One query per batch instead of one connection-per-filing for known duplicates.

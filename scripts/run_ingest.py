@@ -74,7 +74,6 @@ def main():
     tx_stored = 0
     n_skipped_universe = 0
     n_skipped_no_xml = 0
-    n_skipped_no_tx = 0
     n_duplicate = 0
 
     # Phase 1: fetch index and filter to universe (fast — no XML downloads yet)
@@ -89,6 +88,26 @@ def main():
         candidates.append((filing_meta, ticker))
 
     _log(f"  {filings_seen} filings in index, {len(candidates)} pass universe filter")
+
+    # Pre-filter: drop accessions already in DB before spending EDGAR quota on them
+    if candidates:
+        from src.db.connection import get_conn
+        accessions = [fm["accession_number"] for fm, _ in candidates]
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT accession_number FROM form4_filings WHERE accession_number = ANY(%s)",
+                        (accessions,)
+                    )
+                    already_stored = {r[0] for r in cur.fetchall()}
+            n_pre = sum(1 for fm, _ in candidates if fm["accession_number"] in already_stored)
+            if n_pre:
+                candidates = [(fm, tk) for fm, tk in candidates if fm["accession_number"] not in already_stored]
+                n_duplicate += n_pre
+                _log(f"  Pre-filter: {n_pre} already stored, {len(candidates)} remaining")
+        except Exception:
+            pass  # ON CONFLICT handles it safely if pre-filter fails
 
     # Phase 2: fetch + parse XMLs in parallel
     parsed_results = []
@@ -125,10 +144,6 @@ def main():
         owner = parsed.get("owner", {})
         cik = issuer.get("cik") or raw_cik
         ticker = _clean_ticker(issuer.get("ticker") or tk) or ""
-
-        if not parsed.get("transactions"):
-            n_skipped_no_tx += 1
-            continue
 
         upsert_company(cik, ticker, issuer.get("name", ""))
 
