@@ -21,10 +21,10 @@ from psycopg2.extras import RealDictCursor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.ingest.common import setup_log_tee, log as _log, phase as _phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, log_stored
+from src.ingest.common import setup_log_tee, log as _log, phase as _phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, log_stored, fetch_and_parse
 from src.db.connection import apply_schema
-from src.ingest.edgar import fetch_form4_index, fetch_filing_xml
-from src.ingest.parser import parse_form4
+from src.ingest.edgar import fetch_form4_index
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.ingest.store import (
     upsert_company, insert_filing, insert_transactions,
     update_company_market_data, get_last_filed_date,
@@ -39,7 +39,8 @@ from src.alerts.telegram import send_signal, send_error, send_daily_summary
 
 setup_log_tee("ingest")
 
-INGEST_RATE = 8.0  # req/sec — normal daily mode
+INGEST_RATE = 8.0   # req/sec — shared across all threads; EDGAR limit is 10
+INGEST_WORKERS = 8  # concurrent XML fetch threads
 
 
 def main():
@@ -76,31 +77,58 @@ def main():
     n_skipped_no_tx = 0
     n_duplicate = 0
 
+    # Phase 1: fetch index and filter to universe (fast — no XML downloads yet)
+    candidates = []
     for filing_meta in fetch_form4_index(start_date, today, req_per_sec=INGEST_RATE):
         filings_seen += 1
         raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
         ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
-
         if not in_universe(ticker, ticker_universe):
             n_skipped_universe += 1
             continue
+        candidates.append((filing_meta, ticker))
 
-        filer_cik = filing_meta.get("filer_cik", raw_cik)
-        xml = fetch_filing_xml(filing_meta["accession_number"], filer_cik, req_per_sec=INGEST_RATE)
-        if not xml:
-            n_skipped_no_xml += 1
-            _log(f"  SKIP no-xml  {filing_meta['accession_number']} ({ticker or raw_cik})")
-            continue
+    _log(f"  {filings_seen} filings in index, {len(candidates)} pass universe filter")
 
-        parsed = parse_form4(xml, filing_meta)
-        if not parsed or not parsed.get("transactions"):
-            n_skipped_no_tx += 1
-            continue
+    # Phase 2: fetch + parse XMLs in parallel
+    parsed_results = []
+    with ThreadPoolExecutor(max_workers=INGEST_WORKERS) as pool:
+        futures = {
+            pool.submit(fetch_and_parse, fm, INGEST_RATE): (fm, tk)
+            for fm, tk in candidates
+        }
+        for i, future in enumerate(as_completed(futures), 1):
+            fm, tk = futures[future]
+            try:
+                result = future.result()
+            except Exception:
+                n_skipped_no_xml += 1
+                continue
+            if result is None:
+                n_skipped_no_xml += 1
+                continue
+            parsed_results.append((result[0], result[1], tk))
 
+            if i % 50 == 0 or i == len(candidates):
+                elapsed = time.time() - t0
+                rate = i / elapsed if elapsed > 0 else 0
+                remaining = len(candidates) - i
+                eta = fmt_elapsed(remaining / rate) if rate > 0 else "?"
+                _log(f"  Fetched {i}/{len(candidates)}  rate={rate:.1f}/s  ETA={eta}")
+
+    _log(f"  Fetch complete: {len(parsed_results)} parsed, {n_skipped_no_xml} failed")
+
+    # Phase 3: write to DB sequentially (psycopg2 not thread-safe)
+    for filing_meta, parsed, tk in parsed_results:
+        raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
         issuer = parsed.get("issuer", {})
         owner = parsed.get("owner", {})
         cik = issuer.get("cik") or raw_cik
-        ticker = _clean_ticker(issuer.get("ticker") or ticker) or ""
+        ticker = _clean_ticker(issuer.get("ticker") or tk) or ""
+
+        if not parsed.get("transactions"):
+            n_skipped_no_tx += 1
+            continue
 
         upsert_company(cik, ticker, issuer.get("name", ""))
 
@@ -125,17 +153,11 @@ def main():
         log_stored(ticker or raw_cik, filing_meta["accession_number"],
                    len(parsed["transactions"]), codes, filing_meta.get("filed_date", ""), cap)
 
-        # Progress heartbeat every 25 stored filings
-        if filings_stored % 25 == 0:
-            elapsed = time.time() - t0
-            rate = filings_stored / elapsed if elapsed > 0 else 0
-            _log(f"  ... {filings_stored} stored so far ({rate:.1f} f/s, {elapsed:.0f}s elapsed)")
-
     elapsed_ingest = time.time() - t0
-    _log(f"Ingest complete in {elapsed_ingest:.1f}s")
+    _log(f"Ingest complete in {fmt_elapsed(elapsed_ingest)}")
     _log(f"  Seen:    {filings_seen}")
     _log(f"  Stored:  {filings_stored} filings, {tx_stored} transactions")
-    _log(f"  Skipped: {n_skipped_universe} not-in-universe, {n_skipped_no_xml} no-xml, "
+    _log(f"  Skipped: {n_skipped_universe} not-in-universe, {n_skipped_no_xml} no-xml/parse, "
          f"{n_skipped_no_tx} no-tx, {n_duplicate} duplicate")
 
     # ── SIGNAL SCORING ────────────────────────────────────────────────────────

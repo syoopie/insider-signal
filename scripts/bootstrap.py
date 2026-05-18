@@ -23,9 +23,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, log_stored
-from src.ingest.edgar import fetch_form4_index, fetch_filing_xml
-from src.ingest.parser import parse_form4
+from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, log_stored, fetch_and_parse
+from src.ingest.edgar import fetch_form4_index
 from src.ingest.store import get_last_filed_date, _clean_ticker
 from typing import Optional, Tuple
 from src.db.connection import apply_schema, get_conn
@@ -39,17 +38,6 @@ LOG_INTERVAL = 30     # print a status line every N seconds
 BATCH = 100           # filings per flush (larger = fewer pre-filter round-trips)
 
 
-
-def fetch_and_parse(filing_meta: dict, rate: float) -> Optional[Tuple[dict, dict]]:
-    """Fetch XML and parse it. Returns (filing_meta, parsed) or None. Runs in worker thread."""
-    filer_cik = filing_meta.get("filer_cik", filing_meta.get("cik_raw", ""))
-    xml = fetch_filing_xml(filing_meta["accession_number"], filer_cik, req_per_sec=rate)
-    if not xml:
-        return None
-    parsed = parse_form4(xml, filing_meta)
-    if not parsed or not parsed.get("transactions"):
-        return None
-    return filing_meta, parsed
 
 
 def main():
@@ -103,6 +91,8 @@ def main():
     skipped_duplicate = 0
     parse_errors = 0
     stored_since_last_log = 0
+    candidates_total = 0    # grows as windows are discovered
+    candidates_done = 0     # candidates submitted to flush_batch
 
     pending = []
 
@@ -112,18 +102,21 @@ def main():
         if not force and (now - last_log_time) < LOG_INTERVAL:
             return
         elapsed = now - run_start
-        rate = filings_stored / elapsed if elapsed > 0 else 0
+        cand_rate = candidates_done / elapsed if elapsed > 0 else 0
+        remaining = candidates_total - candidates_done
+        eta_str = fmt_elapsed(remaining / cand_rate) if cand_rate > 0 and remaining > 0 else "?"
         log(
-            f"[{fmt_elapsed(elapsed)}]  stored={filings_stored:,}  tx={tx_stored:,}  "
-            f"seen={filings_seen:,}  skip_universe={skipped_universe:,}  "
-            f"skip_dup={skipped_duplicate:,}  errors={parse_errors}  "
-            f"rate={rate:.2f} f/s  window={window_idx+1}/{total_windows}"
+            f"[{fmt_elapsed(elapsed)}]  "
+            f"done={candidates_done:,}/{candidates_total:,}  stored={filings_stored:,}  tx={tx_stored:,}  "
+            f"skip_universe={skipped_universe:,}  skip_dup={skipped_duplicate:,}  errors={parse_errors}  "
+            f"rate={cand_rate:.1f}/s  ETA={eta_str}  window={window_idx+1}/{total_windows}"
         )
         last_log_time = now
         stored_since_last_log = 0
 
     def flush_batch(batch):
-        nonlocal filings_stored, tx_stored, parse_errors, stored_since_last_log, skipped_duplicate
+        nonlocal filings_stored, tx_stored, parse_errors, stored_since_last_log, skipped_duplicate, candidates_done
+        candidates_done += len(batch)
         if not batch:
             return
 
@@ -260,6 +253,7 @@ def main():
         if window_total >= 10000:
             log("  WARNING: window hit EDGAR 10K cap — some filings may be missing")
         log(f"  {window_total} filings in index, {len(window_candidates)} pass universe filter — processing...")
+        candidates_total += len(window_candidates)
 
         for fm, tk in window_candidates:
             pending.append((fm, tk))

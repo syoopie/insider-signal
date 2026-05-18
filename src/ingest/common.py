@@ -14,7 +14,8 @@ import time
 from datetime import datetime
 from typing import Set
 
-from src.ingest.edgar import fetch_cik_ticker_map
+from src.ingest.edgar import fetch_cik_ticker_map, fetch_filing_xml
+from src.ingest.parser import parse_form4
 
 _LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
 
@@ -90,6 +91,18 @@ def in_universe(ticker: str, ticker_universe: Set[str]) -> bool:
     if not ticker_universe:
         return True
     return bool(ticker) and ticker in ticker_universe
+
+
+def fetch_and_parse(filing_meta: dict, rate: float = 8.0):
+    """Fetch XML and parse a Form 4. Returns (filing_meta, parsed) or None. Thread-safe."""
+    filer_cik = filing_meta.get("filer_cik", filing_meta.get("cik_raw", ""))
+    xml = fetch_filing_xml(filing_meta["accession_number"], filer_cik, req_per_sec=rate)
+    if not xml:
+        return None
+    parsed = parse_form4(xml, filing_meta)
+    if not parsed or not parsed.get("transactions"):
+        return None
+    return filing_meta, parsed
 
 
 def log_stored(ticker: str, accession: str, n_tx: int, codes: list, filed: str, cap: str = ""):
