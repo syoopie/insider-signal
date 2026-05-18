@@ -255,6 +255,11 @@ if ticker_input:
         buy_rows = [r for r in ticker_rows if r["transaction_code"] == "P"]
         if buy_rows:
             buy_df = pd.DataFrame(buy_rows)
+            # psycopg2 returns NUMERIC columns as Decimal — cast to float for Plotly
+            buy_df["price_per_share"] = pd.to_numeric(buy_df["price_per_share"], errors="coerce")
+            buy_df["shares"] = pd.to_numeric(buy_df["shares"], errors="coerce").fillna(0)
+            buy_df["total_value"] = pd.to_numeric(buy_df["total_value"], errors="coerce")
+            buy_df = buy_df[buy_df["price_per_share"].notna()]
             fig2 = px.scatter(
                 buy_df,
                 x="transaction_date",
