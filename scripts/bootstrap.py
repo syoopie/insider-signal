@@ -1,17 +1,31 @@
 """
 One-time historical backfill: loads 2 years of Form 4 filings into Neon.
 
+Flags:
+  --days N    Number of days to backfill from today (default: 730 = 2 years).
+  --dry-run   Fetch and parse filings without writing anything to the database.
+              Use this to verify EDGAR connectivity and parsing before a real run.
+  --force     Skip the per-window duplicate check and re-fetch XML for every
+              filing in the date range regardless of what is already stored.
+              Use this to repair corrupt or incomplete data. Without --force
+              (the default), a single DB query per window identifies already-
+              stored accessions and skips their XML fetches — which is far
+              cheaper than redundant API calls.
+
 Usage:
-  python scripts/bootstrap.py             # full backfill
+  python scripts/bootstrap.py             # full 2-year backfill (skips already-stored)
   python scripts/bootstrap.py --dry-run   # parse only, no DB writes
   python scripts/bootstrap.py --days 90   # backfill last N days
+  python scripts/bootstrap.py --force     # re-fetch everything, ignore existing data
 
-Processes date range in 30-day oldest-first chunks so that resume-on-interrupt
-is safe (MAX(filed_date) always reflects the oldest fully-covered window).
+Processes date range in 7-day oldest-first chunks.
 
-XML fetches run in a thread pool to fill the 8 req/sec rate budget
-(network latency alone would cap a single thread at ~3 req/sec).
-DB writes remain in the main thread for psycopg2 safety.
+Performance: index pagination and XML fetching are pipelined — as each index
+page arrives, candidates are submitted to a persistent thread pool immediately
+rather than waiting for the full window index to download first. WORKERS=32
+keeps ~30 requests in-flight at once, which is what's needed to saturate the
+9 req/sec EDGAR budget given ~3-4s network latency per request.
+DB writes remain in the main thread (psycopg2 is not thread-safe).
 """
 
 import sys
@@ -23,28 +37,30 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, log_stored, fetch_and_parse
+from src.ingest.common import (
+    setup_log_tee, log, phase, fmt_elapsed,
+    load_ticker_universe, load_cik_map, in_universe, log_stored, fetch_and_parse,
+)
 from src.ingest.edgar import fetch_form4_index
 from src.ingest.store import get_last_filed_date, _clean_ticker
-from typing import Optional, Tuple
 from src.db.connection import apply_schema, get_conn
 
 log_path = setup_log_tee("bootstrap")
 log(f"Logging to {log_path}")
 
-BACKFILL_RATE = 9.0   # req/sec — shared across all threads; EDGAR limit is 10
-WORKERS = 8           # concurrent XML fetch threads
-LOG_INTERVAL = 30     # print a status line every N seconds
-BATCH = 100           # filings per flush (larger = fewer pre-filter round-trips)
-
-
+BACKFILL_RATE  = 9.0   # req/sec — shared across all threads; EDGAR limit is 10
+WORKERS        = 32    # concurrent XML-fetch threads; saturates 9 req/s at ~3-4s latency
+LOG_INTERVAL   = 30    # seconds between status lines
+DB_WRITE_BATCH = 50    # flush results to DB after accumulating this many
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Parse only, no DB writes")
-    parser.add_argument("--days", type=int, default=730, help="Number of days to backfill (default 730 = 2 years)")
-    parser.add_argument("--force", action="store_true", help="Ignore last stored date and backfill from scratch")
+    parser.add_argument("--days", type=int, default=730,
+                        help="Number of days to backfill (default 730 = 2 years)")
+    parser.add_argument("--force", action="store_true",
+                        help="Skip per-window duplicate check; re-fetch all XML regardless of what is stored")
     args = parser.parse_args()
 
     if not args.dry_run:
@@ -57,16 +73,10 @@ def main():
     log(f"Ticker universe: {len(ticker_universe)} tickers loaded")
     cik_to_ticker = load_cik_map(req_per_sec=BACKFILL_RATE)
 
-    end_date = date.today()
+    end_date   = date.today()
     start_date = end_date - timedelta(days=args.days)
 
-    if not args.dry_run and not args.force:
-        last = get_last_filed_date()
-        if last and last > start_date:
-            log(f"Resuming from {last} (last stored filing date)")
-            start_date = last
-
-    # 7-day windows, oldest first, so resume is safe.
+    # 7-day windows, oldest first.
     # EDGAR caps search results at 10,000 per query; a 30-day window has ~24,000
     # Form 4s so we'd silently miss ~60% of them. 7 days ≈ 5,600 filings — safely
     # under the cap with room to spare.
@@ -78,192 +88,241 @@ def main():
         chunk_start = chunk_end + timedelta(days=1)
 
     total_windows = len(windows)
-    log(f"Backfilling {start_date} → {end_date}  ({total_windows} windows, {WORKERS} workers, dry_run={args.dry_run})")
+    log(f"Backfilling {start_date} → {end_date}  "
+        f"({total_windows} windows, {WORKERS} workers, dry_run={args.dry_run})")
 
+    run_start    = time.time()
+    last_log_t   = run_start
 
-    run_start = time.time()
-    last_log_time = run_start
-
-    filings_seen = 0
-    filings_stored = 0
-    tx_stored = 0
+    filings_seen     = 0
+    filings_stored   = 0
+    tx_stored        = 0
     skipped_universe = 0
     skipped_duplicate = 0
-    parse_errors = 0
-    stored_since_last_log = 0
-    candidates_total = 0    # grows as windows are discovered
-    candidates_done = 0     # candidates submitted to flush_batch
+    parse_errors     = 0
+    candidates_total = 0
+    candidates_done  = 0
+    window_idx       = 0       # updated by the for-loop, read by maybe_log closure
 
-    pending = []
+    pending     : dict = {}    # future → (filing_meta, ticker)
+    results_buf : list = []    # (filing_meta, parsed, ticker) ready to write
 
-    def maybe_log(force: bool = False):
-        nonlocal last_log_time, stored_since_last_log
+    # ── helpers (closures over the counters above) ────────────────────────────
+
+    def maybe_log(force: bool = False, paginating: bool = False):
+        """
+        paginating=True  → index still being downloaded; candidates_total is growing,
+                           so done/total is misleading and ETA is unknown.
+        paginating=False → index fully consumed; candidates_total is the true window
+                           total and ETA is meaningful.
+        """
+        nonlocal last_log_t
         now = time.time()
-        if not force and (now - last_log_time) < LOG_INTERVAL:
+        if not force and (now - last_log_t) < LOG_INTERVAL:
             return
-        elapsed = now - run_start
-        cand_rate = candidates_done / elapsed if elapsed > 0 else 0
-        remaining = candidates_total - candidates_done
-        eta_str = fmt_elapsed(remaining / cand_rate) if cand_rate > 0 and remaining > 0 else "?"
+        elapsed  = now - run_start
+        rate     = candidates_done / elapsed if elapsed > 0 else 0
+        inflight = candidates_total - candidates_done
+        if paginating:
+            # Total is still growing — show submitted/done/inflight, omit ETA.
+            progress = (
+                f"submitted={candidates_total:,}  done={candidates_done:,}  "
+                f"inflight={inflight:,}  ETA=? [indexing]"
+            )
+        else:
+            remaining = inflight
+            eta = fmt_elapsed(remaining / rate) if rate > 0 and remaining > 0 else "done"
+            progress = f"done={candidates_done:,}/{candidates_total:,}  inflight={inflight:,}  ETA={eta}"
         log(
-            f"[{fmt_elapsed(elapsed)}]  "
-            f"done={candidates_done:,}/{candidates_total:,}  stored={filings_stored:,}  tx={tx_stored:,}  "
-            f"skip_universe={skipped_universe:,}  skip_dup={skipped_duplicate:,}  errors={parse_errors}  "
-            f"rate={cand_rate:.1f}/s  ETA={eta_str}  window={window_idx+1}/{total_windows}"
+            f"[{fmt_elapsed(elapsed)}]  {progress}  "
+            f"stored={filings_stored:,}  tx={tx_stored:,}  "
+            f"skip_uni={skipped_universe:,}  skip_dup={skipped_duplicate:,}  "
+            f"errors={parse_errors}  rate={rate:.1f}/s  window={window_idx+1}/{total_windows}"
         )
-        last_log_time = now
-        stored_since_last_log = 0
+        last_log_t = now
 
-    def flush_batch(batch):
-        nonlocal filings_stored, tx_stored, parse_errors, stored_since_last_log, skipped_duplicate, candidates_done
-        if not batch:
-            return
-        candidates_done += len(batch)
-
-        # Pre-filter: skip accessions already in DB so we don't waste XML fetches.
-        # One query per batch instead of one connection-per-filing for known duplicates.
-        if not args.dry_run:
-            accessions = [fm["accession_number"] for fm, _ in batch]
+    def drain_done():
+        """Non-blocking: collect any futures that have already finished."""
+        nonlocal parse_errors, candidates_done
+        done = [f for f in list(pending) if f.done()]
+        for fut in done:
+            fm, tk = pending.pop(fut)
+            candidates_done += 1
             try:
-                with get_conn() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT accession_number FROM form4_filings WHERE accession_number = ANY(%s)",
-                            (accessions,)
-                        )
-                        already_stored = {r[0] for r in cur.fetchall()}
-                n_skip = sum(1 for fm, _ in batch if fm["accession_number"] in already_stored)
-                if n_skip:
-                    batch = [(fm, tk) for fm, tk in batch if fm["accession_number"] not in already_stored]
-                    skipped_duplicate += n_skip
-            except Exception:
-                pass  # if pre-filter fails, proceed — ON CONFLICT makes it safe
-
-        if not batch:
-            maybe_log()
-            return
-
-        # Fetch XMLs in parallel (pure I/O — no DB touches in worker threads)
-        results = []
-        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-            futures = {
-                pool.submit(fetch_and_parse, fm, BACKFILL_RATE): (fm, tk)
-                for fm, tk in batch
-            }
-            for future in as_completed(futures):
-                fm, tk = futures[future]
-                try:
-                    result = future.result()
-                except Exception:
-                    parse_errors += 1
-                    continue
+                result = fut.result()
                 if result is None:
                     parse_errors += 1
-                    continue
-                results.append((result[0], result[1], tk))
+                else:
+                    results_buf.append((result[0], result[1], tk))
+            except Exception:
+                parse_errors += 1
+
+    def drain_all():
+        """Blocking: wait for every currently-pending future to finish."""
+        nonlocal parse_errors, candidates_done
+        futs = list(pending.keys())
+        for fut in as_completed(futs):
+            fm, tk = pending.pop(fut, (None, None))
+            if fm is None:
+                continue
+            candidates_done += 1
+            try:
+                result = fut.result()
+                if result is None:
+                    parse_errors += 1
+                else:
+                    results_buf.append((result[0], result[1], tk))
+            except Exception:
+                parse_errors += 1
+            maybe_log(paginating=False)
+
+    def flush():
+        """Write results_buf to DB in one connection, then clear it. Main thread only."""
+        nonlocal filings_stored, tx_stored, skipped_duplicate
+        if not results_buf:
+            return
 
         if args.dry_run:
-            for filing_meta, parsed, tk in results:
+            for filing_meta, parsed, tk in results_buf:
                 issuer = parsed.get("issuer", {})
-                owner = parsed.get("owner", {})
+                owner  = parsed.get("owner", {})
                 ticker = _clean_ticker(issuer.get("ticker") or tk) or ""
                 log(f"  [DRY] {ticker} | {owner.get('name')} ({owner.get('role_category')}) "
                     f"| {len(parsed['transactions'])} tx | {filing_meta.get('filed_date')}")
                 filings_stored += 1
-            maybe_log()
+            results_buf.clear()
             return
 
-        # Write all results in a single DB connection (one round-trip cost for the batch)
-        if results:
-            try:
-                with get_conn() as conn:
-                    with conn.cursor() as cur:
-                        for filing_meta, parsed, tk in results:
-                            issuer = parsed.get("issuer", {})
-                            owner = parsed.get("owner", {})
-                            raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
-                            cik = issuer.get("cik") or raw_cik
-                            ticker = _clean_ticker(issuer.get("ticker") or tk) or ""
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    for filing_meta, parsed, tk in results_buf:
+                        issuer  = parsed.get("issuer", {})
+                        owner   = parsed.get("owner", {})
+                        raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
+                        cik     = issuer.get("cik") or raw_cik
+                        ticker  = _clean_ticker(issuer.get("ticker") or tk) or ""
 
-                            cur.execute(
-                                "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
-                                "ON CONFLICT (cik) DO UPDATE SET ticker=EXCLUDED.ticker, name=EXCLUDED.name",
-                                (cik, ticker.upper() if ticker else None, issuer.get("name", ""))
+                        cur.execute(
+                            "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
+                            "ON CONFLICT (cik) DO UPDATE SET ticker=EXCLUDED.ticker, name=EXCLUDED.name",
+                            (cik, ticker.upper() if ticker else None, issuer.get("name", "")),
+                        )
+                        cur.execute(
+                            "INSERT INTO form4_filings "
+                            "  (accession_number, cik, filed_date, period_date) "
+                            "VALUES (%s,%s,%s,%s) "
+                            "ON CONFLICT (accession_number) DO NOTHING RETURNING id",
+                            (filing_meta["accession_number"], cik,
+                             filing_meta.get("filed_date") or None,
+                             filing_meta.get("period_date") or None),
+                        )
+                        row = cur.fetchone()
+                        if not row:
+                            skipped_duplicate += 1
+                            continue
+                        filing_id = row[0]
+
+                        tx_rows = [
+                            (
+                                filing_id,
+                                owner.get("name"), owner.get("role_raw"), owner.get("role_category"),
+                                tx.get("transaction_date"), tx.get("transaction_code"),
+                                tx.get("shares"), tx.get("price_per_share"),
+                                tx.get("total_value"), tx.get("shares_after"),
+                                bool(tx.get("is_10b51", False)), bool(tx.get("is_direct", True)),
                             )
-                            cur.execute(
-                                "INSERT INTO form4_filings (accession_number, cik, filed_date, period_date) "
-                                "VALUES (%s,%s,%s,%s) ON CONFLICT (accession_number) DO NOTHING RETURNING id",
-                                (filing_meta["accession_number"], cik,
-                                 filing_meta.get("filed_date") or None,
-                                 filing_meta.get("period_date") or None)
+                            for tx in parsed.get("transactions", [])
+                        ]
+                        if tx_rows:
+                            cur.executemany(
+                                "INSERT INTO transactions "
+                                "  (filing_id, insider_name, insider_role, role_category, "
+                                "   transaction_date, transaction_code, shares, price_per_share, "
+                                "   total_value, shares_after, is_10b51, is_direct) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                                tx_rows,
                             )
-                            row = cur.fetchone()
-                            if not row:
-                                continue
-                            filing_id = row[0]
+                        tx_stored      += len(tx_rows)
+                        filings_stored += 1
+                        codes = sorted({tx.get("transaction_code", "?")
+                                        for tx in parsed.get("transactions", [])})
+                        log_stored(ticker or raw_cik, filing_meta["accession_number"],
+                                   len(tx_rows), codes, filing_meta.get("filed_date", ""))
+        except Exception as e:
+            parse_errors += len(results_buf)
+            log(f"  ERROR writing batch to DB: {e}")
+        results_buf.clear()
 
-                            tx_rows = [
-                                (
-                                    filing_id,
-                                    owner.get("name"), owner.get("role_raw"), owner.get("role_category"),
-                                    tx.get("transaction_date"), tx.get("transaction_code"),
-                                    tx.get("shares"), tx.get("price_per_share"),
-                                    tx.get("total_value"), tx.get("shares_after"),
-                                    bool(tx.get("is_10b51", False)), bool(tx.get("is_direct", True)),
-                                )
-                                for tx in parsed.get("transactions", [])
-                            ]
-                            if tx_rows:
-                                cur.executemany(
-                                    "INSERT INTO transactions (filing_id, insider_name, insider_role, role_category, "
-                                    "transaction_date, transaction_code, shares, price_per_share, total_value, "
-                                    "shares_after, is_10b51, is_direct) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                                    tx_rows
-                                )
-                            tx_stored += len(tx_rows)
-                            filings_stored += 1
-                            stored_since_last_log += 1
-                            codes = sorted({tx.get("transaction_code", "?") for tx in parsed.get("transactions", [])})
-                            log_stored(ticker or raw_cik, filing_meta["accession_number"],
-                                       len(tx_rows), codes, filing_meta.get("filed_date", ""))
-            except Exception as e:
-                parse_errors += len(results)
-                log(f"  ERROR writing batch to DB: {e}")
+    # ── Main processing loop ──────────────────────────────────────────────────
 
-        maybe_log()
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        for window_idx, (ws, we) in enumerate(windows):
+            phase(f"Window {window_idx+1}/{total_windows}: {ws} → {we}")
+            window_total = 0
+            window_cands = 0
 
-    for window_idx, (ws, we) in enumerate(windows):
-        phase(f"Window {window_idx+1}/{total_windows}: {ws} → {we}")
+            # Pre-filter: one cheap DB query to find already-stored accessions for
+            # this window's date range, so we don't waste XML fetches on them.
+            # Bypassed by --force (re-ingest everything).
+            window_stored: set = set()
+            if not args.force and not args.dry_run:
+                try:
+                    with get_conn() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT accession_number FROM form4_filings "
+                                "WHERE filed_date BETWEEN %s AND %s",
+                                (ws, we),
+                            )
+                            window_stored = {r[0] for r in cur.fetchall()}
+                    if window_stored:
+                        log(f"  Pre-filter: {len(window_stored):,} accessions already stored")
+                except Exception as e:
+                    log(f"  Pre-filter query failed ({e}) — relying on ON CONFLICT")
 
-        window_filings = list(fetch_form4_index(ws, we, req_per_sec=BACKFILL_RATE))
-        window_filings.reverse()  # EDGAR returns newest-first; flip to oldest-first
-        window_total = len(window_filings)
+            # Stream the index: submit an XML-fetch future for each candidate as
+            # soon as its index record arrives — no need to wait for the full page
+            # set to download before fetching XMLs.
+            for fm in fetch_form4_index(ws, we, req_per_sec=BACKFILL_RATE):
+                window_total += 1
+                filings_seen += 1
+                raw_cik = fm.get("cik_raw", "").lstrip("0")
+                ticker  = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
+                if not in_universe(ticker, ticker_universe):
+                    skipped_universe += 1
+                    continue
 
-        # Count how many pass the universe filter before touching the network
-        window_candidates = []
-        for fm in window_filings:
-            filings_seen += 1
-            raw_cik = fm.get("cik_raw", "").lstrip("0")
-            ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
-            if not in_universe(ticker, ticker_universe):
-                skipped_universe += 1
-                continue
-            window_candidates.append((fm, ticker))
+                if fm["accession_number"] in window_stored:
+                    skipped_duplicate += 1
+                    continue
 
-        if window_total >= 10000:
-            log("  WARNING: window hit EDGAR 10K cap — some filings may be missing")
-        log(f"  {window_total} filings in index, {len(window_candidates)} pass universe filter — processing...")
-        candidates_total += len(window_candidates)
+                window_cands     += 1
+                candidates_total += 1
+                pending[pool.submit(fetch_and_parse, fm, BACKFILL_RATE)] = (fm, ticker)
 
-        for fm, tk in window_candidates:
-            pending.append((fm, tk))
-            if len(pending) >= BATCH:
-                flush_batch(pending)
-                pending = []
+                # Non-blocking drain: collect any futures that finished while the
+                # index paginator was waiting for its next page.
+                if len(pending) > WORKERS:
+                    drain_done()
 
-        flush_batch(pending)
-        pending = []
-        log(f"  Window {window_idx+1} done.  stored={filings_stored:,}  tx={tx_stored:,}  elapsed={fmt_elapsed(time.time()-run_start)}")
+                # Flush to DB whenever the buffer has enough results.
+                if len(results_buf) >= DB_WRITE_BATCH:
+                    flush()
+
+                maybe_log(paginating=True)
+
+            if window_total >= 10000:
+                log("  WARNING: window hit EDGAR 10K cap — some filings may be missing")
+            log(f"  {window_total} filings in index, {window_cands} passed filter")
+            # candidates_total is now final for this window — switch to ETA-aware logging.
+            maybe_log(force=True, paginating=False)
+
+            # Wait for all XML fetches from this window, then commit to DB.
+            drain_all()
+            flush()
+            log(f"  Window {window_idx+1} done.  stored={filings_stored:,}  "
+                f"tx={tx_stored:,}  elapsed={fmt_elapsed(time.time()-run_start)}")
 
     elapsed = time.time() - run_start
     phase("COMPLETE")
@@ -274,8 +333,14 @@ def main():
     log(f"Skipped:        {skipped_universe:,} (not in universe)")
     log(f"Duplicates:     {skipped_duplicate:,} (already stored)")
     log(f"Parse errors:   {parse_errors:,}")
-    log(f"Avg rate:       {filings_stored/elapsed:.2f} filings/sec")
+    if elapsed > 0:
+        log(f"Avg rate:       {filings_stored / elapsed:.2f} filings/sec")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        print(f"FATAL ERROR:\n{traceback.format_exc()}")
+        sys.exit(1)

@@ -78,7 +78,7 @@ def _get_primary_doc(filer_cik: str, accession_number: str, req_per_sec: float =
             _throttle(req_per_sec)
             resp = requests.get(
                 f"{EDGAR_SUBMISSIONS}/CIK{cik_padded}.json",
-                headers=HEADERS, timeout=5,
+                headers=HEADERS, timeout=2,
             )
             resp.raise_for_status()
             data = resp.json()

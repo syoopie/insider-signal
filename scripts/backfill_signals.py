@@ -14,11 +14,21 @@ called because current prices do not represent historical cap tiers.
 Performance: loads all relevant transactions in two bulk queries, then
 processes entirely in memory to avoid per-item round trips to Neon.
 
+Flags:
+  --days N         Backfill last N days from today (default: 365).
+  --start / --end  Explicit date range instead of --days.
+  --dry-run        Score and log without writing anything to the database.
+                   Use this to preview what would be written before committing.
+  --force          Overwrite signals that already exist in the signals table
+                   (same ticker + signal_date). Without --force, existing rows
+                   are skipped so the script is safe to re-run incrementally.
+                   Use --force after re-scoring rule changes or to repair data.
+
 Usage:
   python3 scripts/backfill_signals.py --days 90
   python3 scripts/backfill_signals.py --start 2024-01-01 --end 2024-12-31
   python3 scripts/backfill_signals.py --days 365 --dry-run
-  python3 scripts/backfill_signals.py --days 365 --force   # overwrite existing signals
+  python3 scripts/backfill_signals.py --days 365 --force
 """
 
 from __future__ import annotations

@@ -68,8 +68,8 @@ st.caption("Signals derived from SEC Form 4 insider purchase disclosures.")
 
 # --- Sidebar filters ---
 st.sidebar.header("Filters")
-lookback_days = st.sidebar.slider("Signal lookback (days)", 7, 90, 30)
-min_score = st.sidebar.slider("Minimum score", 0, 100, 45)
+lookback_days = st.sidebar.slider("Signal lookback (days)", 7, 90, 14)
+min_score = st.sidebar.slider("Minimum score", 0, 100, 60)
 signal_types = st.sidebar.multiselect(
     "Signal types",
     ["CLUSTER_BUY", "BUY", "WATCH"],
