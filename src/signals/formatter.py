@@ -4,8 +4,11 @@ Every signal surfaced to the user includes full reasoning — no signal
 appears without the evidence that generated it.
 """
 
+from collections import defaultdict
 from datetime import date
 from typing import Optional
+
+_ROLE_PRIORITY = {"cfo": 0, "ceo": 1, "chairman": 2, "director": 3, "coo": 4, "officer": 5, "other": 6}
 
 
 RESEARCH_REFS = {
@@ -71,31 +74,48 @@ def build_evidence(
     if cluster_info.get("is_cluster"):
         research_basis.append(RESEARCH_REFS["cluster"])
 
-    # Build per-insider summary from scored transactions (7-day window)
+    # Build per-insider summary — aggregate multiple purchases by same person
+    by_name = defaultdict(list)
+    for tx in transactions:
+        by_name[tx.get("owner", {}).get("name", "Unknown")].append(tx)
+
     insider_summaries = []
     scored_names = set()
-    for tx in transactions:
-        owner = tx.get("owner", {})
-        t = tx.get("transaction", {})
-        name = owner.get("name", "Unknown")
+    for name, txs in by_name.items():
         scored_names.add(name)
-        shares_before = (t.get("shares_after") or 0) - (t.get("shares") or 0)
-        pct_increase = None
-        if shares_before and shares_before > 0:
-            pct_increase = (t.get("shares") or 0) / shares_before * 100
-
+        best_role = min(
+            (tx.get("owner", {}).get("role_category", "other") for tx in txs),
+            key=lambda r: _ROLE_PRIORITY.get(r, 99),
+        )
+        role_raw = next(
+            (tx.get("owner", {}).get("role_raw", "") for tx in txs if tx.get("owner", {}).get("role_raw")),
+            "",
+        )
+        t_list = [tx.get("transaction", {}) for tx in txs]
+        total_shares = sum(float(t.get("shares") or 0) for t in t_list)
+        total_value  = sum(float(t.get("total_value") or 0) for t in t_list)
+        pw = [(float(t.get("price_per_share") or 0), float(t.get("shares") or 0)) for t in t_list]
+        pw = [(p, s) for p, s in pw if p > 0 and s > 0]
+        avg_price = sum(p * s for p, s in pw) / sum(s for _, s in pw) if pw else None
+        most_recent = max(t_list, key=lambda t: str(t.get("transaction_date") or ""))
+        shares_after = most_recent.get("shares_after")
+        shares_before = float(shares_after or 0) - total_shares
+        pct_increase = (total_shares / shares_before * 100) if shares_before > 0 else None
+        dates = sorted(str(t.get("transaction_date") or "") for t in t_list if t.get("transaction_date"))
         insider_summaries.append({
             "name": name,
-            "role": owner.get("role_category", "other").upper(),
-            "role_raw": owner.get("role_raw", ""),
-            "shares_bought": t.get("shares"),
-            "price": t.get("price_per_share"),
-            "total_value": t.get("total_value"),
-            "shares_after": t.get("shares_after"),
+            "role": best_role.upper(),
+            "role_raw": role_raw,
+            "shares_bought": total_shares,
+            "price": avg_price,
+            "total_value": total_value,
+            "shares_after": shares_after,
             "pct_increase": pct_increase,
-            "transaction_date": t.get("transaction_date"),
-            "is_10b51": t.get("is_10b51", False),
+            "transaction_date": most_recent.get("transaction_date"),
+            "is_10b51": False,
             "in_scoring_window": True,
+            "purchase_count": len(txs),
+            "date_range": (dates[0], dates[-1]) if len(dates) > 1 else None,
         })
 
     # For cluster signals: also include buyers from the 14-day window who
@@ -167,23 +187,30 @@ def format_telegram_message(evidence: dict) -> str:
     lines.append("")
 
     # Cluster header
+    insiders = e.get("insiders", [])
     if cluster.get("is_cluster"):
         n = cluster.get("insider_count", 0)
-        lines.append(f"<b>👥 {n} insiders bought in {CLUSTER_WINDOW_DAYS_DISPLAY} days</b>")
+        total_spent = sum(float(ins.get("total_value") or 0) for ins in insiders)
+        lines.append(f"<b>👥 {n} insiders · {fmt_currency(total_spent)} total</b>")
     else:
         lines.append("<b>👤 Insider purchase</b>")
 
     # Buyer list
-    insiders = e.get("insiders", [])
     for ins in insiders:
         name = ins.get("name", "Unknown")
         role = (ins.get("role_raw") or ins.get("role") or "").title()
         val = fmt_currency(ins.get("total_value"))
-        price = f"${ins.get('price'):.2f}" if ins.get("price") else "N/A"
         shares = f"{int(ins.get('shares_bought') or 0):,}"
         note = " <i>(earlier)</i>" if not ins.get("in_scoring_window", True) else ""
-        lines.append(f"  • <b>{name}</b> ({role})")
-        lines.append(f"    {shares} sh @ {price} = {val}{note}")
+        count = ins.get("purchase_count", 1)
+        count_str = f" · {count}×" if count > 1 else ""
+        if ins.get("price"):
+            price_label = "avg" if count > 1 else "@"
+            price_str = f" {price_label} ${ins['price']:.2f}"
+        else:
+            price_str = ""
+        lines.append(f"  • <b>{name}</b> ({role}){count_str}")
+        lines.append(f"    {shares} sh{price_str} = {val}{note}")
 
     lines.append("")
 
@@ -213,5 +240,3 @@ def format_telegram_message(evidence: dict) -> str:
 
     return "\n".join(lines)
 
-
-CLUSTER_WINDOW_DAYS_DISPLAY = 14

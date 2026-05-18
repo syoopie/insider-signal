@@ -136,12 +136,14 @@ def score_transaction(
 
 
 def classify_signal(score: int, cluster_flag: bool) -> str:
-    if cluster_flag:
+    if cluster_flag and score >= 50:
         return "CLUSTER_BUY"
     if score >= 65:
         return "BUY"
     if score >= 45:
         return "WATCH"
+    if cluster_flag:
+        return "WATCH"  # weak cluster: save for dashboard but don't alert
     return "LOW"
 
 
