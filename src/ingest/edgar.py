@@ -167,7 +167,7 @@ def fetch_filing_xml(accession_number: str, filer_cik: str, req_per_sec: float =
     if primary_doc:
         _throttle(req_per_sec)
         try:
-            resp = requests.get(f"{base_dir}/{primary_doc}", headers=HEADERS, timeout=30)
+            resp = requests.get(f"{base_dir}/{primary_doc}", headers=HEADERS, timeout=15)
             if resp.status_code == 200 and resp.text.strip().startswith("<?xml") or "<ownershipDocument" in resp.text[:500]:
                 return resp.text
         except requests.RequestException:
@@ -177,12 +177,12 @@ def fetch_filing_xml(accession_number: str, filer_cik: str, req_per_sec: float =
     for index_suffix in [f"{accession_number}-index.htm", f"{accession_number}-index.html"]:
         _throttle(req_per_sec)
         try:
-            resp = requests.get(f"{base_dir}/{index_suffix}", headers=HEADERS, timeout=30)
+            resp = requests.get(f"{base_dir}/{index_suffix}", headers=HEADERS, timeout=15)
             if resp.status_code == 200:
                 matches = re.findall(r'href="[^"]*?/([^"/?]+\.xml)"', resp.text, re.IGNORECASE)
                 if matches:
                     _throttle(req_per_sec)
-                    resp2 = requests.get(f"{base_dir}/{matches[0]}", headers=HEADERS, timeout=30)
+                    resp2 = requests.get(f"{base_dir}/{matches[0]}", headers=HEADERS, timeout=15)
                     if resp2.status_code == 200 and resp2.text.strip().startswith("<"):
                         return resp2.text
                     break

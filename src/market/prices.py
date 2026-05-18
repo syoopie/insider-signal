@@ -3,9 +3,28 @@ Market data helpers using yfinance (free, no API key needed).
 Used for: market cap classification, 52-week low detection, price lookups.
 """
 
+import time
+import logging
+import functools
 import yfinance as yf
 from datetime import date, timedelta
 from typing import Optional
+
+# Suppress yfinance/urllib3 chatter — 429s are handled gracefully, no need to print them
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+logging.getLogger("urllib3").setLevel(logging.CRITICAL)
+logging.getLogger("peewee").setLevel(logging.CRITICAL)
+
+_yf_last_call = 0.0
+_YF_MIN_GAP = 0.5  # seconds between yfinance calls — Yahoo rate limit is ~2 req/sec
+
+
+def _yf_throttle():
+    global _yf_last_call
+    gap = time.time() - _yf_last_call
+    if gap < _YF_MIN_GAP:
+        time.sleep(_YF_MIN_GAP - gap)
+    _yf_last_call = time.time()
 
 
 def get_cap_tier(market_cap: Optional[int]) -> str:
@@ -18,11 +37,14 @@ def get_cap_tier(market_cap: Optional[int]) -> str:
     return "large"
 
 
+@functools.lru_cache(maxsize=1024)
 def get_market_data(ticker: str) -> dict:
     """
     Returns {market_cap, cap_tier, price_52wk_low, current_price} or empty dict on failure.
+    Results are cached per ticker for the lifetime of the process (one ingest run).
     """
     try:
+        _yf_throttle()
         info = yf.Ticker(ticker).info
         market_cap = info.get("marketCap")
         low_52wk = info.get("fiftyTwoWeekLow")

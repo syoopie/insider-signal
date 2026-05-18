@@ -118,7 +118,7 @@ def main():
 
     # --- Signal scoring ---
     print("Running signal scoring...")
-    recent_date = today - timedelta(days=2)
+    recent_date = today - timedelta(days=7)
     tickers_to_score = get_tickers_with_recent_purchases(recent_date)
     print(f"Tickers with recent purchases: {len(tickers_to_score)}")
 

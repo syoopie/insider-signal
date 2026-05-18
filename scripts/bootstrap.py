@@ -25,16 +25,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.ingest.edgar import fetch_form4_index, fetch_filing_xml, fetch_cik_ticker_map
 from src.ingest.parser import parse_form4
-from src.ingest.store import (
-    upsert_company, insert_filing, insert_transactions,
-    get_last_filed_date,
-)
+from src.ingest.store import get_last_filed_date
 from typing import Set, Optional, Tuple
-from src.db.connection import apply_schema
+from src.db.connection import apply_schema, get_conn
 
 BACKFILL_RATE = 8.0   # req/sec — shared across all threads; EDGAR limit is 10
 WORKERS = 4           # concurrent XML fetch threads
 LOG_INTERVAL = 30     # print a status line every N seconds
+BATCH = 40            # filings per flush (larger = fewer pre-filter round-trips)
 
 
 def load_ticker_universe() -> Set[str]:
@@ -123,7 +121,6 @@ def main():
     parse_errors = 0
     stored_since_last_log = 0
 
-    BATCH = 20
     pending = []
 
     def maybe_log(force: bool = False):
@@ -146,6 +143,32 @@ def main():
         nonlocal filings_stored, tx_stored, parse_errors, stored_since_last_log
         if not batch:
             return
+
+        # Pre-filter: skip accessions already in DB so we don't waste XML fetches.
+        # One query per batch instead of one connection-per-filing for known duplicates.
+        if not args.dry_run:
+            accessions = [fm["accession_number"] for fm, _ in batch]
+            try:
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT accession_number FROM form4_filings WHERE accession_number = ANY(%s)",
+                            (accessions,)
+                        )
+                        already_stored = {r[0] for r in cur.fetchall()}
+                n_skip = sum(1 for fm, _ in batch if fm["accession_number"] in already_stored)
+                if n_skip:
+                    batch = [(fm, tk) for fm, tk in batch if fm["accession_number"] not in already_stored]
+                    print(f"   (skipped {n_skip} already-stored filings in this batch)")
+            except Exception:
+                pass  # if pre-filter fails, proceed — ON CONFLICT makes it safe
+
+        if not batch:
+            maybe_log()
+            return
+
+        # Fetch XMLs in parallel (pure I/O — no DB touches in worker threads)
+        results = []
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures = {
                 pool.submit(fetch_and_parse, fm, BACKFILL_RATE): (fm, tk)
@@ -155,37 +178,78 @@ def main():
                 fm, tk = futures[future]
                 try:
                     result = future.result()
-                except Exception as e:
+                except Exception:
                     parse_errors += 1
                     continue
                 if result is None:
                     parse_errors += 1
                     continue
+                results.append((result[0], result[1], tk))
 
-                filing_meta, parsed = result
+        if args.dry_run:
+            for filing_meta, parsed, tk in results:
                 issuer = parsed.get("issuer", {})
                 owner = parsed.get("owner", {})
-                raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
-                cik = issuer.get("cik") or raw_cik
                 ticker = issuer.get("ticker") or tk
-
-                if args.dry_run:
-                    print(f"  [DRY] {ticker} | {owner.get('name')} ({owner.get('role_category')}) "
-                          f"| {len(parsed['transactions'])} tx | {filing_meta.get('filed_date')}")
-                    filings_stored += 1
-                    continue
-
-                upsert_company(cik, ticker, issuer.get("name", ""))
-                filing_id = insert_filing(
-                    filing_meta["accession_number"], cik,
-                    filing_meta.get("filed_date"), filing_meta.get("period_date"),
-                )
-                if filing_id is None:
-                    continue
-                n = insert_transactions(filing_id, owner, parsed["transactions"])
-                tx_stored += n
+                print(f"  [DRY] {ticker} | {owner.get('name')} ({owner.get('role_category')}) "
+                      f"| {len(parsed['transactions'])} tx | {filing_meta.get('filed_date')}")
                 filings_stored += 1
-                stored_since_last_log += 1
+            maybe_log()
+            return
+
+        # Write all results in a single DB connection (one round-trip cost for the batch)
+        if results:
+            try:
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        for filing_meta, parsed, tk in results:
+                            issuer = parsed.get("issuer", {})
+                            owner = parsed.get("owner", {})
+                            raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
+                            cik = issuer.get("cik") or raw_cik
+                            ticker = issuer.get("ticker") or tk
+
+                            cur.execute(
+                                "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
+                                "ON CONFLICT (cik) DO UPDATE SET ticker=EXCLUDED.ticker, name=EXCLUDED.name",
+                                (cik, ticker.upper() if ticker else None, issuer.get("name", ""))
+                            )
+                            cur.execute(
+                                "INSERT INTO form4_filings (accession_number, cik, filed_date, period_date) "
+                                "VALUES (%s,%s,%s,%s) ON CONFLICT (accession_number) DO NOTHING RETURNING id",
+                                (filing_meta["accession_number"], cik,
+                                 filing_meta.get("filed_date") or None,
+                                 filing_meta.get("period_date") or None)
+                            )
+                            row = cur.fetchone()
+                            if not row:
+                                continue
+                            filing_id = row[0]
+
+                            tx_rows = [
+                                (
+                                    filing_id,
+                                    owner.get("name"), owner.get("role_raw"), owner.get("role_category"),
+                                    tx.get("transaction_date"), tx.get("transaction_code"),
+                                    tx.get("shares"), tx.get("price_per_share"),
+                                    tx.get("total_value"), tx.get("shares_after"),
+                                    bool(tx.get("is_10b51", False)), bool(tx.get("is_direct", True)),
+                                )
+                                for tx in parsed.get("transactions", [])
+                            ]
+                            if tx_rows:
+                                cur.executemany(
+                                    "INSERT INTO transactions (filing_id, insider_name, insider_role, role_category, "
+                                    "transaction_date, transaction_code, shares, price_per_share, total_value, "
+                                    "shares_after, is_10b51, is_direct) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                                    tx_rows
+                                )
+                            tx_stored += len(tx_rows)
+                            filings_stored += 1
+                            stored_since_last_log += 1
+            except Exception as e:
+                parse_errors += len(results)
+                print(f"   ERROR writing batch to DB: {e}")
 
         maybe_log()
 

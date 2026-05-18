@@ -48,7 +48,7 @@ def send_signal(evidence: dict) -> bool:
     return _send(msg)
 
 
-def send_error(error: Exception | str, context: str = "daily ingest") -> bool:
+def send_error(error, context: str = "daily ingest") -> bool:
     today = date.today().isoformat()
     msg = f"⚠️ <b>Pipeline failure</b> [{today}]\n\n<b>Job:</b> {context}\n<b>Error:</b> {str(error)}"
     return _send(msg)
