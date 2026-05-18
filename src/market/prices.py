@@ -108,7 +108,7 @@ def get_market_data(ticker: str) -> dict:
             f"{_YF_CHART_URL}/{ticker}",
             params={"interval": "1d", "range": "1y"},
             headers=_YF_HEADERS,
-            timeout=8,
+            timeout=4,
         )
         if resp.status_code != 200:
             _cache[ticker] = {}

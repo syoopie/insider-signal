@@ -147,10 +147,6 @@ def main():
 
         upsert_company(cik, ticker, issuer.get("name", ""))
 
-        mdata = get_market_data(ticker) if ticker else {}
-        if mdata:
-            update_company_market_data(cik, mdata.get("market_cap"), mdata.get("cap_tier"))
-
         filing_id = insert_filing(
             filing_meta["accession_number"], cik,
             filing_meta.get("filed_date"), filing_meta.get("period_date"),
@@ -164,9 +160,8 @@ def main():
         filings_stored += 1
 
         codes = sorted({t.get("transaction_code", "?") for t in parsed["transactions"]})
-        cap = mdata.get("cap_tier", "?") if mdata else "?"
         log_stored(ticker or raw_cik, filing_meta["accession_number"],
-                   len(parsed["transactions"]), codes, filing_meta.get("filed_date", ""), cap)
+                   len(parsed["transactions"]), codes, filing_meta.get("filed_date", ""))
 
     elapsed_ingest = time.time() - t0
     _log(f"Ingest complete in {fmt_elapsed(elapsed_ingest)}")
@@ -194,7 +189,7 @@ def main():
         with get_conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT t.*, f.filed_date, c.cap_tier, c.name as company_name
+                    SELECT t.*, f.filed_date, c.cik, c.cap_tier, c.name as company_name
                     FROM transactions t
                     JOIN form4_filings f ON f.id = t.filing_id
                     JOIN companies c ON c.cik = f.cik
@@ -220,6 +215,9 @@ def main():
 
         if not tx_rows:
             continue
+
+        if mdata:
+            update_company_market_data(tx_rows[0].get("cik"), mdata.get("market_cap"), mdata.get("cap_tier"))
 
         scored_txs = []
         aggregate_score = 0
