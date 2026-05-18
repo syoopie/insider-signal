@@ -42,16 +42,24 @@ def get_market_data(ticker: str) -> dict:
     """
     Returns {market_cap, cap_tier, price_52wk_low, current_price} or empty dict on failure.
     Results are cached per ticker for the lifetime of the process (one ingest run).
+
+    Uses fast_info (chart endpoint) instead of info (quoteSummary endpoint).
+    quoteSummary requires a session crumb that expires and returns HTTP 200 with
+    an error JSON body on failure — no exception raised, just silent null values.
+    fast_info uses the chart API which is crumb-free and consistently returns data.
     """
     try:
         _yf_throttle()
-        info = yf.Ticker(ticker).info
-        market_cap = info.get("marketCap")
-        low_52wk = info.get("fiftyTwoWeekLow")
-        current = info.get("currentPrice") or info.get("regularMarketPrice")
+        fi = yf.Ticker(ticker).fast_info
+        market_cap = getattr(fi, "market_cap", None)
+        low_52wk = getattr(fi, "year_low", None)      # fast_info uses year_low not fiftyTwoWeekLow
+        current = getattr(fi, "last_price", None)
+        cap_int = int(market_cap) if market_cap is not None else None
+        if cap_int is None and low_52wk is None and current is None:
+            return {}
         return {
-            "market_cap": market_cap,
-            "cap_tier": get_cap_tier(market_cap),
+            "market_cap": cap_int,
+            "cap_tier": get_cap_tier(cap_int),
             "price_52wk_low": low_52wk,
             "current_price": current,
         }
