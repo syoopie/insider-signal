@@ -3,9 +3,25 @@ DB persistence layer for Form 4 filings and transactions.
 All inserts are idempotent — safe to re-run on the same data.
 """
 
-from datetime import date
+import json
+import decimal
+from datetime import date, datetime
 from typing import Optional, Tuple, List
 from src.db.connection import get_conn
+
+
+class _JSONEncoder(json.JSONEncoder):
+    """Handles types that come out of psycopg2 rows: Decimal, date, datetime."""
+    def default(self, o):
+        if isinstance(o, decimal.Decimal):
+            return float(o)
+        if isinstance(o, (date, datetime)):
+            return o.isoformat()
+        return super().default(o)
+
+
+def _dumps(obj) -> str:
+    return json.dumps(obj, cls=_JSONEncoder)
 
 
 def upsert_company(cik: str, ticker: str, name: str) -> None:
@@ -115,8 +131,8 @@ def save_signal(ticker: str, signal_date: date, score: int, signal_type: str,
                 RETURNING id
                 """,
                 (ticker, signal_date, score, signal_type, cluster_flag,
-                 __import__("json").dumps(score_breakdown),
-                 __import__("json").dumps(evidence)),
+                 _dumps(score_breakdown),
+                 _dumps(evidence)),
             )
             return cur.fetchone()[0]
 

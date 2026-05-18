@@ -221,7 +221,7 @@ def main():
                 "role_category": tx_row.get("role_category"),
             }
             prior_for_insider = [p for p in all_prior if p.get("insider_name") == owner["name"]]
-            company = {"cap_tier": tx_row.get("cap_tier")}
+            company = {"cap_tier": tx_row.get("cap_tier") or (mdata.get("cap_tier") if mdata else None)}
 
             result = score_transaction(tx_row, owner, company, mdata, prior_for_insider)
             if result and result.get("eligible"):
@@ -239,8 +239,9 @@ def main():
         signal_type = classify_signal(aggregate_score, is_cluster)
 
         cluster_tag = f" CLUSTER({cluster_n})" if is_cluster else ""
+        effective_cap = (tx_rows[0].get("cap_tier") or mdata.get("cap_tier") or "unknown") if mdata else (tx_rows[0].get("cap_tier") or "unknown")
         _log(f"  {ticker:<6}  score={aggregate_score:>3}  {signal_type}{cluster_tag}  "
-             f"cap={tx_rows[0].get('cap_tier','?')}  buyers={len(scored_txs)}")
+             f"cap={effective_cap}  buyers={len(scored_txs)}")
 
         if signal_type == "LOW":
             n_low += 1
