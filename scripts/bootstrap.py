@@ -46,7 +46,7 @@ print(f"Logging to {_log_path}")
 
 from src.ingest.edgar import fetch_form4_index, fetch_filing_xml, fetch_cik_ticker_map
 from src.ingest.parser import parse_form4
-from src.ingest.store import get_last_filed_date
+from src.ingest.store import get_last_filed_date, _clean_ticker
 from typing import Set, Optional, Tuple
 from src.db.connection import apply_schema, get_conn
 
@@ -211,7 +211,7 @@ def main():
             for filing_meta, parsed, tk in results:
                 issuer = parsed.get("issuer", {})
                 owner = parsed.get("owner", {})
-                ticker = issuer.get("ticker") or tk
+                ticker = _clean_ticker(issuer.get("ticker") or tk) or ""
                 print(f"  [DRY] {ticker} | {owner.get('name')} ({owner.get('role_category')}) "
                       f"| {len(parsed['transactions'])} tx | {filing_meta.get('filed_date')}")
                 filings_stored += 1
@@ -228,7 +228,7 @@ def main():
                             owner = parsed.get("owner", {})
                             raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
                             cik = issuer.get("cik") or raw_cik
-                            ticker = issuer.get("ticker") or tk
+                            ticker = _clean_ticker(issuer.get("ticker") or tk) or ""
 
                             cur.execute(
                                 "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
