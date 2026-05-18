@@ -276,8 +276,7 @@ def main():
                                 (ws, we),
                             )
                             window_stored = {r[0] for r in cur.fetchall()}
-                    if window_stored:
-                        log(f"  Pre-filter: {len(window_stored):,} accessions already stored")
+                    log(f"  Pre-filter: {len(window_stored):,} accessions already stored")
                 except Exception as e:
                     log(f"  Pre-filter query failed ({e}) — relying on ON CONFLICT")
 
