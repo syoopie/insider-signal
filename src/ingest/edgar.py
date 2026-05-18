@@ -9,6 +9,7 @@ import re
 import time
 import threading
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Iterator, Optional, Dict
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -101,18 +102,44 @@ def _get_primary_doc(filer_cik: str, accession_number: str, req_per_sec: float =
         return _submissions_cache[cik_padded].get(acc_no_dashes)
 
 
-def fetch_form4_index(start_date: date, end_date: date = None, req_per_sec: float = 8.0) -> Iterator[dict]:
+def _parse_index_hit(hit: dict) -> dict:
+    src = hit.get("_source", {})
+    ciks = src.get("ciks", [])
+    filer_cik = ciks[0].lstrip("0") if ciks else ""
+    issuer_cik = ciks[-1].lstrip("0") if len(ciks) > 1 else filer_cik
+    display_names = src.get("display_names", [])
+    entity_name = display_names[-1].split("(CIK")[0].strip() if display_names else ""
+    return {
+        "accession_number": src.get("adsh", ""),
+        "cik_raw": issuer_cik,
+        "filer_cik": filer_cik,
+        "entity_name": entity_name,
+        "filed_date": src.get("file_date", ""),
+        "period_date": src.get("period_ending", ""),
+    }
+
+
+def fetch_form4_index(
+    start_date: date,
+    end_date: date = None,
+    req_per_sec: float = 8.0,
+    index_workers: int = 1,
+) -> Iterator[dict]:
     """
     Yield filing index records for all Form 4s in the date range.
     Each record has: accession_number, cik_raw, filer_cik, entity_name, filed_date, period_date.
+
+    index_workers > 1 fetches all pages after the first in parallel, sharing the
+    same global rate limiter. Speeds up re-runs where XML fetches are mostly
+    skipped and index pagination is the bottleneck. For daily ingest (few pages)
+    leave at 1.
     """
     if end_date is None:
         end_date = date.today()
 
     page_size = 100
-    offset = 0
 
-    while True:
+    def _fetch_page(offset: int) -> list:
         params = {
             "forms": "4",
             "dateRange": "custom",
@@ -121,32 +148,46 @@ def fetch_form4_index(start_date: date, end_date: date = None, req_per_sec: floa
             "from": offset,
             "size": page_size,
         }
-        data = _get(EDGAR_BASE, params=params, req_per_sec=req_per_sec)
-        hits = data.get("hits", {}).get("hits", [])
-        if not hits:
-            break
+        return _get(EDGAR_BASE, params=params, req_per_sec=req_per_sec).get("hits", {}).get("hits", [])
 
-        for hit in hits:
-            src = hit.get("_source", {})
-            accession = src.get("adsh", "")
-            ciks = src.get("ciks", [])
-            filer_cik = ciks[0].lstrip("0") if ciks else ""
-            issuer_cik = ciks[-1].lstrip("0") if len(ciks) > 1 else filer_cik
-            display_names = src.get("display_names", [])
-            entity_name = display_names[-1].split("(CIK")[0].strip() if display_names else ""
-            yield {
-                "accession_number": accession,
-                "cik_raw": issuer_cik,
-                "filer_cik": filer_cik,
-                "entity_name": entity_name,
-                "filed_date": src.get("file_date", ""),
-                "period_date": src.get("period_ending", ""),
-            }
+    # Fetch page 0 with full response to learn the total count.
+    first_params = {
+        "forms": "4",
+        "dateRange": "custom",
+        "startdt": start_date.isoformat(),
+        "enddt": end_date.isoformat(),
+        "from": 0,
+        "size": page_size,
+    }
+    first_data = _get(EDGAR_BASE, params=first_params, req_per_sec=req_per_sec)
+    total = first_data.get("hits", {}).get("total", {}).get("value", 0)
+    first_hits = first_data.get("hits", {}).get("hits", [])
 
-        offset += page_size
-        total = data.get("hits", {}).get("total", {}).get("value", 0)
-        if offset >= total:
-            break
+    for hit in first_hits:
+        yield _parse_index_hit(hit)
+
+    if total <= page_size:
+        return
+
+    remaining_offsets = range(page_size, total, page_size)
+
+    if index_workers <= 1:
+        # Sequential fallback (original behaviour).
+        for offset in remaining_offsets:
+            for hit in _fetch_page(offset):
+                yield _parse_index_hit(hit)
+    else:
+        # Parallel: submit all remaining pages at once; yield as each completes.
+        # All requests still compete for the shared global rate limiter.
+        n_workers = min(index_workers, len(remaining_offsets))
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_fetch_page, off): off for off in remaining_offsets}
+            for fut in as_completed(futures):
+                try:
+                    for hit in fut.result():
+                        yield _parse_index_hit(hit)
+                except Exception:
+                    pass  # single page failure — skip and continue
 
 
 def fetch_filing_xml(accession_number: str, filer_cik: str, req_per_sec: float = 8.0) -> Optional[str]:

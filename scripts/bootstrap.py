@@ -51,6 +51,7 @@ log(f"Logging to {log_path}")
 
 BACKFILL_RATE  = 9.0   # req/sec — shared across all threads; EDGAR limit is 10
 WORKERS        = 32    # concurrent XML-fetch threads; saturates 9 req/s at ~3-4s latency
+INDEX_WORKERS  = 16    # concurrent index page fetches within one window; shares BACKFILL_RATE
 LOG_INTERVAL   = 30    # seconds between status lines
 DB_WRITE_BATCH = 50    # flush results to DB after accumulating this many
 
@@ -290,7 +291,7 @@ def main():
             # Stream the index: submit an XML-fetch future for each candidate as
             # soon as its index record arrives — no need to wait for the full page
             # set to download before fetching XMLs.
-            for fm in fetch_form4_index(ws, we, req_per_sec=BACKFILL_RATE):
+            for fm in fetch_form4_index(ws, we, req_per_sec=BACKFILL_RATE, index_workers=INDEX_WORKERS):
                 window_total += 1
                 filings_seen += 1
                 raw_cik = fm.get("cik_raw", "").lstrip("0")
