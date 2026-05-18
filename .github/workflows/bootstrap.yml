@@ -1,0 +1,65 @@
+name: Bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Number of days to backfill (default: 730 = 2 years)'
+        required: false
+        default: '730'
+      force:
+        description: 'Re-fetch all XML even if already stored (skip pre-filter)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      backfill_signals:
+        description: 'Run backfill_signals after bootstrap completes'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours — enough for a full 2-year backfill
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-ingest.txt
+
+      - name: Run bootstrap
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          ARGS="--days ${{ github.event.inputs.days }}"
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            ARGS="$ARGS --force"
+          fi
+          echo "Running: python scripts/bootstrap.py $ARGS"
+          python scripts/bootstrap.py $ARGS
+
+      - name: Backfill signals
+        if: ${{ github.event.inputs.backfill_signals == 'true' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "Running: python scripts/backfill_signals.py --days ${{ github.event.inputs.days }} --force"
+          python scripts/backfill_signals.py --days ${{ github.event.inputs.days }} --force
