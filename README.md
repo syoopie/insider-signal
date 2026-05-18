@@ -329,11 +329,19 @@ Once pushed, GitHub Actions will automatically start running on schedule. You're
 
 ## Bootstrap: Load Historical Data
 
-The daily ingest only fetches *new* filings (since the last run). To have 2 years of historical data for the backtest engine and dashboard from day one, run the bootstrap script once on your local machine.
+The daily ingest only fetches *new* filings (since the last run). On first run, the database is empty, so the bootstrap script loads historical data to seed it.
+
+**How much history do you need?**
+
+| `--days` | Time to run | What it enables |
+|---|---|---|
+| **14** (recommended to start) | ~5 minutes | Cluster detection works immediately; scoring works; "first purchase in 12+ months" factor will be understated for the first year |
+| **365** | ~1–2 hours | Full annual scoring accuracy |
+| **730** | ~3–5 hours | Full 2-year backtest history in the dashboard |
 
 ```bash
 # Install dependencies (Python 3.9+ required)
-python3.9 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-ingest.txt
 
@@ -341,16 +349,21 @@ pip install -r requirements-ingest.txt
 python scripts/update_tickers.py
 
 # Dry run — verifies everything works, no database writes
-DATABASE_URL="your-direct-connection-string" python scripts/bootstrap.py --dry-run --days 30
+DATABASE_URL="your-direct-connection-string" python scripts/bootstrap.py --dry-run --days 14
 
-# Full 2-year backfill (runs in background; takes 3–5 hours at the safe rate limit)
+# Recommended starting point: 14 days (~5 minutes, enough to start receiving signals today)
+DATABASE_URL="your-direct-connection-string" python scripts/bootstrap.py --days 14
+
+# Optional: full 2-year backfill for the backtest dashboard (runs in background)
 DATABASE_URL="your-direct-connection-string" nohup python -u scripts/bootstrap.py --days 730 > bootstrap.log 2>&1 &
 tail -f bootstrap.log   # watch progress
 ```
 
-> **Why so slow?** The SEC limits API requests to 10 per second. The bootstrap script intentionally runs at 3/sec to avoid triggering IP blocks during the large burst of requests needed to fetch 2 years of history. The daily ingest runs at 8/sec because it only fetches a small number of new filings each day.
+> **Why does the 14-day bootstrap run first?** Cluster detection requires knowing about purchases in the past 14-day window. Without any history, the first few ingest runs would miss cluster signals for purchases that happened before the ingest started. 14 days of seed data is enough for the signal engine to work correctly from day one.
 
-> **Resuming after interruption:** The bootstrap saves progress as it runs. If interrupted, re-running without `--force` will resume from where it left off. Use `--force` to restart from scratch.
+> **Why so slow for long backfills?** The SEC limits API requests to 10 per second. The bootstrap script intentionally runs at 3/sec to avoid triggering IP blocks during large bursts of requests. The daily ingest runs at 8/sec because it only fetches a small number of new filings each day.
+
+> **Resuming after interruption:** If the bootstrap is interrupted, re-running will skip already-stored filings (idempotent inserts). It's safe to re-run at any time.
 
 ---
 
@@ -436,7 +449,9 @@ The current system only scores purchases. Sales are less predictive — insiders
 
 **Q: The bootstrap is taking a long time.**
 
-That's expected. Two years of Form 4 data across 3,500 companies is a lot. At 3 requests/second, it takes 3–5 hours. Let it run in the background (the `nohup` command above handles this). You can monitor progress with `tail -f bootstrap.log`.
+If you ran `--days 730`, that's expected — two years of Form 4 data across 3,500 companies takes 3–5 hours at 3 req/sec. Let it run in the background (`nohup` + `tail -f bootstrap.log`).
+
+If you just want to start receiving signals today, run `--days 14` instead. It finishes in ~5 minutes, seeds enough history for cluster detection and scoring, and the daily ingest keeps the database current from there.
 
 ---
 
