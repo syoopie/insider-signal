@@ -88,6 +88,7 @@ def get_tickers_with_recent_purchases(since_date: date) -> List[str]:
                   AND t.is_10b51 = FALSE
                   AND t.transaction_date >= %s
                   AND c.ticker IS NOT NULL
+                  AND c.ticker NOT IN ('NONE', 'NA', 'N/A', 'NULL', '')
                 """,
                 (since_date,),
             )

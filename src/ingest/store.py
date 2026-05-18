@@ -24,6 +24,17 @@ def _dumps(obj) -> str:
     return json.dumps(obj, cls=_JSONEncoder)
 
 
+_INVALID_TICKERS = {"", "NONE", "NA", "N/A", "NULL"}
+
+
+def _clean_ticker(ticker: str):
+    """Return the ticker uppercased, or None if it's a sentinel/missing value."""
+    if not ticker:
+        return None
+    t = ticker.strip().upper()
+    return None if t in _INVALID_TICKERS else t
+
+
 def upsert_company(cik: str, ticker: str, name: str) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -35,7 +46,7 @@ def upsert_company(cik: str, ticker: str, name: str) -> None:
                     SET ticker = EXCLUDED.ticker,
                         name   = EXCLUDED.name
                 """,
-                (cik, ticker.upper() if ticker else None, name),
+                (cik, _clean_ticker(ticker), name),
             )
 
 

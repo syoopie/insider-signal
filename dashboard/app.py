@@ -21,6 +21,20 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 
+def _fmt_currency(val) -> str:
+    if val is None:
+        return "N/A"
+    try:
+        val = float(val)
+    except (TypeError, ValueError):
+        return "N/A"
+    if val >= 1_000_000:
+        return f"${val/1_000_000:.1f}M"
+    if val >= 1_000:
+        return f"${val/1_000:.0f}K"
+    return f"${val:.2f}"
+
+
 # --- DB connection (pooled for Streamlit) ---
 @st.cache_resource
 def get_db():
@@ -251,17 +265,3 @@ if ticker_input:
                 labels={"price_per_share": "Price ($)", "transaction_date": "Date"},
             )
             st.plotly_chart(fig2, use_container_width=True)
-
-
-def _fmt_currency(val) -> str:
-    if val is None:
-        return "N/A"
-    try:
-        val = float(val)
-    except (TypeError, ValueError):
-        return "N/A"
-    if val >= 1_000_000:
-        return f"${val/1_000_000:.1f}M"
-    if val >= 1_000:
-        return f"${val/1_000:.0f}K"
-    return f"${val:.2f}"
