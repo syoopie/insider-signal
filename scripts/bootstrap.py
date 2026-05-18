@@ -18,58 +18,26 @@ import sys
 import os
 import argparse
 import time
-from datetime import datetime, date, timedelta
+from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# ── Logging setup ─────────────────────────────────────────────────────────────
-_LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "logs")
-os.makedirs(_LOG_DIR, exist_ok=True)
-_log_path = os.path.join(_LOG_DIR, f"bootstrap_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log")
-_log_file = open(_log_path, "w", buffering=1)  # line-buffered
-
-class _Tee:
-    def __init__(self, *streams):
-        self._streams = streams
-    def write(self, data):
-        for s in self._streams:
-            s.write(data)
-    def flush(self):
-        for s in self._streams:
-            s.flush()
-
-sys.stdout = _Tee(sys.__stdout__, _log_file)
-sys.stderr = _Tee(sys.__stderr__, _log_file)
-print(f"Logging to {_log_path}")
-# ──────────────────────────────────────────────────────────────────────────────
-
-from src.ingest.edgar import fetch_form4_index, fetch_filing_xml, fetch_cik_ticker_map
+from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, log_stored
+from src.ingest.edgar import fetch_form4_index, fetch_filing_xml
 from src.ingest.parser import parse_form4
 from src.ingest.store import get_last_filed_date, _clean_ticker
-from typing import Set, Optional, Tuple
+from typing import Optional, Tuple
 from src.db.connection import apply_schema, get_conn
+
+log_path = setup_log_tee("bootstrap")
+log(f"Logging to {log_path}")
 
 BACKFILL_RATE = 9.0   # req/sec — shared across all threads; EDGAR limit is 10
 WORKERS = 8           # concurrent XML fetch threads
 LOG_INTERVAL = 30     # print a status line every N seconds
 BATCH = 100           # filings per flush (larger = fewer pre-filter round-trips)
 
-
-def load_ticker_universe() -> Set[str]:
-    tickers_file = os.path.join(os.path.dirname(__file__), "..", "data", "tickers.txt")
-    if not os.path.exists(tickers_file):
-        print("WARNING: data/tickers.txt not found. Run scripts/update_tickers.py first.")
-        print("Proceeding without universe filter (all issuers).")
-        return set()
-    with open(tickers_file) as f:
-        return {line.strip().upper() for line in f if line.strip()}
-
-
-def fmt_elapsed(seconds: float) -> str:
-    h, rem = divmod(int(seconds), 3600)
-    m, s = divmod(rem, 60)
-    return f"{h}h{m:02d}m{s:02d}s" if h else f"{m}m{s:02d}s"
 
 
 def fetch_and_parse(filing_meta: dict, rate: float) -> Optional[Tuple[dict, dict]]:
@@ -92,20 +60,14 @@ def main():
     args = parser.parse_args()
 
     if not args.dry_run:
-        print("Applying schema...")
+        phase("DB SETUP")
         apply_schema()
+        log("Schema verified")
 
+    phase("UNIVERSE + CIK MAP")
     ticker_universe = load_ticker_universe()
-    print(f"Universe: {len(ticker_universe)} tickers (0 = no filter)")
-
-    print("Fetching CIK → ticker map from SEC...")
-    cik_to_ticker = {}
-    try:
-        ticker_to_cik = fetch_cik_ticker_map(req_per_sec=BACKFILL_RATE)
-        cik_to_ticker = {v: k for k, v in ticker_to_cik.items()}
-        print(f"  Loaded {len(cik_to_ticker)} CIK mappings")
-    except Exception as e:
-        print(f"  CIK map fetch failed: {e}")
+    log(f"Ticker universe: {len(ticker_universe)} tickers loaded")
+    cik_to_ticker = load_cik_map(req_per_sec=BACKFILL_RATE)
 
     end_date = date.today()
     start_date = end_date - timedelta(days=args.days)
@@ -113,7 +75,7 @@ def main():
     if not args.dry_run and not args.force:
         last = get_last_filed_date()
         if last and last > start_date:
-            print(f"Resuming from {last} (last stored filing date)")
+            log(f"Resuming from {last} (last stored filing date)")
             start_date = last
 
     # 7-day windows, oldest first, so resume is safe.
@@ -128,9 +90,8 @@ def main():
         chunk_start = chunk_end + timedelta(days=1)
 
     total_windows = len(windows)
-    print(f"Backfilling {start_date} → {end_date}  ({total_windows} windows, {WORKERS} workers)")
-    print(f"Dry run: {args.dry_run}")
-    print()
+    log(f"Backfilling {start_date} → {end_date}  ({total_windows} windows, {WORKERS} workers, dry_run={args.dry_run})")
+
 
     run_start = time.time()
     last_log_time = run_start
@@ -152,8 +113,8 @@ def main():
             return
         elapsed = now - run_start
         rate = filings_stored / elapsed if elapsed > 0 else 0
-        print(
-            f"  [{fmt_elapsed(elapsed)}]  stored={filings_stored:,}  tx={tx_stored:,}  "
+        log(
+            f"[{fmt_elapsed(elapsed)}]  stored={filings_stored:,}  tx={tx_stored:,}  "
             f"seen={filings_seen:,}  skip_universe={skipped_universe:,}  "
             f"skip_dup={skipped_duplicate:,}  errors={parse_errors}  "
             f"rate={rate:.2f} f/s  window={window_idx+1}/{total_windows}"
@@ -213,8 +174,8 @@ def main():
                 issuer = parsed.get("issuer", {})
                 owner = parsed.get("owner", {})
                 ticker = _clean_ticker(issuer.get("ticker") or tk) or ""
-                print(f"  [DRY] {ticker} | {owner.get('name')} ({owner.get('role_category')}) "
-                      f"| {len(parsed['transactions'])} tx | {filing_meta.get('filed_date')}")
+                log(f"  [DRY] {ticker} | {owner.get('name')} ({owner.get('role_category')}) "
+                    f"| {len(parsed['transactions'])} tx | {filing_meta.get('filed_date')}")
                 filings_stored += 1
             maybe_log()
             return
@@ -270,16 +231,16 @@ def main():
                             filings_stored += 1
                             stored_since_last_log += 1
                             codes = sorted({tx.get("transaction_code", "?") for tx in parsed.get("transactions", [])})
-                            print(f"  STORED  {(ticker or raw_cik):<6}  {filing_meta['accession_number']}"
-                                  f"  {len(tx_rows)} tx {codes}  filed={filing_meta.get('filed_date')}")
+                            log_stored(ticker or raw_cik, filing_meta["accession_number"],
+                                       len(tx_rows), codes, filing_meta.get("filed_date", ""))
             except Exception as e:
                 parse_errors += len(results)
-                print(f"   ERROR writing batch to DB: {e}")
+                log(f"  ERROR writing batch to DB: {e}")
 
         maybe_log()
 
     for window_idx, (ws, we) in enumerate(windows):
-        print(f"── Window {window_idx+1}/{total_windows}: {ws} → {we}  (fetching index...)")
+        phase(f"Window {window_idx+1}/{total_windows}: {ws} → {we}")
 
         window_filings = list(fetch_form4_index(ws, we, req_per_sec=BACKFILL_RATE))
         window_filings.reverse()  # EDGAR returns newest-first; flip to oldest-first
@@ -291,14 +252,14 @@ def main():
             filings_seen += 1
             raw_cik = fm.get("cik_raw", "").lstrip("0")
             ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
-            if ticker_universe and (not ticker or ticker not in ticker_universe):
+            if not in_universe(ticker, ticker_universe):
                 skipped_universe += 1
                 continue
             window_candidates.append((fm, ticker))
 
         if window_total >= 10000:
-            print(f"   WARNING: window hit EDGAR 10K cap — some filings may be missing. Consider shrinking window size.")
-        print(f"   {window_total} filings in index, {len(window_candidates)} pass universe filter — processing...")
+            log("  WARNING: window hit EDGAR 10K cap — some filings may be missing")
+        log(f"  {window_total} filings in index, {len(window_candidates)} pass universe filter — processing...")
 
         for fm, tk in window_candidates:
             pending.append((fm, tk))
@@ -308,19 +269,18 @@ def main():
 
         flush_batch(pending)
         pending = []
-        print(f"   Window {window_idx+1} done.  Total stored so far: {filings_stored:,}  tx: {tx_stored:,}  elapsed: {fmt_elapsed(time.time()-run_start)}")
+        log(f"  Window {window_idx+1} done.  stored={filings_stored:,}  tx={tx_stored:,}  elapsed={fmt_elapsed(time.time()-run_start)}")
 
-    print()
     elapsed = time.time() - run_start
-    print("Bootstrap complete.")
-    print(f"  Elapsed:         {fmt_elapsed(elapsed)}")
-    print(f"  Filings seen:    {filings_seen:,}")
-    print(f"  Filings stored:  {filings_stored:,}")
-    print(f"  Transactions:    {tx_stored:,}")
-    print(f"  Skipped:         {skipped_universe:,} (not in universe)")
-    print(f"  Duplicates:      {skipped_duplicate:,} (already stored)")
-    print(f"  Parse errors:    {parse_errors:,}")
-    print(f"  Avg rate:        {filings_stored/elapsed:.2f} filings/sec")
+    phase("COMPLETE")
+    log(f"Elapsed:        {fmt_elapsed(elapsed)}")
+    log(f"Filings seen:   {filings_seen:,}")
+    log(f"Filings stored: {filings_stored:,}")
+    log(f"Transactions:   {tx_stored:,}")
+    log(f"Skipped:        {skipped_universe:,} (not in universe)")
+    log(f"Duplicates:     {skipped_duplicate:,} (already stored)")
+    log(f"Parse errors:   {parse_errors:,}")
+    log(f"Avg rate:       {filings_stored/elapsed:.2f} filings/sec")
 
 
 if __name__ == "__main__":

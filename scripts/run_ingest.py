@@ -21,9 +21,9 @@ from psycopg2.extras import RealDictCursor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from typing import Set
+from src.ingest.common import setup_log_tee, log as _log, phase as _phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, log_stored
 from src.db.connection import apply_schema
-from src.ingest.edgar import fetch_form4_index, fetch_filing_xml, fetch_cik_ticker_map
+from src.ingest.edgar import fetch_form4_index, fetch_filing_xml
 from src.ingest.parser import parse_form4
 from src.ingest.store import (
     upsert_company, insert_filing, insert_transactions,
@@ -37,26 +37,9 @@ from src.signals.cluster import detect_clusters_for_ticker, get_tickers_with_rec
 from src.signals.formatter import build_evidence
 from src.alerts.telegram import send_signal, send_error, send_daily_summary
 
+setup_log_tee("ingest")
 
 INGEST_RATE = 8.0  # req/sec — normal daily mode
-
-
-def _log(msg: str):
-    ts = datetime.utcnow().strftime("%H:%M:%S")
-    print(f"[{ts}] {msg}", flush=True)
-
-
-def _phase(title: str):
-    ts = datetime.utcnow().strftime("%H:%M:%S")
-    print(f"\n[{ts}] {'─' * 10} {title} {'─' * 10}", flush=True)
-
-
-def load_ticker_universe() -> Set[str]:
-    tickers_file = os.path.join(os.path.dirname(__file__), "..", "data", "tickers.txt")
-    if not os.path.exists(tickers_file):
-        return set()
-    with open(tickers_file) as f:
-        return {line.strip().upper() for line in f if line.strip()}
 
 
 def main():
@@ -69,19 +52,10 @@ def main():
     apply_schema()
     _log("Schema verified")
 
+    _phase("UNIVERSE + CIK MAP")
     ticker_universe = load_ticker_universe()
     _log(f"Ticker universe: {len(ticker_universe)} tickers loaded")
-
-    # CIK → ticker mapping
-    _phase("CIK MAP")
-    t0 = time.time()
-    try:
-        ticker_to_cik = fetch_cik_ticker_map(req_per_sec=INGEST_RATE)
-        cik_to_ticker = {v: k for k, v in ticker_to_cik.items()}
-        _log(f"CIK map loaded: {len(cik_to_ticker):,} entries ({time.time()-t0:.1f}s)")
-    except Exception as e:
-        _log(f"CIK map failed: {e} — continuing without ticker resolution")
-        cik_to_ticker = {}
+    cik_to_ticker = load_cik_map(req_per_sec=INGEST_RATE)
 
     # Date range: from last stored to today, capped at 7 days back.
     last_date = get_last_filed_date()
@@ -107,7 +81,7 @@ def main():
         raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
         ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
 
-        if ticker_universe and (not ticker or ticker not in ticker_universe):
+        if not in_universe(ticker, ticker_universe):
             n_skipped_universe += 1
             continue
 
@@ -146,11 +120,10 @@ def main():
         tx_stored += n
         filings_stored += 1
 
-        n_tx = len(parsed["transactions"])
-        codes = set(t.get("transaction_code", "?") for t in parsed["transactions"])
+        codes = sorted({t.get("transaction_code", "?") for t in parsed["transactions"]})
         cap = mdata.get("cap_tier", "?") if mdata else "?"
-        _log(f"  STORED  {ticker or raw_cik:<6}  {filing_meta['accession_number']}  "
-             f"{n_tx} tx {sorted(codes)}  cap={cap}")
+        log_stored(ticker or raw_cik, filing_meta["accession_number"],
+                   len(parsed["transactions"]), codes, filing_meta.get("filed_date", ""), cap)
 
         # Progress heartbeat every 25 stored filings
         if filings_stored % 25 == 0:
