@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.ingest.common import (
     setup_log_tee, log, phase, fmt_elapsed,
-    load_ticker_universe, load_cik_map, in_universe, log_stored, fetch_and_parse,
+    load_ticker_universe, load_cik_map, in_universe, fetch_and_parse,
     DERIV_ONLY,
 )
 from src.ingest.edgar import fetch_form4_index
@@ -253,10 +253,6 @@ def main():
                             )
                         tx_stored      += len(tx_rows)
                         filings_stored += 1
-                        codes = sorted({tx.get("transaction_code", "?")
-                                        for tx in parsed.get("transactions", [])})
-                        log_stored(ticker or raw_cik, filing_meta["accession_number"],
-                                   len(tx_rows), codes, filing_meta.get("filed_date", ""))
         except Exception as e:
             parse_errors += len(results_buf)
             log(f"  ERROR writing batch to DB: {e}")

@@ -120,7 +120,3 @@ def fetch_and_parse(filing_meta: dict, rate: float = 8.0):
     return filing_meta, parsed
 
 
-def log_stored(ticker: str, accession: str, n_tx: int, codes: list, filed: str, cap: str = ""):
-    """Standard STORED log line used by both bootstrap and run_ingest."""
-    cap_part = f"  cap={cap}" if cap else ""
-    log(f"  STORED  {ticker:<6}  {accession}  {n_tx} tx {codes}  filed={filed}{cap_part}")

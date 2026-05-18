@@ -21,7 +21,7 @@ from psycopg2.extras import RealDictCursor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.ingest.common import setup_log_tee, log as _log, phase as _phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, log_stored, fetch_and_parse, DERIV_ONLY
+from src.ingest.common import setup_log_tee, log as _log, phase as _phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, fetch_and_parse, DERIV_ONLY
 from src.db.connection import apply_schema
 from src.ingest.edgar import fetch_form4_index
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -155,9 +155,6 @@ def main():
         tx_stored += n
         filings_stored += 1
 
-        codes = sorted({t.get("transaction_code", "?") for t in parsed["transactions"]})
-        log_stored(ticker or raw_cik, filing_meta["accession_number"],
-                   len(parsed["transactions"]), codes, filing_meta.get("filed_date", ""))
 
     elapsed_ingest = time.time() - t0
     _log(f"Ingest complete in {fmt_elapsed(elapsed_ingest)}")
