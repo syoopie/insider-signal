@@ -20,6 +20,7 @@ _YF_CHART_URL = "https://query2.finance.yahoo.com/v8/finance/chart"
 
 _session: Optional[requests.Session] = None
 _crumb: Optional[str] = None
+_crumb_attempted: bool = False  # try once per process; stop on failure
 _cache: dict = {}
 
 _last_call = 0.0
@@ -50,13 +51,15 @@ def _get_session() -> requests.Session:
 
 
 def _get_crumb() -> Optional[str]:
-    global _crumb
+    global _crumb, _crumb_attempted
     if _crumb:
         return _crumb
+    if _crumb_attempted:
+        return None  # already failed this run — don't retry
+    _crumb_attempted = True
     try:
         s = _get_session()
-        # Seed cookies — 404 is fine, it still initialises the session state
-        s.get("https://fc.yahoo.com", timeout=5)
+        s.get("https://fc.yahoo.com", timeout=5)  # seeds session; 404 is fine
         resp = s.get(_YF_CRUMB_URL, timeout=8)
         if resp.status_code == 200 and resp.text.strip():
             _crumb = resp.text.strip()
@@ -68,8 +71,9 @@ def _get_crumb() -> Optional[str]:
 
 
 def _reset_crumb():
-    global _crumb
+    global _crumb, _crumb_attempted
     _crumb = None
+    _crumb_attempted = False  # allow one more attempt after a 401
 
 
 def get_cap_tier(market_cap: Optional[int]) -> str:

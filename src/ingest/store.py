@@ -139,6 +139,12 @@ def save_signal(ticker: str, signal_date: date, score: int, signal_type: str,
                 INSERT INTO signals
                     (ticker, signal_date, score, signal_type, cluster_flag, score_breakdown, evidence)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (ticker, signal_date) DO UPDATE SET
+                    score           = EXCLUDED.score,
+                    signal_type     = EXCLUDED.signal_type,
+                    cluster_flag    = EXCLUDED.cluster_flag,
+                    score_breakdown = EXCLUDED.score_breakdown,
+                    evidence        = EXCLUDED.evidence
                 RETURNING id
                 """,
                 (ticker, signal_date, score, signal_type, cluster_flag,

@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS signals (
     created_at      TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_ticker_date ON signals(ticker, signal_date);
 CREATE INDEX IF NOT EXISTS idx_signals_date ON signals(signal_date DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker);
 CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(signal_type);
