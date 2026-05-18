@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ingest.common import (
     setup_log_tee, log, phase, fmt_elapsed,
     load_ticker_universe, load_cik_map, in_universe, log_stored, fetch_and_parse,
+    DERIV_ONLY,
 )
 from src.ingest.edgar import fetch_form4_index
 from src.ingest.store import get_last_filed_date, _clean_ticker
@@ -99,7 +100,8 @@ def main():
     tx_stored        = 0
     skipped_universe = 0
     skipped_duplicate = 0
-    parse_errors     = 0
+    skipped_deriv    = 0   # derivative-only filings (Table II only) — not errors
+    parse_errors     = 0   # genuine failures: fetch failed or XML malformed
     candidates_total = 0
     candidates_done  = 0
     window_idx       = 0       # updated by the for-loop, read by maybe_log closure
@@ -137,13 +139,14 @@ def main():
             f"[{fmt_elapsed(elapsed)}]  {progress}  "
             f"stored={filings_stored:,}  tx={tx_stored:,}  "
             f"skip_uni={skipped_universe:,}  skip_dup={skipped_duplicate:,}  "
-            f"errors={parse_errors}  rate={rate:.1f}/s  window={window_idx+1}/{total_windows}"
+            f"deriv_only={skipped_deriv:,}  errors={parse_errors}  "
+            f"rate={rate:.1f}/s  window={window_idx+1}/{total_windows}"
         )
         last_log_t = now
 
     def drain_done():
         """Non-blocking: collect any futures that have already finished."""
-        nonlocal parse_errors, candidates_done
+        nonlocal parse_errors, skipped_deriv, candidates_done
         done = [f for f in list(pending) if f.done()]
         for fut in done:
             fm, tk = pending.pop(fut)
@@ -152,6 +155,8 @@ def main():
                 result = fut.result()
                 if result is None:
                     parse_errors += 1
+                elif result is DERIV_ONLY:
+                    skipped_deriv += 1
                 else:
                     results_buf.append((result[0], result[1], tk))
             except Exception:
@@ -159,7 +164,7 @@ def main():
 
     def drain_all():
         """Blocking: wait for every currently-pending future to finish."""
-        nonlocal parse_errors, candidates_done
+        nonlocal parse_errors, skipped_deriv, candidates_done
         futs = list(pending.keys())
         for fut in as_completed(futs):
             fm, tk = pending.pop(fut, (None, None))
@@ -170,6 +175,8 @@ def main():
                 result = fut.result()
                 if result is None:
                     parse_errors += 1
+                elif result is DERIV_ONLY:
+                    skipped_deriv += 1
                 else:
                     results_buf.append((result[0], result[1], tk))
             except Exception:
@@ -331,7 +338,8 @@ def main():
     log(f"Transactions:   {tx_stored:,}")
     log(f"Skipped:        {skipped_universe:,} (not in universe)")
     log(f"Duplicates:     {skipped_duplicate:,} (already stored)")
-    log(f"Parse errors:   {parse_errors:,}")
+    log(f"Deriv-only:     {skipped_deriv:,} (Table II only — options/warrants, expected)")
+    log(f"Fetch/parse errors: {parse_errors:,}")
     if elapsed > 0:
         log(f"Avg rate:       {filings_stored / elapsed:.2f} filings/sec")
 

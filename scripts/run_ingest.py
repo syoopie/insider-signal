@@ -21,7 +21,7 @@ from psycopg2.extras import RealDictCursor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.ingest.common import setup_log_tee, log as _log, phase as _phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, log_stored, fetch_and_parse
+from src.ingest.common import setup_log_tee, log as _log, phase as _phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, log_stored, fetch_and_parse, DERIV_ONLY
 from src.db.connection import apply_schema
 from src.ingest.edgar import fetch_form4_index
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -74,6 +74,7 @@ def main():
     tx_stored = 0
     n_skipped_universe = 0
     n_skipped_no_xml = 0
+    n_skipped_deriv  = 0
     n_duplicate = 0
 
     # Phase 1: fetch index and filter to universe (fast — no XML downloads yet)
@@ -126,6 +127,9 @@ def main():
             if result is None:
                 n_skipped_no_xml += 1
                 continue
+            if result is DERIV_ONLY:
+                n_skipped_deriv += 1
+                continue
             parsed_results.append((result[0], result[1], tk))
 
             if i % 50 == 0 or i == len(candidates):
@@ -135,7 +139,7 @@ def main():
                 eta = fmt_elapsed(remaining / rate) if rate > 0 else "?"
                 _log(f"  Fetched {i}/{len(candidates)}  rate={rate:.1f}/s  ETA={eta}")
 
-    _log(f"  Fetch complete: {len(parsed_results)} parsed, {n_skipped_no_xml} failed/no-tx")
+    _log(f"  Fetch complete: {len(parsed_results)} parsed, {n_skipped_deriv} deriv-only, {n_skipped_no_xml} fetch/parse errors")
 
     if not parsed_results:
         _log("  Nothing new to write — all filings filtered or failed")
@@ -172,8 +176,8 @@ def main():
     _log(f"Ingest complete in {fmt_elapsed(elapsed_ingest)}")
     _log(f"  Seen:    {filings_seen}")
     _log(f"  Stored:  {filings_stored} filings, {tx_stored} transactions")
-    _log(f"  Skipped: {n_skipped_universe} not-in-universe, {n_skipped_no_xml} no-xml/parse, "
-         f"{n_duplicate} duplicate")
+    _log(f"  Skipped: {n_skipped_universe} not-in-universe, {n_skipped_deriv} deriv-only, "
+         f"{n_skipped_no_xml} fetch/parse errors, {n_duplicate} duplicate")
 
     # ── SIGNAL SCORING ────────────────────────────────────────────────────────
     _phase("SIGNAL SCORING")

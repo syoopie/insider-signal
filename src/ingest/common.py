@@ -93,15 +93,30 @@ def in_universe(ticker: str, ticker_universe: Set[str]) -> bool:
     return bool(ticker) and ticker in ticker_universe
 
 
+# Sentinel returned when a filing parses cleanly but contains only derivative
+# transactions (Table II: options, warrants). Not a fetch/parse failure — the
+# parser intentionally ignores Table II. Callers should count this separately.
+DERIV_ONLY = object()
+
+
 def fetch_and_parse(filing_meta: dict, rate: float = 8.0):
-    """Fetch XML and parse a Form 4. Returns (filing_meta, parsed) or None. Thread-safe."""
+    """
+    Fetch XML and parse a Form 4.
+    Returns:
+      (filing_meta, parsed)  — success, has non-derivative transactions
+      DERIV_ONLY             — filing has only derivative transactions (Table II)
+      None                   — XML fetch failed or XML is malformed
+    Thread-safe.
+    """
     filer_cik = filing_meta.get("filer_cik", filing_meta.get("cik_raw", ""))
     xml = fetch_filing_xml(filing_meta["accession_number"], filer_cik, req_per_sec=rate)
     if not xml:
         return None
     parsed = parse_form4(xml, filing_meta)
-    if not parsed or not parsed.get("transactions"):
+    if not parsed:
         return None
+    if not parsed.get("transactions"):
+        return DERIV_ONLY
     return filing_meta, parsed
 
 
