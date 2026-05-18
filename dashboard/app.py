@@ -237,6 +237,24 @@ else:
 
 # --- Per-Ticker Insider History ---
 st.header("Insider History by Ticker")
+
+with st.expander("Transaction code reference"):
+    st.markdown("""
+| Code | Meaning |
+|------|---------|
+| **P** | Open-market purchase — insider bought shares with their own money. The signal we care about. |
+| **S** | Open-market sale |
+| **A** | Grant, award, or other acquisition (e.g. RSU grant) — no money changed hands |
+| **M** | Exercise or conversion of a derivative (e.g. options exercised) |
+| **F** | Shares withheld to cover tax on vesting/exercise |
+| **D** | Disposition back to the issuer (e.g. shares returned to company) |
+| **G** | Gift of securities |
+| **X** | Exercise of in-the-money derivative |
+| **C** | Conversion of derivative security |
+| **W** | Inheritance (will or descent) |
+| **J** | Other acquisition or disposition |
+""")
+
 ticker_input = st.text_input("Enter ticker (e.g. AAPL)", "").upper().strip()
 
 if ticker_input:
