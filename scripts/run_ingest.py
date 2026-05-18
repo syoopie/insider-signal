@@ -135,7 +135,12 @@ def main():
                 eta = fmt_elapsed(remaining / rate) if rate > 0 else "?"
                 _log(f"  Fetched {i}/{len(candidates)}  rate={rate:.1f}/s  ETA={eta}")
 
-    _log(f"  Fetch complete: {len(parsed_results)} parsed, {n_skipped_no_xml} failed")
+    _log(f"  Fetch complete: {len(parsed_results)} parsed, {n_skipped_no_xml} failed/no-tx")
+
+    if not parsed_results:
+        _log("  Nothing new to write — all filings filtered or failed")
+    else:
+        _log(f"  Writing {len(parsed_results)} filings to DB...")
 
     # Phase 3: write to DB sequentially (psycopg2 not thread-safe)
     for filing_meta, parsed, tk in parsed_results:
@@ -168,7 +173,7 @@ def main():
     _log(f"  Seen:    {filings_seen}")
     _log(f"  Stored:  {filings_stored} filings, {tx_stored} transactions")
     _log(f"  Skipped: {n_skipped_universe} not-in-universe, {n_skipped_no_xml} no-xml/parse, "
-         f"{n_skipped_no_tx} no-tx, {n_duplicate} duplicate")
+         f"{n_duplicate} duplicate")
 
     # ── SIGNAL SCORING ────────────────────────────────────────────────────────
     _phase("SIGNAL SCORING")
@@ -218,6 +223,8 @@ def main():
 
         if mdata:
             update_company_market_data(tx_rows[0].get("cik"), mdata.get("market_cap"), mdata.get("cap_tier"))
+        else:
+            _log(f"  {ticker:<6}  market data unavailable (cap=unknown)")
 
         scored_txs = []
         aggregate_score = 0
