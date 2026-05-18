@@ -94,10 +94,7 @@ LEFT JOIN companies c ON c.ticker = s.ticker
 WHERE s.signal_date >= %s
   AND s.score >= %s
   AND s.signal_type = ANY(%s)
-ORDER BY
-  CASE s.signal_type WHEN 'CLUSTER_BUY' THEN 0 WHEN 'BUY' THEN 1 ELSE 2 END,
-  s.score DESC,
-  s.signal_date DESC
+ORDER BY s.score DESC, s.signal_date DESC
 """
 
 signals = query(signals_sql, (since_date, min_score, signal_types))
@@ -109,14 +106,20 @@ if cap_tiers:
 if not signals:
     st.info("No signals match the current filters.")
 else:
+    # Legend
+    st.caption("⚡ Cluster Buy = 3+ insiders buying in 14-day window  ·  ✅ Buy = high-conviction single insider  ·  👁 Watch = moderate score, worth monitoring")
+
     # Summary metrics
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Signals", len(signals))
-    col2.metric("Cluster Buys", sum(1 for s in signals if s["signal_type"] == "CLUSTER_BUY"))
-    col3.metric("Buy Signals", sum(1 for s in signals if s["signal_type"] == "BUY"))
-    col4.metric("Watch Signals", sum(1 for s in signals if s["signal_type"] == "WATCH"))
+    col2.metric("⚡ Cluster Buys", sum(1 for s in signals if s["signal_type"] == "CLUSTER_BUY"))
+    col3.metric("✅ Buy Signals", sum(1 for s in signals if s["signal_type"] == "BUY"))
+    col4.metric("👁 Watch Signals", sum(1 for s in signals if s["signal_type"] == "WATCH"))
 
     st.divider()
+
+    TYPE_ICON  = {"CLUSTER_BUY": "⚡", "BUY": "✅", "WATCH": "👁"}
+    TYPE_LABEL = {"CLUSTER_BUY": "Cluster Buy", "BUY": "Buy", "WATCH": "Watch"}
 
     # Signals table
     for sig in signals:
@@ -127,10 +130,16 @@ else:
             except Exception:
                 ev = {}
 
-        type_icon = {"CLUSTER_BUY": "🔴", "BUY": "🟢", "WATCH": "🟡"}.get(sig["signal_type"], "⚪")
-        cap_label = (sig.get("cap_tier") or "?").upper()
+        icon       = TYPE_ICON.get(sig["signal_type"], "⚪")
+        type_label = TYPE_LABEL.get(sig["signal_type"], sig["signal_type"])
+        cap_label  = (sig.get("cap_tier") or "unknown").title() + "-cap"
+        company    = sig.get("name") or ev.get("company_name") or ""
+        name_part  = f" · {company}" if company and company != sig["ticker"] else ""
 
-        header = f"{type_icon} **{sig['ticker']}** — Score {sig['score']}/100 | {sig['signal_type']} | {cap_label} cap | {sig['signal_date']}"
+        header = (
+            f"{icon} **{sig['ticker']}**{name_part} — "
+            f"Score {sig['score']}/100 · {type_label} · {cap_label} · {sig['signal_date']}"
+        )
 
         with st.expander(header):
             insiders = ev.get("insiders", [])
@@ -165,9 +174,11 @@ else:
 
             with col_b:
                 st.subheader("Context")
+                if company:
+                    st.write(f"**Company:** {company} (${sig['ticker']})")
                 cluster = ev.get("cluster", {})
                 if cluster.get("is_cluster"):
-                    st.success(f"CLUSTER SIGNAL: {cluster.get('insider_count')} insiders in 14-day window")
+                    st.success(f"Cluster signal: {cluster.get('insider_count')} insiders bought in 14-day window")
                 if ev.get("near_52wk_low"):
                     pct = ev.get("pct_above_52wk_low", 0)
                     low = ev.get("price_52wk_low")
