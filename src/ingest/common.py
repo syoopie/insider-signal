@@ -28,6 +28,7 @@ class _Tee:
     def write(self, data):
         for s in self._streams:
             s.write(data)
+            s.flush()
 
     def flush(self):
         for s in self._streams:
@@ -39,7 +40,7 @@ def setup_log_tee(script_name: str) -> str:
     os.makedirs(_LOG_DIR, exist_ok=True)
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     log_path = os.path.join(_LOG_DIR, f"{script_name}_{ts}.log")
-    log_file = open(log_path, "w", buffering=1)
+    log_file = open(log_path, "w", buffering=1, encoding="utf-8")
     sys.stdout = _Tee(sys.__stdout__, log_file)
     sys.stderr = _Tee(sys.__stderr__, log_file)
     return log_path
