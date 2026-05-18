@@ -36,7 +36,7 @@ from psycopg2.extras import RealDictCursor
 
 from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.db.connection import get_conn
-from src.ingest.store import save_signal
+from src.ingest.store import batch_save_signals
 from src.signals.scorer import score_transaction, classify_signal
 from src.signals.formatter import build_evidence
 
@@ -265,7 +265,8 @@ def main():
     # ── SCORING ───────────────────────────────────────────────────────────────
     phase("SCORING")
 
-    n_buy = n_cluster = n_watch = n_low = n_ineligible = n_saved = 0
+    n_buy = n_cluster = n_watch = n_low = n_ineligible = 0
+    n_saved = 0
     signals_to_write = []
 
     for filed_date, ticker in work_items:
@@ -335,9 +336,7 @@ def main():
     if signals_to_write and not args.dry_run:
         phase("WRITE")
         log(f"Writing {len(signals_to_write)} signals to DB...")
-        for sig in signals_to_write:
-            save_signal(**sig)
-            n_saved += 1
+        n_saved = batch_save_signals(signals_to_write)
         log(f"Done.")
 
     # ── SUMMARY ───────────────────────────────────────────────────────────────

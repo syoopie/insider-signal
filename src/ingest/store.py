@@ -154,6 +154,38 @@ def save_signal(ticker: str, signal_date: date, score: int, signal_type: str,
             return cur.fetchone()[0]
 
 
+def batch_save_signals(signals: list) -> int:
+    """
+    Insert or update a list of signal dicts in a single connection.
+    Each dict must have the same keys as save_signal's parameters.
+    Returns the count of rows written.
+    """
+    if not signals:
+        return 0
+    sql = """
+        INSERT INTO signals
+            (ticker, signal_date, score, signal_type, cluster_flag, score_breakdown, evidence)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (ticker, signal_date) DO UPDATE SET
+            score           = EXCLUDED.score,
+            signal_type     = EXCLUDED.signal_type,
+            cluster_flag    = EXCLUDED.cluster_flag,
+            score_breakdown = EXCLUDED.score_breakdown,
+            evidence        = EXCLUDED.evidence
+    """
+    rows = [
+        (
+            s["ticker"], s["signal_date"], s["score"], s["signal_type"],
+            s["cluster_flag"], _dumps(s["score_breakdown"]), _dumps(s["evidence"]),
+        )
+        for s in signals
+    ]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(sql, rows)
+    return len(rows)
+
+
 def mark_signal_alerted(signal_id: int) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
