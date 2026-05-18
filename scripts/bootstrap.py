@@ -50,10 +50,10 @@ from src.ingest.store import get_last_filed_date
 from typing import Set, Optional, Tuple
 from src.db.connection import apply_schema, get_conn
 
-BACKFILL_RATE = 8.0   # req/sec — shared across all threads; EDGAR limit is 10
-WORKERS = 4           # concurrent XML fetch threads
+BACKFILL_RATE = 9.0   # req/sec — shared across all threads; EDGAR limit is 10
+WORKERS = 8           # concurrent XML fetch threads
 LOG_INTERVAL = 30     # print a status line every N seconds
-BATCH = 40            # filings per flush (larger = fewer pre-filter round-trips)
+BATCH = 100           # filings per flush (larger = fewer pre-filter round-trips)
 
 
 def load_ticker_universe() -> Set[str]:
