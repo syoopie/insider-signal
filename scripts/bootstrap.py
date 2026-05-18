@@ -139,6 +139,7 @@ def main():
     filings_stored = 0
     tx_stored = 0
     skipped_universe = 0
+    skipped_duplicate = 0
     parse_errors = 0
     stored_since_last_log = 0
 
@@ -151,17 +152,17 @@ def main():
             return
         elapsed = now - run_start
         rate = filings_stored / elapsed if elapsed > 0 else 0
-        eta_sec = (total_windows - window_idx - 1) / max(rate / max(filings_seen, 1), 1e-9) if rate > 0 else 0
         print(
             f"  [{fmt_elapsed(elapsed)}]  stored={filings_stored:,}  tx={tx_stored:,}  "
-            f"seen={filings_seen:,}  skipped={skipped_universe:,}  errors={parse_errors}  "
+            f"seen={filings_seen:,}  skip_universe={skipped_universe:,}  "
+            f"skip_dup={skipped_duplicate:,}  errors={parse_errors}  "
             f"rate={rate:.2f} f/s  window={window_idx+1}/{total_windows}"
         )
         last_log_time = now
         stored_since_last_log = 0
 
     def flush_batch(batch):
-        nonlocal filings_stored, tx_stored, parse_errors, stored_since_last_log
+        nonlocal filings_stored, tx_stored, parse_errors, stored_since_last_log, skipped_duplicate
         if not batch:
             return
 
@@ -180,7 +181,7 @@ def main():
                 n_skip = sum(1 for fm, _ in batch if fm["accession_number"] in already_stored)
                 if n_skip:
                     batch = [(fm, tk) for fm, tk in batch if fm["accession_number"] not in already_stored]
-                    print(f"   (skipped {n_skip} already-stored filings in this batch)")
+                    skipped_duplicate += n_skip
             except Exception:
                 pass  # if pre-filter fails, proceed — ON CONFLICT makes it safe
 
@@ -317,6 +318,7 @@ def main():
     print(f"  Filings stored:  {filings_stored:,}")
     print(f"  Transactions:    {tx_stored:,}")
     print(f"  Skipped:         {skipped_universe:,} (not in universe)")
+    print(f"  Duplicates:      {skipped_duplicate:,} (already stored)")
     print(f"  Parse errors:    {parse_errors:,}")
     print(f"  Avg rate:        {filings_stored/elapsed:.2f} filings/sec")
 
