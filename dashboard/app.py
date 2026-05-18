@@ -80,7 +80,7 @@ cap_tiers = st.sidebar.multiselect(
     ["small", "mid", "large", "unknown"],
     default=["small", "mid", "large", "unknown"],
 )
-st.sidebar.caption("Small < $2B · Mid $2B–$10B · Large ≥ $10B")
+st.sidebar.caption("Small < \\$2B · Mid \\$2B–\\$10B · Large ≥ \\$10B")
 
 since_date = date.today() - timedelta(days=lookback_days)
 
