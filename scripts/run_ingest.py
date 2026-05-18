@@ -107,7 +107,7 @@ def main():
         raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
         ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
 
-        if ticker_universe and ticker and ticker not in ticker_universe:
+        if ticker_universe and (not ticker or ticker not in ticker_universe):
             n_skipped_universe += 1
             continue
 

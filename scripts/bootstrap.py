@@ -291,7 +291,7 @@ def main():
             filings_seen += 1
             raw_cik = fm.get("cik_raw", "").lstrip("0")
             ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
-            if ticker_universe and ticker and ticker not in ticker_universe:
+            if ticker_universe and (not ticker or ticker not in ticker_universe):
                 skipped_universe += 1
                 continue
             window_candidates.append((fm, ticker))
