@@ -55,10 +55,14 @@ _INVALID_TICKERS = {"", "NONE", "NA", "N/A", "NULL"}
 
 
 def _clean_ticker(ticker: str):
-    """Return the ticker uppercased, or None if it's a sentinel/missing value."""
+    """Return the ticker uppercased, or None if it's a sentinel/missing value.
+    Strips exchange prefixes like 'NASDAQ:SVC' → 'SVC'."""
     if not ticker:
         return None
     t = ticker.strip().upper()
+    # Strip exchange prefix (e.g. "NASDAQ:SVC" → "SVC", "NYSE:T" → "T")
+    if ":" in t:
+        t = t.split(":")[-1].strip()
     return None if t in _INVALID_TICKERS else t
 
 
