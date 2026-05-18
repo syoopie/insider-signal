@@ -268,6 +268,9 @@ def main():
                             tx_stored += len(tx_rows)
                             filings_stored += 1
                             stored_since_last_log += 1
+                            codes = sorted({tx.get("transaction_code", "?") for tx in parsed.get("transactions", [])})
+                            print(f"  STORED  {(ticker or raw_cik):<6}  {filing_meta['accession_number']}"
+                                  f"  {len(tx_rows)} tx {codes}  filed={filing_meta.get('filed_date')}")
             except Exception as e:
                 parse_errors += len(results)
                 print(f"   ERROR writing batch to DB: {e}")
