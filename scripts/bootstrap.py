@@ -18,10 +18,31 @@ import sys
 import os
 import argparse
 import time
-from datetime import date, timedelta
+from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+_LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_log_path = os.path.join(_LOG_DIR, f"bootstrap_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log")
+_log_file = open(_log_path, "w", buffering=1)  # line-buffered
+
+class _Tee:
+    def __init__(self, *streams):
+        self._streams = streams
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+
+sys.stdout = _Tee(sys.__stdout__, _log_file)
+sys.stderr = _Tee(sys.__stderr__, _log_file)
+print(f"Logging to {_log_path}")
+# ──────────────────────────────────────────────────────────────────────────────
 
 from src.ingest.edgar import fetch_form4_index, fetch_filing_xml, fetch_cik_ticker_map
 from src.ingest.parser import parse_form4

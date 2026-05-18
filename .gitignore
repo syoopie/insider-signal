@@ -17,6 +17,9 @@ build/
 data/*.parquet
 data/*.csv
 
+# Run logs
+logs/
+
 # OS
 .DS_Store
 Thumbs.db
