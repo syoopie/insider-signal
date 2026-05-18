@@ -32,22 +32,4 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python -c "
-          import sys, os, traceback
-          sys.path.insert(0, '.')
-          from src.backtest.engine import run_backtest, save_backtest_results
-          from src.alerts.telegram import send_error
-          try:
-              results = run_backtest(threshold=65, lookback_days=365)
-              if results:
-                  save_backtest_results(results, threshold=65)
-                  print(f'Saved {len(results)} horizon results.')
-              else:
-                  print('No results (not enough historical data yet).')
-          except Exception as e:
-              tb = traceback.format_exc()
-              print(f'Backtest failed:\n{tb}')
-              send_error(str(e), context='weekly backtest')
-              sys.exit(1)
-          "
+        run: python scripts/run_backtest.py
