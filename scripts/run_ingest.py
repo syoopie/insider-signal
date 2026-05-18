@@ -29,6 +29,7 @@ from src.ingest.store import (
     upsert_company, insert_filing, insert_transactions,
     update_company_market_data, get_last_filed_date,
     save_signal, mark_signal_alerted, get_unalerted_signals, prune_old_data,
+    _clean_ticker,
 )
 from src.market.prices import get_market_data
 from src.signals.scorer import score_transaction, classify_signal
@@ -125,7 +126,7 @@ def main():
         issuer = parsed.get("issuer", {})
         owner = parsed.get("owner", {})
         cik = issuer.get("cik") or raw_cik
-        ticker = issuer.get("ticker") or ticker
+        ticker = _clean_ticker(issuer.get("ticker") or ticker) or ""
 
         upsert_company(cik, ticker, issuer.get("name", ""))
 

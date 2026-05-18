@@ -119,7 +119,7 @@ def score_transaction(
         score += 8
 
     # --- Near 52-week low ---
-    price = transaction.get("price_per_share")
+    price = float(transaction.get("price_per_share") or 0) or None
     low_52wk = market_data.get("price_52wk_low")
     if price and low_52wk and low_52wk > 0:
         pct_above_low = (price - low_52wk) / low_52wk * 100
