@@ -39,8 +39,8 @@ from src.alerts.telegram import send_signal, send_error, send_daily_summary
 
 setup_log_tee("ingest")
 
-INGEST_RATE = 8.0   # req/sec — shared across all threads; EDGAR limit is 10
-INGEST_WORKERS = 8  # concurrent XML fetch threads
+INGEST_RATE    = 9.0   # req/sec — shared across all threads; EDGAR limit is 10
+INGEST_WORKERS = 32    # concurrent XML fetch threads; saturates 9 req/s at ~3-4s latency
 
 
 def main():
@@ -69,56 +69,51 @@ def main():
     _phase("FILING INGEST")
     t0 = time.time()
 
-    filings_seen = 0
-    filings_stored = 0
-    tx_stored = 0
+    filings_seen     = 0
+    filings_stored   = 0
+    tx_stored        = 0
     n_skipped_universe = 0
     n_skipped_no_xml = 0
     n_skipped_deriv  = 0
-    n_duplicate = 0
+    n_duplicate      = 0
 
-    # Phase 1: fetch index and filter to universe (fast — no XML downloads yet)
-    candidates = []
-    for filing_meta in fetch_form4_index(start_date, today, req_per_sec=INGEST_RATE):
-        filings_seen += 1
-        raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
-        ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
-        if not in_universe(ticker, ticker_universe):
-            n_skipped_universe += 1
-            continue
-        candidates.append((filing_meta, ticker))
+    from src.db.connection import get_conn
 
-    _log(f"  {filings_seen} filings in index, {len(candidates)} pass universe filter")
+    # Pre-filter: load already-stored accessions for the window before touching EDGAR.
+    window_stored: set = set()
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT accession_number FROM form4_filings WHERE filed_date BETWEEN %s AND %s",
+                    (start_date, today),
+                )
+                window_stored = {r[0] for r in cur.fetchall()}
+        _log(f"  Pre-filter: {len(window_stored):,} accessions already stored")
+    except Exception as e:
+        _log(f"  Pre-filter failed ({e}) — relying on ON CONFLICT")
 
-    # Pre-filter: drop accessions already in DB before spending EDGAR quota on them
-    if candidates:
-        from src.db.connection import get_conn
-        accessions = [fm["accession_number"] for fm, _ in candidates]
-        try:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT accession_number FROM form4_filings WHERE accession_number = ANY(%s)",
-                        (accessions,)
-                    )
-                    already_stored = {r[0] for r in cur.fetchall()}
-            n_pre = sum(1 for fm, _ in candidates if fm["accession_number"] in already_stored)
-            if n_pre:
-                candidates = [(fm, tk) for fm, tk in candidates if fm["accession_number"] not in already_stored]
-                n_duplicate += n_pre
-                _log(f"  Pre-filter: {n_pre} already stored, {len(candidates)} remaining")
-        except Exception:
-            pass  # ON CONFLICT handles it safely if pre-filter fails
-
-    # Phase 2: fetch + parse XMLs in parallel
+    # Stream index → submit XML fetches immediately (pipeline: overlap index + XML).
     parsed_results = []
+    pending: dict = {}
     with ThreadPoolExecutor(max_workers=INGEST_WORKERS) as pool:
-        futures = {
-            pool.submit(fetch_and_parse, fm, INGEST_RATE): (fm, tk)
-            for fm, tk in candidates
-        }
-        for i, future in enumerate(as_completed(futures), 1):
-            fm, tk = futures[future]
+        for filing_meta in fetch_form4_index(start_date, today, req_per_sec=INGEST_RATE):
+            filings_seen += 1
+            raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
+            ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
+            if not in_universe(ticker, ticker_universe):
+                n_skipped_universe += 1
+                continue
+            if filing_meta["accession_number"] in window_stored:
+                n_duplicate += 1
+                continue
+            pending[pool.submit(fetch_and_parse, filing_meta, INGEST_RATE)] = (filing_meta, ticker)
+
+        _log(f"  {filings_seen} in index, {len(pending)} submitted for XML fetch "
+             f"({n_skipped_universe} not-in-universe, {n_duplicate} pre-filtered)")
+
+        for future in as_completed(pending):
+            fm, tk = pending[future]
             try:
                 result = future.result()
             except Exception:
@@ -126,18 +121,10 @@ def main():
                 continue
             if result is None:
                 n_skipped_no_xml += 1
-                continue
-            if result is DERIV_ONLY:
+            elif result is DERIV_ONLY:
                 n_skipped_deriv += 1
-                continue
-            parsed_results.append((result[0], result[1], tk))
-
-            if i % 50 == 0 or i == len(candidates):
-                elapsed = time.time() - t0
-                rate = i / elapsed if elapsed > 0 else 0
-                remaining = len(candidates) - i
-                eta = fmt_elapsed(remaining / rate) if rate > 0 else "?"
-                _log(f"  Fetched {i}/{len(candidates)}  rate={rate:.1f}/s  ETA={eta}")
+            else:
+                parsed_results.append((result[0], result[1], tk))
 
     _log(f"  Fetch complete: {len(parsed_results)} parsed, {n_skipped_deriv} deriv-only, {n_skipped_no_xml} fetch/parse errors")
 
