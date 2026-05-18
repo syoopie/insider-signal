@@ -10,6 +10,7 @@ signals generate approximately double the alpha of single-insider buys.
 
 from datetime import date, timedelta
 from typing import List
+from psycopg2.extras import RealDictCursor
 from src.db.connection import get_conn
 
 
@@ -34,7 +35,7 @@ def detect_clusters_for_ticker(ticker: str, as_of_date: date) -> dict:
     window_start = as_of_date - timedelta(days=CLUSTER_WINDOW_DAYS)
 
     with get_conn() as conn:
-        with conn.cursor() as cur:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
                 SELECT DISTINCT ON (t.insider_name)
