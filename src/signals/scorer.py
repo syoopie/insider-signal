@@ -6,10 +6,13 @@ research-backed factor table. Returns a score 0–100 with a full
 breakdown of which factors fired and why.
 
 Research basis:
-  - Cohen, Malloy & Pomorski (2012): opportunistic trades >> routine trades
+  - Cohen, Malloy & Pomorski (2012): opportunistic trades >> routine trades;
+    routine = same calendar month in ≥2 of preceding 3 years → disqualified
   - Lakonishok & Lee (2001): small-cap insider buys = +7.4% abnormal at 12mo
   - TipRanks/ResearchGate CFO study: CFO > Director > Officer > CEO by return
   - Cluster research: 3+ insiders buying ≈ 2× alpha of single buy
+  - Pficdn et al.: large purchases as % of holdings predict abnormal returns;
+    small fraction-of-holdings purchases are not informative
 """
 
 from datetime import date, timedelta
@@ -65,6 +68,35 @@ def score_transaction(
     if is_10b51:
         return {"score": 0, "breakdown": {"10b5_1_plan": "DISQUALIFIED"}, "disqualified": True, "eligible": False}
 
+    # Hard disqualifier: routine trader (CMP 2012)
+    # Routine = bought in the same calendar month in ≥2 of the preceding 3 years.
+    # Requires historical data; silently skips if data doesn't span 3 years (no false positives).
+    tx_date_str = transaction.get("transaction_date") or ""
+    try:
+        tx_date = date.fromisoformat(tx_date_str[:10])
+    except (ValueError, TypeError):
+        tx_date = date.today()
+
+    tx_month = tx_date.month
+    oldest_available = min(
+        (_parse_date(p.get("transaction_date")) for p in prior_purchases
+         if _parse_date(p.get("transaction_date"))),
+        default=None,
+    )
+    routine_years = 0
+    for yr_back in (1, 2, 3):
+        yr = tx_date.year - yr_back
+        if oldest_available is None or oldest_available > date(yr, 12, 31):
+            # No data for this year at all — can't make a determination; skip year
+            continue
+        year_start = date(yr, tx_month, 1)
+        year_end   = date(yr, tx_month, 28)  # safe cross-month boundary
+        if any(year_start <= (_parse_date(p.get("transaction_date")) or date.min) <= year_end
+               for p in prior_purchases):
+            routine_years += 1
+    if routine_years >= 2:
+        return {"score": 0, "breakdown": {"routine_trader": "DISQUALIFIED"}, "disqualified": True, "eligible": False}
+
     breakdown = {}
     score = 0
 
@@ -81,7 +113,7 @@ def score_transaction(
         breakdown[f"cap_{cap_tier}"] = cap_pts
     score += cap_pts
 
-    # --- Transaction value ---
+    # --- Transaction value (absolute) ---
     total_value = transaction.get("total_value") or 0
     if total_value >= 500_000:
         breakdown["value_500k_plus"] = 12
@@ -90,13 +122,23 @@ def score_transaction(
         breakdown["value_100k_plus"] = 8
         score += 8
 
-    # --- First purchase in 12+ months ---
-    tx_date_str = transaction.get("transaction_date") or ""
-    try:
-        tx_date = date.fromisoformat(tx_date_str[:10])
-    except (ValueError, TypeError):
-        tx_date = date.today()
+    # --- Purchase as % of prior holdings (Pficdn et al.) ---
+    shares_bought = float(transaction.get("shares") or 0)
+    shares_after  = float(transaction.get("shares_after") or 0)
+    if shares_bought > 0 and shares_after > shares_bought:
+        shares_before = shares_after - shares_bought
+        pct_increase = shares_bought / shares_before * 100
+        if pct_increase >= 30:
+            breakdown["holdings_increase_30pct"] = 15
+            score += 15
+        elif pct_increase >= 15:
+            breakdown["holdings_increase_15pct"] = 10
+            score += 10
+        elif pct_increase >= 5:
+            breakdown["holdings_increase_5pct"] = 5
+            score += 5
 
+    # --- First purchase in 12+ months ---
     cutoff_12mo = tx_date - timedelta(days=365)
     recent_prior = [
         p for p in prior_purchases
@@ -118,14 +160,17 @@ def score_transaction(
         breakdown["sequenced_buying_30d"] = 8
         score += 8
 
-    # --- Near 52-week low ---
+    # --- Near 52-week low (tiered) ---
     price = float(transaction.get("price_per_share") or 0) or None
     low_52wk = market_data.get("price_52wk_low")
     if price and low_52wk and low_52wk > 0:
         pct_above_low = (price - low_52wk) / low_52wk * 100
-        if pct_above_low <= 10:
-            breakdown["near_52wk_low"] = 10
-            score += 10
+        if pct_above_low <= 5:
+            breakdown["near_52wk_low_5pct"] = 12
+            score += 12
+        elif pct_above_low <= 10:
+            breakdown["near_52wk_low_10pct"] = 7
+            score += 7
 
     return {
         "score": min(score, 100),
