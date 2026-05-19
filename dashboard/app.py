@@ -333,15 +333,36 @@ else:
                 help=f"n={n} trades. {badge} = low sample size warning.{med_str}",
             )
 
-    # ── Avg excess return over time ──
-    fig = px.line(
-        bt_df,
-        x="run_date",
-        y="avg_return",
-        color="horizon_days",
-        labels={"avg_return": "Avg Excess Return vs SPY (%)", "run_date": "Backtest Date", "horizon_days": "Days"},
-        title="Average Excess Return vs SPY by Hold Horizon",
-    )
+    # ── Avg excess return: bar when only 1 date, line when history exists ──
+    unique_dates = bt_df["run_date"].nunique()
+    latest_for_chart = latest.copy()
+    latest_for_chart["horizon_label"] = latest_for_chart["horizon_days"].astype(str) + "d"
+    if unique_dates < 3:
+        # Not enough history for a time-series — show current snapshot as a bar chart.
+        fig = px.bar(
+            latest_for_chart.sort_values("horizon_days"),
+            x="horizon_label",
+            y="avg_return",
+            color="avg_return",
+            color_continuous_scale=["#d62728", "#aec7e8", "#2ca02c"],
+            labels={"avg_return": "Avg Excess Return vs SPY (%)", "horizon_label": "Hold Horizon"},
+            title="Average Excess Return vs SPY (latest backtest — trend chart available after 3+ weekly runs)",
+            text="avg_return",
+        )
+        fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+        fig.update_layout(coloraxis_showscale=False, showlegend=False)
+    else:
+        trend_df = bt_df.copy()
+        trend_df["horizon_label"] = trend_df["horizon_days"].astype(str) + "d"
+        fig = px.line(
+            trend_df,
+            x="run_date",
+            y="avg_return",
+            color="horizon_label",
+            markers=True,
+            labels={"avg_return": "Avg Excess Return vs SPY (%)", "run_date": "Backtest Date", "horizon_label": "Horizon"},
+            title="Average Excess Return vs SPY by Hold Horizon",
+        )
     fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
     st.plotly_chart(fig, use_container_width=True)
 
