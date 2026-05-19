@@ -12,7 +12,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Iterator, Optional, Dict
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, RetryError
 
 class EdgarRateLimitError(RuntimeError):
     """HTTP 429 — EDGAR rate limit hit. Already retried by tenacity; abort the run."""
@@ -76,9 +76,24 @@ def _get_raising(url: str, params: dict = None, req_per_sec: float = 8.0) -> dic
     Like _get but converts terminal HTTP errors to domain exceptions after tenacity
     exhausts retries. This lets callers distinguish fatal EDGAR errors from transient
     network issues without catching generic HTTPError.
+
+    Older tenacity versions wrap the last exception in RetryError instead of re-raising
+    it directly, so we unwrap both forms.
     """
     try:
         return _get(url, params=params, req_per_sec=req_per_sec)
+    except RetryError as e:
+        # Unwrap the underlying exception from tenacity's wrapper.
+        cause = e.last_attempt.exception()
+        if isinstance(cause, requests.HTTPError) and cause.response is not None:
+            code = cause.response.status_code
+            if code == 429:
+                raise EdgarRateLimitError(f"Rate limited (429) after retries — {url}") from cause
+            if code == 403:
+                raise EdgarBlockedError(f"Blocked (403) after retries — {url}") from cause
+            if code >= 500:
+                raise EdgarServerError(f"Server error ({code}) after retries — {url}") from cause
+        raise
     except requests.HTTPError as e:
         code = e.response.status_code if e.response is not None else 0
         if code == 429:
