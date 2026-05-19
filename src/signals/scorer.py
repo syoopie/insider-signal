@@ -43,12 +43,19 @@ ROLE_SCORES = {
 }
 
 # Market cap tier → score delta
+# unknown defaults to small-cap score: the Russell 2000 universe skews small,
+# and assigning 0 under-penalises every company without fresh market data.
 CAP_SCORES = {
     "small":   15,
     "mid":      8,
     "large":    0,
-    "unknown":  5,
+    "unknown": 15,
 }
+
+# Indirect purchases (is_direct=False) are made through LLCs/trusts/family
+# entities — demonstrably weaker signals and inflate artificial cluster counts
+# (e.g. fund partners each filing separately for the same block trade).
+INDIRECT_PENALTY = -8
 
 
 def score_transaction(
@@ -79,6 +86,13 @@ def score_transaction(
     # Hard disqualifier: 10b5-1 pre-arranged plan
     if is_10b51:
         return {"score": 0, "breakdown": {"10b5_1_plan": "DISQUALIFIED"}, "disqualified": True, "eligible": False}
+
+    # Hard disqualifier: trivially small purchase (< $2,000).
+    # Sub-threshold buys are noise — automatic DRIP/401k contributions, dividend
+    # reinvestment, or negligible open-market buys with no informational content.
+    total_value = transaction.get("total_value") or 0
+    if total_value < 2_000:
+        return {"score": 0, "breakdown": {"trivial_value": "DISQUALIFIED"}, "disqualified": True, "eligible": False}
 
     # Hard disqualifier: routine trader (CMP 2012)
     # Routine = bought in the same calendar month in ≥2 of the preceding 3 years.
@@ -117,6 +131,15 @@ def score_transaction(
     breakdown = {}
     score = 0
 
+    # --- Indirect purchase penalty ---
+    # is_direct=False means the purchase was made through a trust, LLC, or family
+    # entity. These inflate cluster counts (fund partners filing separately for
+    # the same block) and carry less personal conviction than direct account buys.
+    is_direct = transaction.get("is_direct", True)
+    if is_direct is False:
+        breakdown["indirect_purchase"] = INDIRECT_PENALTY
+        score += INDIRECT_PENALTY
+
     # --- Role ---
     role = owner.get("role_category", "other")
     role_pts = ROLE_SCORES.get(role, 6)
@@ -131,7 +154,7 @@ def score_transaction(
     score += cap_pts
 
     # --- Transaction value (absolute) ---
-    total_value = transaction.get("total_value") or 0
+    # total_value already validated above (≥ $2,000)
     if total_value >= 500_000:
         breakdown["value_500k_plus"] = 12
         score += 12

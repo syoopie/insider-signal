@@ -155,13 +155,17 @@ def _get_window_txs(all_ticker_txs: list[dict], filed_date: date) -> tuple[list,
 
 
 _EXECUTIVE_ROLES = {"cfo", "ceo", "coo", "chairman"}
-TIGHT_CLUSTER_DAYS = 5
+TIGHT_CLUSTER_DAYS   = 5
+CLUSTER_MIN_VALUE    = 25_000   # mirrors cluster.py — filters DRIP/401k noise
 
 
 def _detect_cluster(all_ticker_txs: list[dict], as_of_date: date) -> dict:
     """
     Cluster detection from pre-loaded transaction data (mirrors cluster.py logic).
-    Includes executive_cluster and tight_cluster sub-flags.
+    Filters:
+      - indirect purchases (is_direct=False) — fund-partner duplicates
+      - trivially small purchases (< CLUSTER_MIN_VALUE) — DRIP/401k noise
+      - identical-block buys (3+ buyers with same shares+price+date) — IPO/PIPE allocations
     """
     window_start = as_of_date - timedelta(days=CLUSTER_WINDOW_DAYS)
     seen_names: dict[str, dict] = {}
@@ -174,12 +178,30 @@ def _detect_cluster(all_ticker_txs: list[dict], as_of_date: date) -> dict:
                 td = date.fromisoformat(td[:10])
             except ValueError:
                 continue
-        if window_start <= td <= as_of_date:
-            name = tx.get("insider_name") or "Unknown"
-            if name not in seen_names:
-                seen_names[name] = tx
+        if not (window_start <= td <= as_of_date):
+            continue
+        if tx.get("is_direct") is False:
+            continue
+        if (tx.get("total_value") or 0) < CLUSTER_MIN_VALUE:
+            continue
+        name = tx.get("insider_name") or "Unknown"
+        if name not in seen_names:
+            seen_names[name] = tx
 
-    insiders = list(seen_names.values())
+    candidate_insiders = list(seen_names.values())
+
+    # Remove identical-block allocations: if 3+ buyers share same (shares, price, date)
+    # it is an IPO/PIPE/DRIP allocation, not independent buying.
+    from collections import Counter
+    block_keys = Counter(
+        (ins.get("shares"), ins.get("price_per_share"), ins.get("transaction_date"))
+        for ins in candidate_insiders
+    )
+    insiders = [
+        ins for ins in candidate_insiders
+        if block_keys[(ins.get("shares"), ins.get("price_per_share"), ins.get("transaction_date"))] < 3
+    ]
+
     is_cluster = len(insiders) >= CLUSTER_MIN_INSIDERS
 
     executive_cluster = is_cluster and any(

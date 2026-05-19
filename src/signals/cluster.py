@@ -25,6 +25,10 @@ CLUSTER_WINDOW_DAYS  = 14
 CLUSTER_MIN_INSIDERS = 3
 TIGHT_CLUSTER_DAYS   = 5  # sub-window for tight_cluster flag
 
+# Minimum purchase value to count toward cluster threshold.
+# Filters out DRIP/401k noise (tiny automatic contributions).
+CLUSTER_MIN_VALUE = 25_000
+
 _EXECUTIVE_ROLES = {"cfo", "ceo", "coo", "chairman"}
 
 
@@ -50,28 +54,44 @@ def detect_clusters_for_ticker(ticker: str, as_of_date: date) -> dict:
                 """
                 SELECT DISTINCT ON (insider_name)
                     insider_name, role_category, transaction_date,
-                    total_value, price_per_share, shares
+                    total_value, price_per_share, shares, is_direct
                 FROM (
                     SELECT DISTINCT ON (t.insider_name, t.transaction_date, t.transaction_code)
                         t.insider_name, t.role_category, t.transaction_date,
-                        t.total_value, t.price_per_share, t.shares, t.is_10b51
+                        t.total_value, t.price_per_share, t.shares, t.is_10b51, t.is_direct
                     FROM transactions t
                     JOIN form4_filings f ON f.id = t.filing_id
                     JOIN companies c ON c.cik = f.cik
                     WHERE c.ticker = %s
                       AND t.transaction_code = 'P'
                       AND t.transaction_date BETWEEN %s AND %s
+                      AND t.is_direct = TRUE
+                      AND COALESCE(t.total_value, 0) >= %s
                     ORDER BY t.insider_name, t.transaction_date, t.transaction_code,
                              f.filed_date DESC
                 ) deduped
                 WHERE is_10b51 = FALSE
                 ORDER BY insider_name, transaction_date DESC
                 """,
-                (ticker.upper(), window_start, as_of_date),
+                (ticker.upper(), window_start, as_of_date, CLUSTER_MIN_VALUE),
             )
             rows = cur.fetchall()
 
-    insiders = [dict(r) for r in rows]
+    all_insiders = [dict(r) for r in rows]
+
+    # Filter offering/DRIP contamination: if 3+ buyers share identical (shares, price)
+    # on the same date it is a block allocation (IPO, PIPE, DRIP plan), not
+    # independent decisions. Remove the entire identical-block group.
+    from collections import Counter
+    block_keys = Counter(
+        (ins["shares"], ins["price_per_share"], ins["transaction_date"])
+        for ins in all_insiders
+    )
+    insiders = [
+        ins for ins in all_insiders
+        if block_keys[(ins["shares"], ins["price_per_share"], ins["transaction_date"])] < 3
+    ]
+
     is_cluster = len(insiders) >= CLUSTER_MIN_INSIDERS
 
     executive_cluster = is_cluster and any(
