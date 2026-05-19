@@ -209,8 +209,9 @@ def _score_ticker_txs(
         result = score_transaction(tx_row, owner, company, mdata, prior_for_insider)
         if result and result.get("eligible"):
             scored_txs.append({"owner": owner, "transaction": tx_row, "score_result": result})
-            aggregate_score = max(aggregate_score, result["score"])
-            breakdown_combined.update(result["breakdown"])
+            if result["score"] > aggregate_score:
+                aggregate_score = result["score"]
+                breakdown_combined = result["breakdown"]
 
     return aggregate_score, breakdown_combined, scored_txs
 
