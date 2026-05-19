@@ -188,7 +188,13 @@ def main():
     def _do_flush_writes(cur):
         """Execute all DB writes for results_buf using an open cursor. Returns (filings, tx, dups)."""
         n_filings = n_tx = n_dups = 0
-        for filing_meta, parsed, tk in results_buf:
+        # Sort by CIK so every concurrent transaction acquires row locks in the same
+        # order → consistent lock ordering → deadlocks become structurally impossible.
+        ordered = sorted(
+            results_buf,
+            key=lambda x: (x[1].get("issuer", {}).get("cik") or x[0].get("cik_raw", "")).zfill(10),
+        )
+        for filing_meta, parsed, tk in ordered:
             issuer  = parsed.get("issuer", {})
             owner   = parsed.get("owner", {})
             raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
