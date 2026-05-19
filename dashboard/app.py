@@ -358,6 +358,8 @@ else:
                 mets = json.loads(mets)
             except Exception:
                 mets = {}
+        if not isinstance(mets, dict):
+            mets = {}  # old rows stored metrics as a list (raw detail array)
         dist = mets.get("distribution") or {}
         if dist:
             dist_rows.append({
@@ -396,16 +398,20 @@ else:
 
     tab_score, tab_cap, tab_type = st.tabs(["Score Band", "Cap Tier", "Signal Type"])
 
+    def _parse_metrics(raw) -> dict:
+        """Parse the metrics column, handling both new (dict) and old (list) formats."""
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                return {}
+        return raw if isinstance(raw, dict) else {}
+
     def _render_strat_table(strat_key: str, tab):
         with tab:
             rows = []
             for _, r in latest.iterrows():
-                mets = r.get("metrics") or {}
-                if isinstance(mets, str):
-                    try:
-                        mets = json.loads(mets)
-                    except Exception:
-                        mets = {}
+                mets = _parse_metrics(r.get("metrics"))
                 strat = mets.get(strat_key) or {}
                 for band, m in strat.items():
                     if m:
@@ -438,12 +444,7 @@ else:
 
     rolling_rows = []
     for _, r in latest.iterrows():
-        mets = r.get("metrics") or {}
-        if isinstance(mets, str):
-            try:
-                mets = json.loads(mets)
-            except Exception:
-                mets = {}
+        mets = _parse_metrics(r.get("metrics"))
         for item in mets.get("rolling_hit_rate_90d") or []:
             rolling_rows.append({
                 "date": item["date"],
@@ -470,12 +471,7 @@ else:
 
     risk_rows = []
     for _, r in latest.iterrows():
-        mets = r.get("metrics") or {}
-        if isinstance(mets, str):
-            try:
-                mets = json.loads(mets)
-            except Exception:
-                mets = {}
+        mets = _parse_metrics(r.get("metrics"))
         risk = mets.get("risk") or {}
         if risk:
             risk_rows.append({
@@ -494,12 +490,7 @@ else:
 
     cl5064_rows = []
     for _, r in latest.iterrows():
-        mets = r.get("metrics") or {}
-        if isinstance(mets, str):
-            try:
-                mets = json.loads(mets)
-            except Exception:
-                mets = {}
+        mets = _parse_metrics(r.get("metrics"))
         cl = mets.get("cluster_5064")
         if cl:
             n = cl.get("n", 0)
