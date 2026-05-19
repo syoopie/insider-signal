@@ -24,6 +24,10 @@ on:
           - 'true'
           - 'false'
 
+concurrency:
+  group: bootstrap
+  cancel-in-progress: false  # queue new run; don't cancel in-flight backfill
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 

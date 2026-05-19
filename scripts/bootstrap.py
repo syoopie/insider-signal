@@ -34,6 +34,7 @@ import argparse
 import time
 from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import psycopg2
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -184,9 +185,63 @@ def main():
                 parse_errors += 1
             maybe_log(paginating=False)
 
+    def _do_flush_writes(cur):
+        """Execute all DB writes for results_buf using an open cursor. Returns (filings, tx, dups)."""
+        n_filings = n_tx = n_dups = 0
+        for filing_meta, parsed, tk in results_buf:
+            issuer  = parsed.get("issuer", {})
+            owner   = parsed.get("owner", {})
+            raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
+            cik     = issuer.get("cik") or raw_cik
+            ticker  = _clean_ticker(issuer.get("ticker") or tk) or ""
+
+            cur.execute(
+                "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
+                "ON CONFLICT (cik) DO UPDATE SET ticker=EXCLUDED.ticker, name=EXCLUDED.name",
+                (cik, ticker.upper() if ticker else None, issuer.get("name", "")),
+            )
+            cur.execute(
+                "INSERT INTO form4_filings "
+                "  (accession_number, cik, filed_date, period_date) "
+                "VALUES (%s,%s,%s,%s) "
+                "ON CONFLICT (accession_number) DO NOTHING RETURNING id",
+                (filing_meta["accession_number"], cik,
+                 filing_meta.get("filed_date") or None,
+                 filing_meta.get("period_date") or None),
+            )
+            row = cur.fetchone()
+            if not row:
+                n_dups += 1
+                continue
+            filing_id = row[0]
+
+            tx_rows = [
+                (
+                    filing_id,
+                    owner.get("name"), owner.get("role_raw"), owner.get("role_category"),
+                    tx.get("transaction_date"), tx.get("transaction_code"),
+                    tx.get("shares"), tx.get("price_per_share"),
+                    tx.get("total_value"), tx.get("shares_after"),
+                    bool(tx.get("is_10b51", False)), bool(tx.get("is_direct", True)),
+                )
+                for tx in parsed.get("transactions", [])
+            ]
+            if tx_rows:
+                cur.executemany(
+                    "INSERT INTO transactions "
+                    "  (filing_id, insider_name, insider_role, role_category, "
+                    "   transaction_date, transaction_code, shares, price_per_share, "
+                    "   total_value, shares_after, is_10b51, is_direct) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    tx_rows,
+                )
+            n_tx      += len(tx_rows)
+            n_filings += 1
+        return n_filings, n_tx, n_dups
+
     def flush():
         """Write results_buf to DB in one connection, then clear it. Main thread only."""
-        nonlocal filings_stored, tx_stored, skipped_duplicate
+        nonlocal filings_stored, tx_stored, skipped_duplicate, parse_errors
         if not results_buf:
             return
 
@@ -201,61 +256,27 @@ def main():
             results_buf.clear()
             return
 
-        try:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    for filing_meta, parsed, tk in results_buf:
-                        issuer  = parsed.get("issuer", {})
-                        owner   = parsed.get("owner", {})
-                        raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
-                        cik     = issuer.get("cik") or raw_cik
-                        ticker  = _clean_ticker(issuer.get("ticker") or tk) or ""
-
-                        cur.execute(
-                            "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
-                            "ON CONFLICT (cik) DO UPDATE SET ticker=EXCLUDED.ticker, name=EXCLUDED.name",
-                            (cik, ticker.upper() if ticker else None, issuer.get("name", "")),
-                        )
-                        cur.execute(
-                            "INSERT INTO form4_filings "
-                            "  (accession_number, cik, filed_date, period_date) "
-                            "VALUES (%s,%s,%s,%s) "
-                            "ON CONFLICT (accession_number) DO NOTHING RETURNING id",
-                            (filing_meta["accession_number"], cik,
-                             filing_meta.get("filed_date") or None,
-                             filing_meta.get("period_date") or None),
-                        )
-                        row = cur.fetchone()
-                        if not row:
-                            skipped_duplicate += 1
-                            continue
-                        filing_id = row[0]
-
-                        tx_rows = [
-                            (
-                                filing_id,
-                                owner.get("name"), owner.get("role_raw"), owner.get("role_category"),
-                                tx.get("transaction_date"), tx.get("transaction_code"),
-                                tx.get("shares"), tx.get("price_per_share"),
-                                tx.get("total_value"), tx.get("shares_after"),
-                                bool(tx.get("is_10b51", False)), bool(tx.get("is_direct", True)),
-                            )
-                            for tx in parsed.get("transactions", [])
-                        ]
-                        if tx_rows:
-                            cur.executemany(
-                                "INSERT INTO transactions "
-                                "  (filing_id, insider_name, insider_role, role_category, "
-                                "   transaction_date, transaction_code, shares, price_per_share, "
-                                "   total_value, shares_after, is_10b51, is_direct) "
-                                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                                tx_rows,
-                            )
-                        tx_stored      += len(tx_rows)
-                        filings_stored += 1
-        except Exception as e:
-            parse_errors += len(results_buf)
-            log(f"  ERROR writing batch to DB: {e}")
+        for attempt in range(3):
+            try:
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        n_f, n_tx, n_dups = _do_flush_writes(cur)
+                filings_stored    += n_f
+                tx_stored         += n_tx
+                skipped_duplicate += n_dups
+                break
+            except psycopg2.errors.DeadlockDetected:
+                if attempt < 2:
+                    delay = (attempt + 1) * 3
+                    log(f"  Deadlock (attempt {attempt+1}/3) — retrying in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    parse_errors += len(results_buf)
+                    log("  ERROR: deadlock after 3 attempts — batch dropped")
+            except Exception as e:
+                parse_errors += len(results_buf)
+                log(f"  ERROR writing batch to DB: {e}")
+                break
         results_buf.clear()
 
     # ── Main processing loop ──────────────────────────────────────────────────
