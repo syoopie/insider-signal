@@ -126,8 +126,12 @@ def fetch_form4_index(
     index_workers: int = 1,
 ) -> Iterator[dict]:
     """
-    Yield filing index records for all Form 4s in the date range.
+    Yield filing index records for Form 4 and Form 4/A filings in the date range.
     Each record has: accession_number, cik_raw, filer_cik, entity_name, filed_date, period_date.
+
+    EDGAR's EFTS API only accepts a single form type per query — passing "4,4/A"
+    returns only 4/A results (URL-encoded comma is treated as an unknown type).
+    We query each form type separately and yield from both.
 
     index_workers > 1 fetches all pages after the first in parallel, sharing the
     same global rate limiter. Speeds up re-runs where XML fetches are mostly
@@ -139,55 +143,55 @@ def fetch_form4_index(
 
     page_size = 100
 
-    def _fetch_page(offset: int) -> list:
-        params = {
-            "forms": "4,4/A",
+    def _fetch_pages_for_form(form_type: str):
+        """Yield all index hits for a single form type."""
+        def _fetch_page(offset: int) -> list:
+            params = {
+                "forms": form_type,
+                "dateRange": "custom",
+                "startdt": start_date.isoformat(),
+                "enddt": end_date.isoformat(),
+                "from": offset,
+                "size": page_size,
+            }
+            return _get(EDGAR_BASE, params=params, req_per_sec=req_per_sec).get("hits", {}).get("hits", [])
+
+        first_data = _get(EDGAR_BASE, params={
+            "forms": form_type,
             "dateRange": "custom",
             "startdt": start_date.isoformat(),
             "enddt": end_date.isoformat(),
-            "from": offset,
+            "from": 0,
             "size": page_size,
-        }
-        return _get(EDGAR_BASE, params=params, req_per_sec=req_per_sec).get("hits", {}).get("hits", [])
+        }, req_per_sec=req_per_sec)
+        total = first_data.get("hits", {}).get("total", {}).get("value", 0)
+        first_hits = first_data.get("hits", {}).get("hits", [])
 
-    # Fetch page 0 with full response to learn the total count.
-    first_params = {
-        "forms": "4,4/A",
-        "dateRange": "custom",
-        "startdt": start_date.isoformat(),
-        "enddt": end_date.isoformat(),
-        "from": 0,
-        "size": page_size,
-    }
-    first_data = _get(EDGAR_BASE, params=first_params, req_per_sec=req_per_sec)
-    total = first_data.get("hits", {}).get("total", {}).get("value", 0)
-    first_hits = first_data.get("hits", {}).get("hits", [])
+        for hit in first_hits:
+            yield _parse_index_hit(hit)
 
-    for hit in first_hits:
-        yield _parse_index_hit(hit)
+        if total <= page_size:
+            return
 
-    if total <= page_size:
-        return
+        remaining_offsets = range(page_size, total, page_size)
 
-    remaining_offsets = range(page_size, total, page_size)
+        if index_workers <= 1:
+            for offset in remaining_offsets:
+                for hit in _fetch_page(offset):
+                    yield _parse_index_hit(hit)
+        else:
+            n_workers = min(index_workers, len(remaining_offsets))
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                futures = {pool.submit(_fetch_page, off): off for off in remaining_offsets}
+                for fut in as_completed(futures):
+                    try:
+                        for hit in fut.result():
+                            yield _parse_index_hit(hit)
+                    except Exception:
+                        pass
 
-    if index_workers <= 1:
-        # Sequential fallback (original behaviour).
-        for offset in remaining_offsets:
-            for hit in _fetch_page(offset):
-                yield _parse_index_hit(hit)
-    else:
-        # Parallel: submit all remaining pages at once; yield as each completes.
-        # All requests still compete for the shared global rate limiter.
-        n_workers = min(index_workers, len(remaining_offsets))
-        with ThreadPoolExecutor(max_workers=n_workers) as pool:
-            futures = {pool.submit(_fetch_page, off): off for off in remaining_offsets}
-            for fut in as_completed(futures):
-                try:
-                    for hit in fut.result():
-                        yield _parse_index_hit(hit)
-                except Exception:
-                    pass  # single page failure — skip and continue
+    yield from _fetch_pages_for_form("4")
+    yield from _fetch_pages_for_form("4/A")
 
 
 def fetch_filing_xml(accession_number: str, filer_cik: str, req_per_sec: float = 8.0) -> Optional[str]:
