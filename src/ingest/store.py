@@ -56,9 +56,69 @@ _TX_INSERT_SQL = """
     INSERT INTO transactions (
         filing_id, insider_name, insider_role, role_category,
         transaction_date, transaction_code, shares, price_per_share,
-        total_value, shares_after, is_10b51, is_direct
-    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        total_value, shares_after, is_10b51, is_direct, is_routine
+    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
 """
+
+
+def _compute_is_routine(cur, insider_name: str, cik: str, tx_date) -> Optional[bool]:
+    """
+    Compute whether this insider's purchase is 'routine' per Cohen, Malloy &
+    Pomorski (2012): bought in the same calendar month in ≥2 of 3 prior years.
+
+    Returns True/False if enough historical data exists; None if the DB doesn't
+    span 3 years back (can't make a determination without false positives).
+    """
+    if not insider_name or not tx_date:
+        return None
+    try:
+        from datetime import date as _date
+        if isinstance(tx_date, str):
+            tx_date = _date.fromisoformat(tx_date[:10])
+        tx_month = tx_date.month
+        tx_year  = tx_date.year
+
+        # Check the oldest P transaction for this insider to know our data span.
+        cur.execute(
+            """
+            SELECT MIN(t.transaction_date)
+            FROM transactions t
+            JOIN form4_filings f ON f.id = t.filing_id
+            WHERE f.cik = %s AND t.insider_name = %s AND t.transaction_code = 'P'
+            """,
+            (cik, insider_name),
+        )
+        row = cur.fetchone()
+        oldest = row[0] if row and row[0] else None
+
+        routine_years = 0
+        determined_years = 0
+        for yr_back in (1, 2, 3):
+            yr = tx_year - yr_back
+            if oldest is None or oldest > _date(yr, 12, 31):
+                continue  # no data for this year — skip (no false positives)
+            determined_years += 1
+            year_start = _date(yr, tx_month, 1)
+            year_end   = _date(yr, tx_month, 28)
+            cur.execute(
+                """
+                SELECT 1 FROM transactions t
+                JOIN form4_filings f ON f.id = t.filing_id
+                WHERE f.cik = %s AND t.insider_name = %s
+                  AND t.transaction_code = 'P'
+                  AND t.transaction_date BETWEEN %s AND %s
+                LIMIT 1
+                """,
+                (cik, insider_name, year_start, year_end),
+            )
+            if cur.fetchone():
+                routine_years += 1
+
+        if determined_years == 0:
+            return None  # not enough data
+        return routine_years >= 2
+    except Exception:
+        return None
 
 
 def write_filing(cur, filing_meta: dict, parsed: dict, ticker: str,
@@ -105,15 +165,23 @@ def write_filing(cur, filing_meta: dict, parsed: dict, ticker: str,
         return 0, 0
     filing_id = row[0]
 
-    tx_rows = [
-        (filing_id,
-         owner.get("name"), owner.get("role_raw"), owner.get("role_category"),
-         tx.get("transaction_date"), tx.get("transaction_code"),
-         tx.get("shares"), tx.get("price_per_share"), tx.get("total_value"),
-         tx.get("shares_after"),
-         bool(tx.get("is_10b51", False)), bool(tx.get("is_direct", True)))
-        for tx in parsed.get("transactions", [])
-    ]
+    transactions = parsed.get("transactions", [])
+    tx_rows = []
+    for tx in transactions:
+        # Only compute is_routine for open-market purchases — it's irrelevant for grants/sales.
+        if tx.get("transaction_code") == "P" and not tx.get("is_10b51", False):
+            is_routine = _compute_is_routine(cur, owner.get("name"), cik, tx.get("transaction_date"))
+        else:
+            is_routine = None
+        tx_rows.append((
+            filing_id,
+            owner.get("name"), owner.get("role_raw"), owner.get("role_category"),
+            tx.get("transaction_date"), tx.get("transaction_code"),
+            tx.get("shares"), tx.get("price_per_share"), tx.get("total_value"),
+            tx.get("shares_after"),
+            bool(tx.get("is_10b51", False)), bool(tx.get("is_direct", True)),
+            is_routine,
+        ))
     if tx_rows:
         cur.executemany(_TX_INSERT_SQL, tx_rows)
     return filing_id, len(tx_rows)
@@ -258,6 +326,63 @@ def mark_signal_alerted(signal_id: int) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE signals SET alerted = TRUE WHERE id = %s", (signal_id,))
+
+
+def backfill_routine_flags(batch_size: int = 500) -> int:
+    """
+    Batch-compute is_routine for all P transactions where is_routine IS NULL.
+
+    Run this once after bootstrap to pre-populate the flag before the
+    2-year retention window starts pruning historical data that the live
+    routine check depends on. Commits in batches of batch_size to avoid
+    long-running transactions.
+
+    Returns the number of transactions updated.
+    """
+    # Fetch all candidates first (read-only pass).
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.id, t.insider_name, t.transaction_date, f.cik
+                FROM transactions t
+                JOIN form4_filings f ON f.id = t.filing_id
+                WHERE t.transaction_code = 'P'
+                  AND t.is_10b51 = FALSE
+                  AND t.is_routine IS NULL
+                ORDER BY t.transaction_date
+                """
+            )
+            candidates = cur.fetchall()
+
+    if not candidates:
+        return 0
+
+    updated = 0
+    batch: list = []
+    for tx_id, insider_name, tx_date, cik in candidates:
+        # Each flag computation opens its own short connection.
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                flag = _compute_is_routine(cur, insider_name, cik, tx_date)
+        if flag is not None:
+            batch.append((flag, tx_id))
+        if len(batch) >= batch_size:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    for flag_val, tid in batch:
+                        cur.execute("UPDATE transactions SET is_routine = %s WHERE id = %s", (flag_val, tid))
+            updated += len(batch)
+            batch = []
+
+    if batch:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                for flag_val, tid in batch:
+                    cur.execute("UPDATE transactions SET is_routine = %s WHERE id = %s", (flag_val, tid))
+        updated += len(batch)
+
+    return updated
 
 
 def prune_old_data(months: int = 24) -> Tuple[int, int]:

@@ -154,8 +154,15 @@ def _get_window_txs(all_ticker_txs: list[dict], filed_date: date) -> tuple[list,
     return tx_rows, all_prior
 
 
+_EXECUTIVE_ROLES = {"cfo", "ceo", "coo", "chairman"}
+TIGHT_CLUSTER_DAYS = 5
+
+
 def _detect_cluster(all_ticker_txs: list[dict], as_of_date: date) -> dict:
-    """Cluster detection from pre-loaded transaction data (mirrors cluster.py logic)."""
+    """
+    Cluster detection from pre-loaded transaction data (mirrors cluster.py logic).
+    Includes executive_cluster and tight_cluster sub-flags.
+    """
     window_start = as_of_date - timedelta(days=CLUSTER_WINDOW_DAYS)
     seen_names: dict[str, dict] = {}
     for tx in all_ticker_txs:
@@ -173,12 +180,42 @@ def _detect_cluster(all_ticker_txs: list[dict], as_of_date: date) -> dict:
                 seen_names[name] = tx
 
     insiders = list(seen_names.values())
+    is_cluster = len(insiders) >= CLUSTER_MIN_INSIDERS
+
+    executive_cluster = is_cluster and any(
+        (ins.get("role_category") or "").lower() in _EXECUTIVE_ROLES
+        for ins in insiders
+    )
+
+    tight_cluster = False
+    if is_cluster:
+        parsed_dates = []
+        for ins in insiders:
+            td = ins.get("transaction_date")
+            if td is None:
+                continue
+            if isinstance(td, date):
+                parsed_dates.append(td)
+            else:
+                try:
+                    parsed_dates.append(date.fromisoformat(str(td)[:10]))
+                except (ValueError, TypeError):
+                    pass
+        parsed_dates.sort()
+        for i in range(len(parsed_dates) - CLUSTER_MIN_INSIDERS + 1):
+            span = (parsed_dates[i + CLUSTER_MIN_INSIDERS - 1] - parsed_dates[i]).days
+            if span <= TIGHT_CLUSTER_DAYS:
+                tight_cluster = True
+                break
+
     return {
-        "is_cluster":    len(insiders) >= CLUSTER_MIN_INSIDERS,
-        "insider_count": len(insiders),
-        "insiders":      insiders,
-        "window_start":  window_start,
-        "window_end":    as_of_date,
+        "is_cluster":       is_cluster,
+        "insider_count":    len(insiders),
+        "insiders":         insiders,
+        "window_start":     window_start,
+        "window_end":       as_of_date,
+        "executive_cluster": executive_cluster,
+        "tight_cluster":    tight_cluster,
     }
 
 
@@ -186,11 +223,17 @@ def _score_ticker_txs(
     ticker: str,
     tx_rows: list[dict],
     all_prior: list[dict],
-) -> tuple[int, dict, list]:
-    """Score all eligible transactions, return (aggregate_score, breakdown, scored_txs)."""
+) -> tuple[int, dict, list, list]:
+    """
+    Score all eligible transactions.
+    Returns (aggregate_score, breakdown, scored_txs, participant_scores).
+    aggregate_score: max individual score (used for BUY threshold).
+    participant_scores: all individual eligible scores (used for cluster avg).
+    """
     scored_txs = []
     aggregate_score = 0
     breakdown_combined = {}
+    participant_scores = []
 
     for tx_row in tx_rows:
         cap_tier = tx_row.get("cap_tier") or "unknown"
@@ -209,11 +252,12 @@ def _score_ticker_txs(
         result = score_transaction(tx_row, owner, company, mdata, prior_for_insider)
         if result and result.get("eligible"):
             scored_txs.append({"owner": owner, "transaction": tx_row, "score_result": result})
+            participant_scores.append(result["score"])
             if result["score"] > aggregate_score:
                 aggregate_score = result["score"]
                 breakdown_combined = result["breakdown"]
 
-    return aggregate_score, breakdown_combined, scored_txs
+    return aggregate_score, breakdown_combined, scored_txs, participant_scores
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -293,7 +337,7 @@ def main():
         if not tx_rows:
             continue
 
-        aggregate_score, breakdown_combined, scored_txs = _score_ticker_txs(
+        aggregate_score, breakdown_combined, scored_txs, participant_scores = _score_ticker_txs(
             ticker, tx_rows, all_prior
         )
 
@@ -303,7 +347,7 @@ def main():
 
         cluster_info = _detect_cluster(all_ticker_txs, filed_date)
         is_cluster   = cluster_info.get("is_cluster", False)
-        signal_type  = classify_signal(aggregate_score, is_cluster)
+        signal_type  = classify_signal(aggregate_score, is_cluster, participant_scores)
 
         cap_tier    = tx_rows[0].get("cap_tier") or "unknown"
         cluster_tag = f" CLUSTER({cluster_info['insider_count']})" if is_cluster else ""

@@ -5,6 +5,13 @@ A cluster signal fires when 3 or more distinct insiders purchase shares
 in the same company within a 14-day rolling window. Research shows cluster
 signals generate approximately double the alpha of single-insider buys.
 
+Sub-flags added to the returned dict:
+  executive_cluster: True if any participant is CFO, CEO, COO, or Chairman.
+    Per Kang/Kim/Wang research, executive+director clusters are more informative
+    than director-only clusters.
+  tight_cluster: True if 3+ distinct insiders bought within a 5-day window.
+    Tighter temporal clustering has stronger signal per empirical studies.
+
 (Cohen, Malloy & Pomorski 2012; multiple empirical studies on cluster buys)
 """
 
@@ -14,8 +21,11 @@ from psycopg2.extras import RealDictCursor
 from src.db.connection import get_conn
 
 
-CLUSTER_WINDOW_DAYS = 14
+CLUSTER_WINDOW_DAYS  = 14
 CLUSTER_MIN_INSIDERS = 3
+TIGHT_CLUSTER_DAYS   = 5  # sub-window for tight_cluster flag
+
+_EXECUTIVE_ROLES = {"cfo", "ceo", "coo", "chairman"}
 
 
 def detect_clusters_for_ticker(ticker: str, as_of_date: date) -> dict:
@@ -64,12 +74,39 @@ def detect_clusters_for_ticker(ticker: str, as_of_date: date) -> dict:
     insiders = [dict(r) for r in rows]
     is_cluster = len(insiders) >= CLUSTER_MIN_INSIDERS
 
+    executive_cluster = is_cluster and any(
+        (ins.get("role_category") or "").lower() in _EXECUTIVE_ROLES
+        for ins in insiders
+    )
+
+    tight_cluster = False
+    if is_cluster:
+        raw_dates = [ins.get("transaction_date") for ins in insiders if ins.get("transaction_date")]
+        parsed = []
+        for d in raw_dates:
+            if isinstance(d, date):
+                parsed.append(d)
+            else:
+                try:
+                    parsed.append(date.fromisoformat(str(d)[:10]))
+                except (ValueError, TypeError):
+                    pass
+        parsed.sort()
+        # Slide a TIGHT_CLUSTER_DAYS window looking for 3+ insiders in span
+        for i in range(len(parsed) - CLUSTER_MIN_INSIDERS + 1):
+            span = (parsed[i + CLUSTER_MIN_INSIDERS - 1] - parsed[i]).days
+            if span <= TIGHT_CLUSTER_DAYS:
+                tight_cluster = True
+                break
+
     return {
         "is_cluster": is_cluster,
         "insider_count": len(insiders),
         "insiders": insiders,
         "window_start": window_start,
         "window_end": as_of_date,
+        "executive_cluster": executive_cluster,
+        "tight_cluster": tight_cluster,
     }
 
 

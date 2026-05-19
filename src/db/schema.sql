@@ -37,8 +37,13 @@ CREATE TABLE IF NOT EXISTS transactions (
     total_value      NUMERIC,
     shares_after     NUMERIC,
     is_10b51         BOOLEAN DEFAULT FALSE,
-    is_direct        BOOLEAN DEFAULT TRUE
+    is_direct        BOOLEAN DEFAULT TRUE,
+    -- Pre-computed at ingest time so routine check survives 2-year data pruning.
+    -- NULL = not yet computed (legacy rows); TRUE/FALSE = definitive classification.
+    is_routine       BOOLEAN DEFAULT NULL
 );
+-- Add is_routine to existing tables (idempotent).
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_routine BOOLEAN DEFAULT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_tx_transaction_date ON transactions(transaction_date);
 CREATE INDEX IF NOT EXISTS idx_tx_filing_id ON transactions(filing_id);
@@ -63,14 +68,23 @@ CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker);
 CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(signal_type);
 
 CREATE TABLE IF NOT EXISTS backtest_runs (
-    id           SERIAL PRIMARY KEY,
-    run_date     DATE NOT NULL,
-    threshold    INT NOT NULL,
-    horizon_days INT NOT NULL,
-    n_trades     INT,
-    hit_rate     NUMERIC,
-    avg_return   NUMERIC,
-    sharpe       NUMERIC,
-    metrics      JSONB,
-    created_at   TIMESTAMPTZ DEFAULT now()
+    id             SERIAL PRIMARY KEY,
+    run_date       DATE NOT NULL,
+    threshold      INT NOT NULL,
+    horizon_days   INT NOT NULL,
+    n_trades       INT,
+    hit_rate       NUMERIC,
+    avg_return     NUMERIC,      -- mean excess return vs SPY
+    median_return  NUMERIC,      -- median excess return (more robust than mean)
+    p25_return     NUMERIC,      -- 25th percentile excess return (downside floor)
+    p75_return     NUMERIC,      -- 75th percentile excess return (upside)
+    sharpe         NUMERIC,
+    iwm_avg_return NUMERIC,      -- avg excess return vs IWM (small-cap signals only)
+    metrics        JSONB,        -- full stratification: score band, cap tier, role, cluster
+    created_at     TIMESTAMPTZ DEFAULT now()
 );
+-- Add new columns to existing table (idempotent).
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS median_return  NUMERIC;
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS p25_return     NUMERIC;
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS p75_return     NUMERIC;
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS iwm_avg_return NUMERIC;

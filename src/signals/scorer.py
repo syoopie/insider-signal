@@ -13,6 +13,18 @@ Research basis:
   - Cluster research: 3+ insiders buying ≈ 2× alpha of single buy
   - Pficdn et al.: large purchases as % of holdings predict abnormal returns;
     small fraction-of-holdings purchases are not informative
+
+Cluster qualification note:
+  classify_signal() uses the *average* of all participant scores (not the max
+  individual score) to gate CLUSTER_BUY signals. This means three directors
+  each scoring 42 qualify as CLUSTER_BUY (avg=42 ≥ 35 threshold) even though
+  no single insider cleared 50. The collective action is the signal.
+
+Score factor mutual exclusivity:
+  first_purchase_12mo and sequenced_buying_30d are mutually exclusive by
+  definition — first_purchase_12mo fires only when there are NO purchases in
+  the preceding 365 days, while sequenced_buying_30d fires only when there IS
+  a purchase within the preceding 30 days.
 """
 
 from datetime import date, timedelta
@@ -70,32 +82,37 @@ def score_transaction(
 
     # Hard disqualifier: routine trader (CMP 2012)
     # Routine = bought in the same calendar month in ≥2 of the preceding 3 years.
-    # Requires historical data; silently skips if data doesn't span 3 years (no false positives).
+    # If the transaction row already has is_routine pre-computed (stored at ingest
+    # time), use it directly — avoids dependence on pruned historical data.
     tx_date_str = transaction.get("transaction_date") or ""
     try:
         tx_date = date.fromisoformat(tx_date_str[:10])
     except (ValueError, TypeError):
         tx_date = date.today()
 
-    tx_month = tx_date.month
-    oldest_available = min(
-        (_parse_date(p.get("transaction_date")) for p in prior_purchases
-         if _parse_date(p.get("transaction_date"))),
-        default=None,
-    )
-    routine_years = 0
-    for yr_back in (1, 2, 3):
-        yr = tx_date.year - yr_back
-        if oldest_available is None or oldest_available > date(yr, 12, 31):
-            # No data for this year at all — can't make a determination; skip year
-            continue
-        year_start = date(yr, tx_month, 1)
-        year_end   = date(yr, tx_month, 28)  # safe cross-month boundary
-        if any(year_start <= (_parse_date(p.get("transaction_date")) or date.min) <= year_end
-               for p in prior_purchases):
-            routine_years += 1
-    if routine_years >= 2:
+    stored_is_routine = transaction.get("is_routine")
+    if stored_is_routine is True:
         return {"score": 0, "breakdown": {"routine_trader": "DISQUALIFIED"}, "disqualified": True, "eligible": False}
+    elif stored_is_routine is None:
+        # Not yet computed — fall back to live calculation from prior_purchases.
+        tx_month = tx_date.month
+        oldest_available = min(
+            (_parse_date(p.get("transaction_date")) for p in prior_purchases
+             if _parse_date(p.get("transaction_date"))),
+            default=None,
+        )
+        routine_years = 0
+        for yr_back in (1, 2, 3):
+            yr = tx_date.year - yr_back
+            if oldest_available is None or oldest_available > date(yr, 12, 31):
+                continue
+            year_start = date(yr, tx_month, 1)
+            year_end   = date(yr, tx_month, 28)
+            if any(year_start <= (_parse_date(p.get("transaction_date")) or date.min) <= year_end
+                   for p in prior_purchases):
+                routine_years += 1
+        if routine_years >= 2:
+            return {"score": 0, "breakdown": {"routine_trader": "DISQUALIFIED"}, "disqualified": True, "eligible": False}
 
     breakdown = {}
     score = 0
@@ -180,15 +197,38 @@ def score_transaction(
     }
 
 
-def classify_signal(score: int, cluster_flag: bool) -> str:
-    if cluster_flag and score >= 50:
-        return "CLUSTER_BUY"
+def classify_signal(
+    score: int,
+    cluster_flag: bool,
+    participant_scores: list = None,
+) -> str:
+    """
+    Classify a signal given the max individual score and cluster information.
+
+    score: max individual transaction score (0–100)
+    cluster_flag: True if 3+ distinct insiders bought in the 14-day window
+    participant_scores: list of individual eligible scores for each cluster
+        participant. Used to compute the cluster-aggregate score so that a
+        group of moderately-scoring insiders qualifies as CLUSTER_BUY even
+        when no single insider clears the individual threshold.
+
+    Cluster qualification uses average(participant_scores) ≥ 35.
+    A lower bar is justified because the collective action is the signal —
+    research shows cluster buys generate ~2× alpha vs single buys regardless
+    of the absolute score of any one participant.
+    """
+    if cluster_flag:
+        if participant_scores:
+            cluster_avg = int(sum(participant_scores) / len(participant_scores))
+        else:
+            cluster_avg = score  # fallback for callers that don't supply scores
+        if cluster_avg >= 35:
+            return "CLUSTER_BUY"
+        return "WATCH"  # very weak cluster: surface on dashboard, no alert
     if score >= 65:
         return "BUY"
     if score >= 45:
         return "WATCH"
-    if cluster_flag:
-        return "WATCH"  # weak cluster: save for dashboard but don't alert
     return "LOW"
 
 
