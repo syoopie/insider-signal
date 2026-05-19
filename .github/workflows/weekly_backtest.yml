@@ -27,6 +27,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-ingest.txt
 
+      - name: Refresh market caps
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/refresh_market_caps.py
+
       - name: Run backtest
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
