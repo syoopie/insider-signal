@@ -364,6 +364,11 @@ def run_backtest(threshold: int = 65, lookback_days: int = 365) -> List[Dict]:
 def save_backtest_results(results: List[Dict], threshold: int) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # Replace any existing rows for today + this threshold so re-runs don't accumulate duplicates.
+            cur.execute(
+                "DELETE FROM backtest_runs WHERE run_date = NOW()::DATE AND threshold = %s",
+                (threshold,),
+            )
             for r in results:
                 cur.execute(
                     """
