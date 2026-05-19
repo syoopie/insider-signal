@@ -41,10 +41,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ingest.common import (
     setup_log_tee, log, phase, fmt_elapsed,
     load_ticker_universe, load_cik_map, in_universe, fetch_and_parse,
-    DERIV_ONLY,
+    DERIV_ONLY, _clean_ticker, resolve_ticker,
 )
 from src.ingest.edgar import fetch_form4_index
-from src.ingest.store import get_last_filed_date, _clean_ticker
+from src.ingest.store import get_last_filed_date, write_filing
 from src.db.connection import apply_schema, get_conn
 
 log_path = setup_log_tee("bootstrap")
@@ -201,63 +201,18 @@ def main():
     def _do_flush_writes(cur):
         """Execute all DB writes for results_buf using an open cursor. Returns (filings, tx, dups)."""
         n_filings = n_tx = n_dups = 0
-        # Sort by CIK so every concurrent transaction acquires row locks in the same
-        # order → consistent lock ordering → deadlocks become structurally impossible.
+        # Sort by CIK: consistent lock ordering across concurrent runs → no deadlocks.
         ordered = sorted(
             results_buf,
             key=lambda x: (x[1].get("issuer", {}).get("cik") or x[0].get("cik_raw", "")).zfill(10),
         )
         for filing_meta, parsed, tk in ordered:
-            issuer  = parsed.get("issuer", {})
-            owner   = parsed.get("owner", {})
-            raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
-            cik     = issuer.get("cik") or raw_cik
-            ticker  = _clean_ticker(issuer.get("ticker") or tk) or ""
-
-            if cik not in known_ciks:
-                cur.execute(
-                    "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
-                    "ON CONFLICT (cik) DO NOTHING",
-                    (cik, ticker.upper() if ticker else None, issuer.get("name", "")),
-                )
-                known_ciks.add(cik)
-            cur.execute(
-                "INSERT INTO form4_filings "
-                "  (accession_number, cik, filed_date, period_date) "
-                "VALUES (%s,%s,%s,%s) "
-                "ON CONFLICT (accession_number) DO NOTHING RETURNING id",
-                (filing_meta["accession_number"], cik,
-                 filing_meta.get("filed_date") or None,
-                 filing_meta.get("period_date") or None),
-            )
-            row = cur.fetchone()
-            if not row:
+            filing_id, n = write_filing(cur, filing_meta, parsed, tk, known_ciks=known_ciks)
+            if filing_id == 0:
                 n_dups += 1
-                continue
-            filing_id = row[0]
-
-            tx_rows = [
-                (
-                    filing_id,
-                    owner.get("name"), owner.get("role_raw"), owner.get("role_category"),
-                    tx.get("transaction_date"), tx.get("transaction_code"),
-                    tx.get("shares"), tx.get("price_per_share"),
-                    tx.get("total_value"), tx.get("shares_after"),
-                    bool(tx.get("is_10b51", False)), bool(tx.get("is_direct", True)),
-                )
-                for tx in parsed.get("transactions", [])
-            ]
-            if tx_rows:
-                cur.executemany(
-                    "INSERT INTO transactions "
-                    "  (filing_id, insider_name, insider_role, role_category, "
-                    "   transaction_date, transaction_code, shares, price_per_share, "
-                    "   total_value, shares_after, is_10b51, is_direct) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    tx_rows,
-                )
-            n_tx      += len(tx_rows)
-            n_filings += 1
+            else:
+                n_tx += n
+                n_filings += 1
         return n_filings, n_tx, n_dups
 
     def flush():
@@ -337,8 +292,7 @@ def main():
             for fm in fetch_form4_index(ws, we, req_per_sec=BACKFILL_RATE, index_workers=INDEX_WORKERS):
                 window_total += 1
                 filings_seen += 1
-                raw_cik = fm.get("cik_raw", "").lstrip("0")
-                ticker  = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
+                ticker = resolve_ticker(fm, cik_to_ticker)
                 if not in_universe(ticker, ticker_universe):
                     skipped_universe += 1
                     continue

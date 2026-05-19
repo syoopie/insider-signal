@@ -17,19 +17,22 @@ import sys
 import os
 import time
 from datetime import date, timedelta, datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from psycopg2.extras import RealDictCursor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.ingest.common import setup_log_tee, log as _log, phase as _phase, fmt_elapsed, load_ticker_universe, load_cik_map, in_universe, fetch_and_parse, DERIV_ONLY
-from src.db.connection import apply_schema
+from src.ingest.common import (
+    setup_log_tee, log as _log, phase as _phase, fmt_elapsed,
+    load_ticker_universe, load_cik_map, in_universe, fetch_and_parse,
+    DERIV_ONLY, resolve_ticker,
+)
+from src.db.connection import apply_schema, get_conn
 from src.ingest.edgar import fetch_form4_index
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.ingest.store import (
-    upsert_company, insert_filing, insert_transactions,
+    write_filing,
     update_company_market_data, get_last_filed_date,
     save_signal, mark_signal_alerted, get_unalerted_signals, prune_old_data,
-    _clean_ticker,
 )
 from src.market.prices import get_market_data
 from src.signals.scorer import score_transaction, classify_signal
@@ -77,8 +80,6 @@ def main():
     n_skipped_deriv  = 0
     n_duplicate      = 0
 
-    from src.db.connection import get_conn
-
     # Pre-filter: load already-stored accessions for the window before touching EDGAR.
     window_stored: set = set()
     try:
@@ -99,8 +100,7 @@ def main():
     with ThreadPoolExecutor(max_workers=INGEST_WORKERS) as pool:
         for filing_meta in fetch_form4_index(start_date, today, req_per_sec=INGEST_RATE):
             filings_seen += 1
-            raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
-            ticker = cik_to_ticker.get(raw_cik.zfill(10), "").upper()
+            ticker = resolve_ticker(filing_meta, cik_to_ticker)
             if not in_universe(ticker, ticker_universe):
                 n_skipped_universe += 1
                 continue
@@ -132,28 +132,17 @@ def main():
         _log("  Nothing new to write — all filings filtered or failed")
     else:
         _log(f"  Writing {len(parsed_results)} filings to DB...")
-
-    # Phase 3: write to DB sequentially (psycopg2 not thread-safe)
-    for filing_meta, parsed, tk in parsed_results:
-        raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
-        issuer = parsed.get("issuer", {})
-        owner = parsed.get("owner", {})
-        cik = issuer.get("cik") or raw_cik
-        ticker = _clean_ticker(issuer.get("ticker") or tk) or ""
-
-        upsert_company(cik, ticker, issuer.get("name", ""))
-
-        filing_id = insert_filing(
-            filing_meta["accession_number"], cik,
-            filing_meta.get("filed_date"), filing_meta.get("period_date"),
-        )
-        if filing_id is None:
-            n_duplicate += 1
-            continue
-
-        n = insert_transactions(filing_id, owner, parsed["transactions"])
-        tx_stored += n
-        filings_stored += 1
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET lock_timeout = '8s'")
+                cur.execute("SET idle_in_transaction_session_timeout = '120s'")
+                for filing_meta, parsed, tk in parsed_results:
+                    filing_id, n = write_filing(cur, filing_meta, parsed, tk)
+                    if filing_id == 0:
+                        n_duplicate += 1
+                    else:
+                        tx_stored += n
+                        filings_stored += 1
 
 
     elapsed_ingest = time.time() - t0
@@ -178,7 +167,6 @@ def main():
         cluster_info = detect_clusters_for_ticker(ticker, today)
         mdata = get_market_data(ticker) if ticker else {}
 
-        from src.db.connection import get_conn
         with get_conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""

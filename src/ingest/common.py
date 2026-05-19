@@ -12,7 +12,7 @@ import os
 import sys
 import time
 from datetime import datetime
-from typing import Set
+from typing import Optional, Set
 
 from src.ingest.edgar import fetch_cik_ticker_map, fetch_filing_xml
 from src.ingest.parser import parse_form4
@@ -61,6 +61,28 @@ def fmt_elapsed(seconds: float) -> str:
     h, rem = divmod(int(seconds), 3600)
     m, s = divmod(rem, 60)
     return f"{h}h{m:02d}m{s:02d}s" if h else f"{m}m{s:02d}s"
+
+
+# ── Ticker helpers ────────────────────────────────────────────────────────────
+
+_INVALID_TICKERS = {"", "NONE", "NA", "N/A", "NULL"}
+
+
+def _clean_ticker(ticker: str) -> Optional[str]:
+    """Return the ticker uppercased, or None if it's a sentinel/missing value.
+    Strips exchange prefixes like 'NASDAQ:SVC' → 'SVC'."""
+    if not ticker:
+        return None
+    t = ticker.strip().upper()
+    if ":" in t:
+        t = t.split(":")[-1].strip()
+    return None if t in _INVALID_TICKERS else t
+
+
+def resolve_ticker(filing_meta: dict, cik_to_ticker: dict) -> str:
+    """Map a filing's raw CIK to a ticker using the SEC CIK→ticker map."""
+    raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
+    return cik_to_ticker.get(raw_cik.zfill(10), "").upper()
 
 
 # ── Universe + CIK map ────────────────────────────────────────────────────────

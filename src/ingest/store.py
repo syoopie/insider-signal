@@ -8,6 +8,7 @@ import decimal
 from datetime import date, datetime, timedelta
 from typing import Optional, Tuple, List
 from src.db.connection import get_conn
+from src.ingest.common import _clean_ticker
 
 _SIGNAL_COOLDOWN_DAYS = 7   # suppress follow-up signals within this window
 _SIGNAL_SCORE_JUMP    = 10  # unless score increased by at least this much
@@ -51,34 +52,71 @@ def _dumps(obj) -> str:
     return json.dumps(obj, cls=_JSONEncoder)
 
 
-_INVALID_TICKERS = {"", "NONE", "NA", "N/A", "NULL"}
+_TX_INSERT_SQL = """
+    INSERT INTO transactions (
+        filing_id, insider_name, insider_role, role_category,
+        transaction_date, transaction_code, shares, price_per_share,
+        total_value, shares_after, is_10b51, is_direct
+    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+"""
 
 
-def _clean_ticker(ticker: str):
-    """Return the ticker uppercased, or None if it's a sentinel/missing value.
-    Strips exchange prefixes like 'NASDAQ:SVC' → 'SVC'."""
-    if not ticker:
-        return None
-    t = ticker.strip().upper()
-    # Strip exchange prefix (e.g. "NASDAQ:SVC" → "SVC", "NYSE:T" → "T")
-    if ":" in t:
-        t = t.split(":")[-1].strip()
-    return None if t in _INVALID_TICKERS else t
+def write_filing(cur, filing_meta: dict, parsed: dict, ticker: str,
+                 known_ciks: set = None) -> Tuple[int, int]:
+    """
+    Write one filing + its transactions using an already-open cursor.
+    Returns (filing_id, tx_count). filing_id=0 means duplicate (skipped).
 
+    known_ciks: set of CIKs already in the companies table.
+      - Provided (bootstrap): INSERT DO NOTHING, add new CIKs to the set.
+        Avoids row locks on existing rows entirely.
+      - None (daily ingest): INSERT DO UPDATE, keeping ticker/name current.
+    """
+    issuer  = parsed.get("issuer", {})
+    owner   = parsed.get("owner", {})
+    raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
+    cik     = issuer.get("cik") or raw_cik
+    tkr     = _clean_ticker(issuer.get("ticker") or ticker) or ""
 
-def upsert_company(cik: str, ticker: str, name: str) -> None:
-    with get_conn() as conn:
-        with conn.cursor() as cur:
+    if known_ciks is not None:
+        if cik not in known_ciks:
             cur.execute(
-                """
-                INSERT INTO companies (cik, ticker, name)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (cik) DO UPDATE
-                    SET ticker = EXCLUDED.ticker,
-                        name   = EXCLUDED.name
-                """,
-                (cik, _clean_ticker(ticker), name),
+                "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
+                "ON CONFLICT (cik) DO NOTHING",
+                (cik, tkr.upper() if tkr else None, issuer.get("name", "")),
             )
+            known_ciks.add(cik)
+    else:
+        cur.execute(
+            "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
+            "ON CONFLICT (cik) DO UPDATE SET ticker=EXCLUDED.ticker, name=EXCLUDED.name",
+            (cik, _clean_ticker(tkr), issuer.get("name", "")),
+        )
+
+    cur.execute(
+        "INSERT INTO form4_filings (accession_number, cik, filed_date, period_date) "
+        "VALUES (%s,%s,%s,%s) ON CONFLICT (accession_number) DO NOTHING RETURNING id",
+        (filing_meta["accession_number"], cik,
+         filing_meta.get("filed_date") or None,
+         filing_meta.get("period_date") or None),
+    )
+    row = cur.fetchone()
+    if not row:
+        return 0, 0
+    filing_id = row[0]
+
+    tx_rows = [
+        (filing_id,
+         owner.get("name"), owner.get("role_raw"), owner.get("role_category"),
+         tx.get("transaction_date"), tx.get("transaction_code"),
+         tx.get("shares"), tx.get("price_per_share"), tx.get("total_value"),
+         tx.get("shares_after"),
+         bool(tx.get("is_10b51", False)), bool(tx.get("is_direct", True)))
+        for tx in parsed.get("transactions", [])
+    ]
+    if tx_rows:
+        cur.executemany(_TX_INSERT_SQL, tx_rows)
+    return filing_id, len(tx_rows)
 
 
 def update_company_market_data(cik: str, market_cap: Optional[int], cap_tier: Optional[str]) -> None:
@@ -92,64 +130,6 @@ def update_company_market_data(cik: str, market_cap: Optional[int], cap_tier: Op
                 """,
                 (market_cap, cap_tier, cik),
             )
-
-
-def insert_filing(accession_number: str, cik: str, filed_date: str, period_date: str) -> Optional[int]:
-    """
-    Insert a Form 4 filing record. Returns the filing ID, or None if it already exists.
-    """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO form4_filings (accession_number, cik, filed_date, period_date)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (accession_number) DO NOTHING
-                RETURNING id
-                """,
-                (accession_number, cik, filed_date or None, period_date or None),
-            )
-            row = cur.fetchone()
-            return row[0] if row else None
-
-
-def insert_transactions(filing_id: int, owner: dict, transactions: list) -> int:
-    """
-    Insert all transactions for a filing. Returns count of rows inserted.
-    """
-    if not transactions:
-        return 0
-
-    rows = []
-    for tx in transactions:
-        rows.append((
-            filing_id,
-            owner.get("name"),
-            owner.get("role_raw"),
-            owner.get("role_category"),
-            tx.get("transaction_date"),
-            tx.get("transaction_code"),
-            tx.get("shares"),
-            tx.get("price_per_share"),
-            tx.get("total_value"),
-            tx.get("shares_after"),
-            bool(tx.get("is_10b51", False)),
-            bool(tx.get("is_direct", True)),
-        ))
-
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.executemany(
-                """
-                INSERT INTO transactions (
-                    filing_id, insider_name, insider_role, role_category,
-                    transaction_date, transaction_code, shares, price_per_share,
-                    total_value, shares_after, is_10b51, is_direct
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                rows,
-            )
-    return len(rows)
 
 
 def get_last_filed_date() -> Optional[date]:
