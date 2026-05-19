@@ -25,7 +25,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ingest.common import (
     setup_log_tee, log as _log, phase as _phase, fmt_elapsed,
     load_ticker_universe, load_cik_map, in_universe, fetch_and_parse,
-    DERIV_ONLY, resolve_ticker,
+    DERIV_ONLY, XML_MISSING, PARSE_ERROR, resolve_ticker,
+    EdgarRateLimitError, EdgarBlockedError, EdgarServerError,
 )
 from src.db.connection import apply_schema, get_conn
 from src.ingest.edgar import fetch_form4_index
@@ -76,7 +77,8 @@ def main():
     filings_stored   = 0
     tx_stored        = 0
     n_skipped_universe = 0
-    n_skipped_no_xml = 0
+    n_xml_missing    = 0
+    n_parse_error    = 0
     n_skipped_deriv  = 0
     n_duplicate      = 0
 
@@ -116,17 +118,22 @@ def main():
             fm, tk = pending[future]
             try:
                 result = future.result()
+            except (EdgarRateLimitError, EdgarBlockedError, EdgarServerError):
+                raise
             except Exception:
-                n_skipped_no_xml += 1
+                n_parse_error += 1
                 continue
-            if result is None:
-                n_skipped_no_xml += 1
+            if result is XML_MISSING:
+                n_xml_missing += 1
+            elif result is PARSE_ERROR:
+                n_parse_error += 1
             elif result is DERIV_ONLY:
                 n_skipped_deriv += 1
             else:
                 parsed_results.append((result[0], result[1], tk))
 
-    _log(f"  Fetch complete: {len(parsed_results)} parsed, {n_skipped_deriv} deriv-only, {n_skipped_no_xml} fetch/parse errors")
+    _log(f"  Fetch complete: {len(parsed_results)} parsed, {n_skipped_deriv} deriv-only, "
+         f"{n_xml_missing} no-xml, {n_parse_error} parse-errors")
 
     if not parsed_results:
         _log("  Nothing new to write — all filings filtered or failed")
@@ -150,7 +157,7 @@ def main():
     _log(f"  Seen:    {filings_seen}")
     _log(f"  Stored:  {filings_stored} filings, {tx_stored} transactions")
     _log(f"  Skipped: {n_skipped_universe} not-in-universe, {n_skipped_deriv} deriv-only, "
-         f"{n_skipped_no_xml} fetch/parse errors, {n_duplicate} duplicate")
+         f"{n_xml_missing} no-xml, {n_parse_error} parse-errors, {n_duplicate} duplicate")
 
     # ── SIGNAL SCORING ────────────────────────────────────────────────────────
     _phase("SIGNAL SCORING")
@@ -318,6 +325,21 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except EdgarRateLimitError as e:
+        msg = f"EDGAR rate limit (429): {e}\nEDGAR is throttling this IP — retry in 15+ minutes."
+        print(f"\nFATAL: {msg}")
+        send_error(msg, context="daily ingest — rate limited")
+        sys.exit(1)
+    except EdgarBlockedError as e:
+        msg = f"EDGAR access blocked (403): {e}\nCheck USER_AGENT in edgar.py."
+        print(f"\nFATAL: {msg}")
+        send_error(msg, context="daily ingest — blocked")
+        sys.exit(1)
+    except EdgarServerError as e:
+        msg = f"EDGAR server error after retries: {e}"
+        print(f"\nFATAL: {msg}")
+        send_error(msg, context="daily ingest — server error")
+        sys.exit(1)
     except Exception as e:
         import traceback
         tb = traceback.format_exc()

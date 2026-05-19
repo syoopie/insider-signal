@@ -41,7 +41,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ingest.common import (
     setup_log_tee, log, phase, fmt_elapsed,
     load_ticker_universe, load_cik_map, in_universe, fetch_and_parse,
-    DERIV_ONLY, _clean_ticker, resolve_ticker,
+    DERIV_ONLY, XML_MISSING, PARSE_ERROR, _clean_ticker, resolve_ticker,
+    EdgarRateLimitError, EdgarBlockedError, EdgarServerError,
 )
 from src.ingest.edgar import fetch_form4_index
 from src.ingest.store import get_last_filed_date, write_filing
@@ -116,7 +117,8 @@ def main():
     skipped_universe = 0
     skipped_duplicate = 0
     skipped_deriv    = 0   # derivative-only filings (Table II only) — not errors
-    parse_errors     = 0   # genuine failures: fetch failed or XML malformed
+    xml_missing      = 0   # XML fetch returned nothing (404, timeout, server error)
+    parse_errors     = 0   # XML fetched but parse_form4 failed, or unexpected exception
     candidates_total = 0
     candidates_done  = 0
     window_idx       = 0       # updated by the for-loop, read by maybe_log closure
@@ -154,32 +156,36 @@ def main():
             f"[{fmt_elapsed(elapsed)}]  {progress}  "
             f"stored={filings_stored:,}  tx={tx_stored:,}  "
             f"skip_uni={skipped_universe:,}  skip_dup={skipped_duplicate:,}  "
-            f"deriv_only={skipped_deriv:,}  errors={parse_errors}  "
+            f"deriv_only={skipped_deriv:,}  no_xml={xml_missing:,}  parse_err={parse_errors:,}  "
             f"rate={rate:.1f}/s  window={window_idx+1}/{total_windows}"
         )
         last_log_t = now
 
     def drain_done():
         """Non-blocking: collect any futures that have already finished."""
-        nonlocal parse_errors, skipped_deriv, candidates_done
+        nonlocal parse_errors, xml_missing, skipped_deriv, candidates_done
         done = [f for f in list(pending) if f.done()]
         for fut in done:
             fm, tk = pending.pop(fut)
             candidates_done += 1
             try:
                 result = fut.result()
-                if result is None:
+                if result is XML_MISSING:
+                    xml_missing += 1
+                elif result is PARSE_ERROR:
                     parse_errors += 1
                 elif result is DERIV_ONLY:
                     skipped_deriv += 1
                 else:
                     results_buf.append((result[0], result[1], tk))
+            except (EdgarRateLimitError, EdgarBlockedError, EdgarServerError):
+                raise
             except Exception:
                 parse_errors += 1
 
     def drain_all():
         """Blocking: wait for every currently-pending future to finish."""
-        nonlocal parse_errors, skipped_deriv, candidates_done
+        nonlocal parse_errors, xml_missing, skipped_deriv, candidates_done
         futs = list(pending.keys())
         for fut in as_completed(futs):
             fm, tk = pending.pop(fut, (None, None))
@@ -188,12 +194,16 @@ def main():
             candidates_done += 1
             try:
                 result = fut.result()
-                if result is None:
+                if result is XML_MISSING:
+                    xml_missing += 1
+                elif result is PARSE_ERROR:
                     parse_errors += 1
                 elif result is DERIV_ONLY:
                     skipped_deriv += 1
                 else:
                     results_buf.append((result[0], result[1], tk))
+            except (EdgarRateLimitError, EdgarBlockedError, EdgarServerError):
+                raise
             except Exception:
                 parse_errors += 1
             maybe_log(paginating=False)
@@ -337,7 +347,8 @@ def main():
     log(f"Skipped:        {skipped_universe:,} (not in universe)")
     log(f"Duplicates:     {skipped_duplicate:,} (already stored)")
     log(f"Deriv-only:     {skipped_deriv:,} (Table II only — options/warrants, expected)")
-    log(f"Fetch/parse errors: {parse_errors:,}")
+    log(f"No XML:         {xml_missing:,} (404, timeout, or server error fetching XML)")
+    log(f"Parse errors:   {parse_errors:,} (XML fetched but parse_form4 failed)")
     if elapsed > 0:
         log(f"Avg rate:       {filings_stored / elapsed:.2f} filings/sec")
 
@@ -345,6 +356,19 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except EdgarRateLimitError as e:
+        print(f"\nFATAL: EDGAR rate limit (429) — {e}")
+        print("EDGAR is throttling this IP. Wait 15+ minutes before retrying.")
+        print("Partial progress was saved — re-running without --force will skip already-stored filings.")
+        sys.exit(1)
+    except EdgarBlockedError as e:
+        print(f"\nFATAL: EDGAR access blocked (403) — {e}")
+        print("Check USER_AGENT in src/ingest/edgar.py includes a valid email address.")
+        sys.exit(1)
+    except EdgarServerError as e:
+        print(f"\nFATAL: EDGAR server error after retries — {e}")
+        print("EDGAR may be down. Check https://www.sec.gov/cgi-bin/browse-edgar for status.")
+        sys.exit(1)
     except Exception as e:
         import traceback
         print(f"FATAL ERROR:\n{traceback.format_exc()}")

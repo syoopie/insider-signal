@@ -14,7 +14,10 @@ import time
 from datetime import datetime
 from typing import Optional, Set
 
-from src.ingest.edgar import fetch_cik_ticker_map, fetch_filing_xml
+from src.ingest.edgar import (
+    fetch_cik_ticker_map, fetch_filing_xml,
+    EdgarRateLimitError, EdgarBlockedError, EdgarServerError,
+)
 from src.ingest.parser import parse_form4
 
 _LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
@@ -115,10 +118,11 @@ def in_universe(ticker: str, ticker_universe: Set[str]) -> bool:
     return bool(ticker) and ticker in ticker_universe
 
 
-# Sentinel returned when a filing parses cleanly but contains only derivative
-# transactions (Table II: options, warrants). Not a fetch/parse failure — the
-# parser intentionally ignores Table II. Callers should count this separately.
-DERIV_ONLY = object()
+# Sentinels returned by fetch_and_parse to distinguish outcomes without exceptions.
+# EdgarRateLimitError / EdgarBlockedError / EdgarServerError propagate as exceptions.
+DERIV_ONLY  = object()  # filing parsed cleanly but only has Table II (options/warrants)
+XML_MISSING = object()  # XML fetch returned nothing (404, timeout, server error)
+PARSE_ERROR = object()  # XML fetched but parse_form4 returned None (malformed XML)
 
 
 def fetch_and_parse(filing_meta: dict, rate: float = 8.0):
@@ -127,16 +131,20 @@ def fetch_and_parse(filing_meta: dict, rate: float = 8.0):
     Returns:
       (filing_meta, parsed)  — success, has non-derivative transactions
       DERIV_ONLY             — filing has only derivative transactions (Table II)
-      None                   — XML fetch failed or XML is malformed
+      XML_MISSING            — XML fetch returned nothing (404, timeout, server error)
+      PARSE_ERROR            — XML fetched but parse_form4 returned None
+    Raises EdgarRateLimitError / EdgarBlockedError / EdgarServerError — callers must
+    handle these as fatal; they must not be silently counted as parse errors.
     Thread-safe.
     """
     filer_cik = filing_meta.get("filer_cik", filing_meta.get("cik_raw", ""))
     xml = fetch_filing_xml(filing_meta["accession_number"], filer_cik, req_per_sec=rate)
+    # EdgarRateLimitError / EdgarBlockedError / EdgarServerError propagate naturally.
     if not xml:
-        return None
+        return XML_MISSING
     parsed = parse_form4(xml, filing_meta)
     if not parsed:
-        return None
+        return PARSE_ERROR
     if not parsed.get("transactions"):
         return DERIV_ONLY
     return filing_meta, parsed

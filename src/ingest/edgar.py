@@ -14,6 +14,16 @@ from datetime import date
 from typing import Iterator, Optional, Dict
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
+class EdgarRateLimitError(RuntimeError):
+    """HTTP 429 — EDGAR rate limit hit. Already retried by tenacity; abort the run."""
+
+class EdgarBlockedError(RuntimeError):
+    """HTTP 403 — IP or User-Agent blocked by EDGAR. Check USER_AGENT in edgar.py."""
+
+class EdgarServerError(RuntimeError):
+    """HTTP 5xx — EDGAR server error; already retried by tenacity."""
+
+
 EDGAR_BASE = "https://efts.sec.gov/LATEST/search-index"
 EDGAR_ARCHIVES = "https://www.sec.gov/Archives/edgar"
 EDGAR_SUBMISSIONS = "https://data.sec.gov/submissions"
@@ -59,6 +69,25 @@ def _get(url: str, params: dict = None, req_per_sec: float = 8.0, timeout: int =
         resp.raise_for_status()
     resp.raise_for_status()
     return resp.json()
+
+
+def _get_raising(url: str, params: dict = None, req_per_sec: float = 8.0) -> dict:
+    """
+    Like _get but converts terminal HTTP errors to domain exceptions after tenacity
+    exhausts retries. This lets callers distinguish fatal EDGAR errors from transient
+    network issues without catching generic HTTPError.
+    """
+    try:
+        return _get(url, params=params, req_per_sec=req_per_sec)
+    except requests.HTTPError as e:
+        code = e.response.status_code if e.response is not None else 0
+        if code == 429:
+            raise EdgarRateLimitError(f"Rate limited (429) after retries — {url}") from e
+        if code == 403:
+            raise EdgarBlockedError(f"Blocked (403) after retries — {url}") from e
+        if code >= 500:
+            raise EdgarServerError(f"Server error ({code}) after retries — {url}") from e
+        raise
 
 
 def _get_primary_doc(filer_cik: str, accession_number: str, req_per_sec: float = 8.0) -> Optional[str]:
@@ -154,9 +183,9 @@ def fetch_form4_index(
                 "from": offset,
                 "size": page_size,
             }
-            return _get(EDGAR_BASE, params=params, req_per_sec=req_per_sec).get("hits", {}).get("hits", [])
+            return _get_raising(EDGAR_BASE, params=params, req_per_sec=req_per_sec).get("hits", {}).get("hits", [])
 
-        first_data = _get(EDGAR_BASE, params={
+        first_data = _get_raising(EDGAR_BASE, params={
             "forms": form_type,
             "dateRange": "custom",
             "startdt": start_date.isoformat(),
@@ -187,8 +216,10 @@ def fetch_form4_index(
                     try:
                         for hit in fut.result():
                             yield _parse_index_hit(hit)
+                    except (EdgarRateLimitError, EdgarBlockedError, EdgarServerError):
+                        raise
                     except Exception:
-                        pass
+                        pass  # single page failure — skip and continue
 
     yield from _fetch_pages_for_form("4")
     yield from _fetch_pages_for_form("4/A")
@@ -207,14 +238,25 @@ def fetch_filing_xml(accession_number: str, filer_cik: str, req_per_sec: float =
     cik_padded = str(filer_cik).zfill(10)
     base_dir = f"{EDGAR_ARCHIVES}/data/{cik_padded}/{acc_no_dashes}"
 
+    def _check_status(resp, context: str):
+        """Raise domain exception on 429/403; return True if response is usable."""
+        if resp.status_code == 429:
+            raise EdgarRateLimitError(f"Rate limited (429) fetching {context}")
+        if resp.status_code == 403:
+            raise EdgarBlockedError(f"Blocked (403) fetching {context}")
+        return resp.status_code == 200
+
     # Path 1: submissions API (1 cached request, then free)
     primary_doc = _get_primary_doc(filer_cik, accession_number, req_per_sec)
     if primary_doc:
         _throttle(req_per_sec)
         try:
             resp = requests.get(f"{base_dir}/{primary_doc}", headers=HEADERS, timeout=15)
-            if resp.status_code == 200 and resp.text.strip().startswith("<?xml") or "<ownershipDocument" in resp.text[:500]:
-                return resp.text
+            if _check_status(resp, accession_number):
+                if resp.text.strip().startswith("<?xml") or "<ownershipDocument" in resp.text[:500]:
+                    return resp.text
+        except (EdgarRateLimitError, EdgarBlockedError):
+            raise
         except requests.RequestException:
             pass
 
@@ -223,14 +265,17 @@ def fetch_filing_xml(accession_number: str, filer_cik: str, req_per_sec: float =
         _throttle(req_per_sec)
         try:
             resp = requests.get(f"{base_dir}/{index_suffix}", headers=HEADERS, timeout=15)
-            if resp.status_code == 200:
+            if _check_status(resp, f"{accession_number} index"):
                 matches = re.findall(r'href="[^"]*?/([^"/?]+\.xml)"', resp.text, re.IGNORECASE)
                 if matches:
                     _throttle(req_per_sec)
                     resp2 = requests.get(f"{base_dir}/{matches[0]}", headers=HEADERS, timeout=15)
-                    if resp2.status_code == 200 and resp2.text.strip().startswith("<"):
-                        return resp2.text
+                    if _check_status(resp2, f"{accession_number} xml"):
+                        if resp2.text.strip().startswith("<"):
+                            return resp2.text
                     break
+        except (EdgarRateLimitError, EdgarBlockedError):
+            raise
         except requests.RequestException:
             pass
 
