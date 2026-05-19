@@ -256,23 +256,28 @@ def main():
             results_buf.clear()
             return
 
-        for attempt in range(3):
+        for attempt in range(5):
             try:
                 with get_conn() as conn:
                     with conn.cursor() as cur:
+                        # Fail fast on lock contention instead of deadlocking after minutes.
+                        # idle_in_transaction_session_timeout ensures this connection
+                        # self-terminates if it leaks (e.g. after an unclean process exit).
+                        cur.execute("SET lock_timeout = '8s'")
+                        cur.execute("SET idle_in_transaction_session_timeout = '120s'")
                         n_f, n_tx, n_dups = _do_flush_writes(cur)
                 filings_stored    += n_f
                 tx_stored         += n_tx
                 skipped_duplicate += n_dups
                 break
-            except psycopg2.errors.DeadlockDetected:
-                if attempt < 2:
-                    delay = (attempt + 1) * 3
-                    log(f"  Deadlock (attempt {attempt+1}/3) — retrying in {delay}s...")
+            except (psycopg2.errors.DeadlockDetected, psycopg2.errors.LockNotAvailable):
+                if attempt < 4:
+                    delay = min((attempt + 1) * 2, 10)
+                    log(f"  Lock conflict (attempt {attempt+1}/5) — retrying in {delay}s...")
                     time.sleep(delay)
                 else:
                     parse_errors += len(results_buf)
-                    log("  ERROR: deadlock after 3 attempts — batch dropped")
+                    log("  ERROR: lock conflict after 5 attempts — batch dropped")
             except Exception as e:
                 parse_errors += len(results_buf)
                 log(f"  ERROR writing batch to DB: {e}")
