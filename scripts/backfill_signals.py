@@ -92,15 +92,20 @@ def _bulk_load_transactions(tickers: list[str]) -> dict[str, list[dict]]:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT t.*, f.filed_date, c.ticker, c.cik, c.cap_tier,
-                       c.name AS company_name
-                FROM transactions t
-                JOIN form4_filings f ON f.id = t.filing_id
-                JOIN companies c ON c.cik = f.cik
-                WHERE t.transaction_code = 'P'
-                  AND t.is_10b51 = FALSE
-                  AND c.ticker = ANY(%s)
-                ORDER BY c.ticker, t.transaction_date DESC
+                SELECT * FROM (
+                    SELECT DISTINCT ON (c.ticker, t.insider_name, t.transaction_date, t.transaction_code)
+                        t.*, f.filed_date, c.ticker, c.cik, c.cap_tier,
+                        c.name AS company_name
+                    FROM transactions t
+                    JOIN form4_filings f ON f.id = t.filing_id
+                    JOIN companies c ON c.cik = f.cik
+                    WHERE t.transaction_code = 'P'
+                      AND c.ticker = ANY(%s)
+                    ORDER BY c.ticker, t.insider_name, t.transaction_date, t.transaction_code,
+                             f.filed_date DESC
+                ) deduped
+                WHERE is_10b51 = FALSE
+                ORDER BY ticker, transaction_date DESC
                 """,
                 (tickers,),
             )

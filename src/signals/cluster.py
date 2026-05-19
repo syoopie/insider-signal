@@ -38,21 +38,24 @@ def detect_clusters_for_ticker(ticker: str, as_of_date: date) -> dict:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT DISTINCT ON (t.insider_name)
-                    t.insider_name,
-                    t.role_category,
-                    t.transaction_date,
-                    t.total_value,
-                    t.price_per_share,
-                    t.shares
-                FROM transactions t
-                JOIN form4_filings f ON f.id = t.filing_id
-                JOIN companies c ON c.cik = f.cik
-                WHERE c.ticker = %s
-                  AND t.transaction_code = 'P'
-                  AND t.is_10b51 = FALSE
-                  AND t.transaction_date BETWEEN %s AND %s
-                ORDER BY t.insider_name, t.transaction_date DESC
+                SELECT DISTINCT ON (insider_name)
+                    insider_name, role_category, transaction_date,
+                    total_value, price_per_share, shares
+                FROM (
+                    SELECT DISTINCT ON (t.insider_name, t.transaction_date, t.transaction_code)
+                        t.insider_name, t.role_category, t.transaction_date,
+                        t.total_value, t.price_per_share, t.shares, t.is_10b51
+                    FROM transactions t
+                    JOIN form4_filings f ON f.id = t.filing_id
+                    JOIN companies c ON c.cik = f.cik
+                    WHERE c.ticker = %s
+                      AND t.transaction_code = 'P'
+                      AND t.transaction_date BETWEEN %s AND %s
+                    ORDER BY t.insider_name, t.transaction_date, t.transaction_code,
+                             f.filed_date DESC
+                ) deduped
+                WHERE is_10b51 = FALSE
+                ORDER BY insider_name, transaction_date DESC
                 """,
                 (ticker.upper(), window_start, as_of_date),
             )

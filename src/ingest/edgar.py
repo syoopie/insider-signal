@@ -141,7 +141,7 @@ def fetch_form4_index(
 
     def _fetch_page(offset: int) -> list:
         params = {
-            "forms": "4",
+            "forms": "4,4/A",
             "dateRange": "custom",
             "startdt": start_date.isoformat(),
             "enddt": end_date.isoformat(),
@@ -152,7 +152,7 @@ def fetch_form4_index(
 
     # Fetch page 0 with full response to learn the total count.
     first_params = {
-        "forms": "4",
+        "forms": "4,4/A",
         "dateRange": "custom",
         "startdt": start_date.isoformat(),
         "enddt": end_date.isoformat(),

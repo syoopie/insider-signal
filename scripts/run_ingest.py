@@ -182,27 +182,37 @@ def main():
         with get_conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT t.*, f.filed_date, c.cik, c.cap_tier, c.name as company_name
-                    FROM transactions t
-                    JOIN form4_filings f ON f.id = t.filing_id
-                    JOIN companies c ON c.cik = f.cik
-                    WHERE c.ticker = %s
-                      AND t.transaction_code = 'P'
-                      AND t.is_10b51 = FALSE
-                      AND t.transaction_date >= %s
-                    ORDER BY t.transaction_date DESC
+                    SELECT * FROM (
+                        SELECT DISTINCT ON (t.insider_name, t.transaction_date, t.transaction_code)
+                            t.*, f.filed_date, c.cik, c.cap_tier, c.name as company_name
+                        FROM transactions t
+                        JOIN form4_filings f ON f.id = t.filing_id
+                        JOIN companies c ON c.cik = f.cik
+                        WHERE c.ticker = %s
+                          AND t.transaction_code = 'P'
+                          AND t.transaction_date >= %s
+                        ORDER BY t.insider_name, t.transaction_date, t.transaction_code,
+                                 f.filed_date DESC
+                    ) deduped
+                    WHERE is_10b51 = FALSE
+                    ORDER BY transaction_date DESC
                 """, (ticker, recent_date))
                 tx_rows = [dict(r) for r in cur.fetchall()]
 
                 cur.execute("""
-                    SELECT t.insider_name, t.transaction_date
-                    FROM transactions t
-                    JOIN form4_filings f ON f.id = t.filing_id
-                    JOIN companies c ON c.cik = f.cik
-                    WHERE c.ticker = %s
-                      AND t.transaction_code = 'P'
-                      AND t.is_10b51 = FALSE
-                    ORDER BY t.transaction_date DESC
+                    SELECT insider_name, transaction_date FROM (
+                        SELECT DISTINCT ON (t.insider_name, t.transaction_date, t.transaction_code)
+                            t.insider_name, t.transaction_date, t.is_10b51
+                        FROM transactions t
+                        JOIN form4_filings f ON f.id = t.filing_id
+                        JOIN companies c ON c.cik = f.cik
+                        WHERE c.ticker = %s
+                          AND t.transaction_code = 'P'
+                        ORDER BY t.insider_name, t.transaction_date, t.transaction_code,
+                                 f.filed_date DESC
+                    ) deduped
+                    WHERE is_10b51 = FALSE
+                    ORDER BY transaction_date DESC
                 """, (ticker,))
                 all_prior = [dict(r) for r in cur.fetchall()]
 
