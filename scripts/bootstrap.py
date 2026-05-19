@@ -76,6 +76,19 @@ def main():
     log(f"Ticker universe: {len(ticker_universe)} tickers loaded")
     cik_to_ticker = load_cik_map(req_per_sec=BACKFILL_RATE)
 
+    # Pre-load every CIK already in the companies table.  We only INSERT a company
+    # when its CIK is new — no lock taken on existing rows, no deadlock possible.
+    known_ciks: set = set()
+    if not args.dry_run:
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT cik FROM companies")
+                    known_ciks = {r[0] for r in cur.fetchall()}
+            log(f"Known companies: {len(known_ciks):,} CIKs pre-loaded")
+        except Exception as e:
+            log(f"Could not pre-load company CIKs ({e}) — will insert all companies")
+
     end_date   = date.today()
     start_date = end_date - timedelta(days=args.days)
 
@@ -201,11 +214,13 @@ def main():
             cik     = issuer.get("cik") or raw_cik
             ticker  = _clean_ticker(issuer.get("ticker") or tk) or ""
 
-            cur.execute(
-                "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
-                "ON CONFLICT (cik) DO UPDATE SET ticker=EXCLUDED.ticker, name=EXCLUDED.name",
-                (cik, ticker.upper() if ticker else None, issuer.get("name", "")),
-            )
+            if cik not in known_ciks:
+                cur.execute(
+                    "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
+                    "ON CONFLICT (cik) DO NOTHING",
+                    (cik, ticker.upper() if ticker else None, issuer.get("name", "")),
+                )
+                known_ciks.add(cik)
             cur.execute(
                 "INSERT INTO form4_filings "
                 "  (accession_number, cik, filed_date, period_date) "
