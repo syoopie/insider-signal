@@ -62,7 +62,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Parse only, no DB writes")
     parser.add_argument("--days", type=int, default=730,
-                        help="Number of days to backfill (default 730 = 2 years)")
+                        help="Number of days to backfill from today (default 730 = 2 years)")
+    parser.add_argument("--start", type=str, default=None,
+                        help="Start date YYYY-MM-DD (use with --end to target a specific range)")
+    parser.add_argument("--end", type=str, default=None,
+                        help="End date YYYY-MM-DD (default: today)")
     parser.add_argument("--force", action="store_true",
                         help="Skip per-window duplicate check; re-fetch all XML regardless of what is stored")
     args = parser.parse_args()
@@ -90,8 +94,12 @@ def main():
         except Exception as e:
             log(f"Could not pre-load company CIKs ({e}) — will insert all companies")
 
-    end_date   = date.today()
-    start_date = end_date - timedelta(days=args.days)
+    if args.start:
+        start_date = date.fromisoformat(args.start)
+        end_date   = date.fromisoformat(args.end) if args.end else date.today()
+    else:
+        end_date   = date.today()
+        start_date = end_date - timedelta(days=args.days)
 
     # 7-day windows, oldest first.
     # EDGAR caps search results at 10,000 per query; a 30-day window has ~24,000
