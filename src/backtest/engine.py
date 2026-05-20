@@ -72,36 +72,38 @@ def _group_metrics(returns: list, key: str = "excess_return") -> Optional[dict]:
     }
 
 
-def _rolling_hit_rate(returns: list, window_days: int = 90) -> list:
+def _rolling_hit_rate(returns: list, window_days: int = 90, step_days: int = 14) -> list:
     """
-    Compute hit rate on a rolling window of `window_days` calendar days.
-    Returns [{date, hit_rate, n}, ...] sorted by date.
-    Requires returns to have exec_date field.
+    Compute hit rate on a rolling window sampled at regular calendar intervals.
+
+    Samples every `step_days` from the first to last exec_date, computing the
+    hit rate over the preceding `window_days` at each checkpoint. This avoids
+    gaps caused by uneven signal density — quiet periods don't produce gaps,
+    they just show the same trailing window until new signals arrive.
     """
     if not returns:
         return []
-    sorted_r = sorted(returns, key=lambda r: r.get("exec_date", ""))
+    valid = [r for r in returns if r.get("exec_date")]
+    if not valid:
+        return []
+    sorted_r = sorted(valid, key=lambda r: r["exec_date"])
+    first = date.fromisoformat(sorted_r[0]["exec_date"][:10])
+    last  = date.fromisoformat(sorted_r[-1]["exec_date"][:10])
+
     results = []
-    for i, r in enumerate(sorted_r):
-        anchor = r.get("exec_date", "")
-        if not anchor:
-            continue
-        anchor_d = date.fromisoformat(anchor[:10])
-        cutoff = anchor_d - timedelta(days=window_days)
+    d = first
+    while d <= last:
+        cutoff = d - timedelta(days=window_days)
         window = [
             x for x in sorted_r
-            if x.get("exec_date") and date.fromisoformat(x["exec_date"][:10]) >= cutoff
-            and date.fromisoformat(x["exec_date"][:10]) <= anchor_d
+            if cutoff <= date.fromisoformat(x["exec_date"][:10]) <= d
         ]
-        if len(window) < 5:
-            continue  # too few points to be meaningful
-        hr = sum(1 for x in window if x["excess_return"] > 0) / len(window) * 100
-        results.append({"date": anchor[:10], "hit_rate": round(hr, 1), "n": len(window)})
-    # Deduplicate by date, keep last
-    seen = {}
-    for item in results:
-        seen[item["date"]] = item
-    return sorted(seen.values(), key=lambda x: x["date"])
+        if len(window) >= 5:
+            hr = sum(1 for x in window if x["excess_return"] > 0) / len(window) * 100
+            results.append({"date": d.isoformat(), "hit_rate": round(hr, 1), "n": len(window)})
+        d += timedelta(days=step_days)
+
+    return results
 
 
 def _max_consecutive_losses(returns: list) -> int:
