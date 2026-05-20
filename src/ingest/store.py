@@ -324,60 +324,95 @@ def batch_save_signals(signals: list) -> int:
 
 def dedup_suppressed_signals(since=None, until=None) -> int:
     """
-    Delete signals that would be suppressed by the cooldown logic but slipped
-    through because the prior signal didn't exist in the DB at write time.
+    Remove duplicate signals within the cooldown window.  Two passes:
 
-    Removes S2 when, within the cooldown window, an earlier S1 exists for the
-    same ticker that is of equal/higher type rank AND the score didn't jump by
-    _SIGNAL_SCORE_JUMP.  Same logic as _is_suppressed, applied retroactively.
+    Pass 1 — remove inferior later signal: S2 is deleted when an earlier S1
+    exists for the same ticker with equal/higher type rank and the score didn't
+    jump by _SIGNAL_SCORE_JUMP.
 
-    Returns count of rows deleted.
+    Pass 2 — remove superseded earlier signal: S1 is deleted when a later S2
+    exists that is strictly better (higher type rank OR score jump ≥
+    _SIGNAL_SCORE_JUMP).  This handles preliminary WATCH signals that got
+    upgraded to CLUSTER_BUY once more insiders filed.
+
+    Returns total rows deleted across both passes.
     """
-    type_rank_sql = """
-        CASE signal_type
+    type_rank_expr = """
+        CASE {col}
             WHEN 'CLUSTER_BUY' THEN 3
             WHEN 'BUY'         THEN 2
             WHEN 'WATCH'       THEN 1
             ELSE 0
         END
     """
-    params = []
-    date_filter = ""
-    if since:
-        date_filter += " AND s2.signal_date >= %s"
-        params.append(since)
-    if until:
-        date_filter += " AND s2.signal_date <= %s"
-        params.append(until)
 
-    sql = f"""
+    params1, params2 = [], []
+    date_filter1 = date_filter2 = ""
+    if since:
+        date_filter1 += " AND s2.signal_date >= %s"; params1.append(since)
+        date_filter2 += " AND s1.signal_date >= %s"; params2.append(since)
+    if until:
+        date_filter1 += " AND s2.signal_date <= %s"; params1.append(until)
+        date_filter2 += " AND s1.signal_date <= %s"; params2.append(until)
+
+    r1 = type_rank_expr.format(col="s1.signal_type")
+    r2 = type_rank_expr.format(col="s2.signal_type")
+
+    # Pass 1: delete inferior later signal (S2 worse than prior S1)
+    sql1 = f"""
         WITH prev AS (
             SELECT DISTINCT ON (s2.id)
                 s2.id,
-                ({type_rank_sql.replace('signal_type','s2.signal_type')}) AS s2_rank,
-                s2.score                                                    AS s2_score,
-                ({type_rank_sql.replace('signal_type','s1.signal_type')}) AS s1_rank,
-                s1.score                                                    AS s1_score
+                ({r2}) AS s2_rank, s2.score AS s2_score,
+                ({r1}) AS s1_rank, s1.score AS s1_score
             FROM signals s2
             JOIN signals s1
               ON  s1.ticker      = s2.ticker
               AND s1.signal_date < s2.signal_date
               AND s2.signal_date - s1.signal_date < {_SIGNAL_COOLDOWN_DAYS}
               AND s1.signal_type != 'LOW'
-            {date_filter.replace('s2.', 's2.')}
+            {date_filter1}
             ORDER BY s2.id, s1.signal_date DESC
         )
         DELETE FROM signals
         WHERE id IN (
             SELECT id FROM prev
-            WHERE s2_rank  <= s1_rank
-              AND s2_score  <  s1_score + {_SIGNAL_SCORE_JUMP}
+            WHERE s2_rank <= s1_rank
+              AND s2_score < s1_score + {_SIGNAL_SCORE_JUMP}
         )
     """
+
+    # Pass 2: delete superseded earlier signal (S1 strictly worse than later S2)
+    sql2 = f"""
+        WITH nxt AS (
+            SELECT DISTINCT ON (s1.id)
+                s1.id,
+                ({r1}) AS s1_rank, s1.score AS s1_score,
+                ({r2}) AS s2_rank, s2.score AS s2_score
+            FROM signals s1
+            JOIN signals s2
+              ON  s2.ticker      = s1.ticker
+              AND s2.signal_date > s1.signal_date
+              AND s2.signal_date - s1.signal_date < {_SIGNAL_COOLDOWN_DAYS}
+              AND s2.signal_type != 'LOW'
+            {date_filter2}
+            ORDER BY s1.id, s2.signal_date ASC
+        )
+        DELETE FROM signals
+        WHERE id IN (
+            SELECT id FROM nxt
+            WHERE s2_rank  > s1_rank
+               OR s2_score >= s1_score + {_SIGNAL_SCORE_JUMP}
+        )
+    """
+
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, params)
-            return cur.rowcount
+            cur.execute(sql1, params1)
+            n1 = cur.rowcount
+            cur.execute(sql2, params2)
+            n2 = cur.rowcount
+    return n1 + n2
 
 
 def mark_signal_alerted(signal_id: int) -> None:
