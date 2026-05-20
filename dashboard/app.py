@@ -629,11 +629,13 @@ with tab_backtest:
                 cl = _parse_metrics(r.get("metrics")).get("cluster_5064")
                 if cl:
                     n = cl.get("n", 0)
+                    n_label = f"{n} ⚠" if n < 10 else (f"{n} ~" if n < 30 else str(n))
                     cl_rows.append({
-                        "Horizon": f"{r['horizon_days']}d", "N": n, "": _stat_sig_badge(n),
-                        "Hit Rate": f"{cl.get('hit_rate', 0):.0f}%",
+                        "Horizon":   f"{r['horizon_days']}d",
+                        "N":         n_label,
+                        "Hit Rate":  f"{cl.get('hit_rate', 0):.0f}%",
                         "Avg Excess": _fmt_pct(cl.get("avg_return")),
-                        "Median": _fmt_pct(cl.get("median_return")),
+                        "Median":    _fmt_pct(cl.get("median_return")),
                     })
             if cl_rows:
                 st.dataframe(pd.DataFrame(cl_rows), use_container_width=True, hide_index=True)
