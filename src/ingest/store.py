@@ -385,7 +385,7 @@ def dedup_suppressed_signals(since=None, until=None) -> int:
               AND s2.signal_date - s1.signal_date < {_SIGNAL_COOLDOWN_DAYS}
               AND s1.signal_type != 'LOW'
             {date_filter1}
-            ORDER BY s2.id, s1.signal_date DESC
+            ORDER BY s2.id, ({r1}) DESC, s1.score DESC
         )
         DELETE FROM signals
         WHERE id IN (
@@ -409,7 +409,7 @@ def dedup_suppressed_signals(since=None, until=None) -> int:
               AND s2.signal_date - s1.signal_date < {_SIGNAL_COOLDOWN_DAYS}
               AND s2.signal_type != 'LOW'
             {date_filter2}
-            ORDER BY s1.id, s2.signal_date ASC
+            ORDER BY s1.id, ({r2}) DESC, s2.score DESC
         )
         DELETE FROM signals
         WHERE id IN (
