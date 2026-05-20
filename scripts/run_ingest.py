@@ -278,7 +278,7 @@ def main():
             signal_date=today,
         )
 
-        signal_id = save_signal(
+        signal_id, already_alerted = save_signal(
             ticker=ticker,
             signal_date=today,
             score=aggregate_score,
@@ -287,13 +287,17 @@ def main():
             score_breakdown=breakdown_combined,
             evidence=evidence,
         )
-        _log(f"  {ticker:<6}  signal saved (id={signal_id})")
+        _log(f"  {ticker:<6}  signal saved (id={signal_id})"
+             + (" [already alerted]" if already_alerted else ""))
 
         if signal_type in ("BUY", "CLUSTER_BUY"):
-            sent = send_signal(evidence)
-            _log(f"  {ticker:<6}  Telegram alert {'SENT' if sent else 'FAILED'}")
-            if sent:
-                mark_signal_alerted(signal_id)
+            if already_alerted:
+                _log(f"  {ticker:<6}  Telegram alert SKIPPED (already sent)")
+            else:
+                sent = send_signal(evidence)
+                _log(f"  {ticker:<6}  Telegram alert {'SENT' if sent else 'FAILED'}")
+                if sent:
+                    mark_signal_alerted(signal_id)
             if signal_type == "CLUSTER_BUY":
                 n_cluster += 1
             else:

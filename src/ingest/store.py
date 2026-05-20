@@ -210,8 +210,10 @@ def get_last_filed_date() -> Optional[date]:
 
 
 def save_signal(ticker: str, signal_date: date, score: int, signal_type: str,
-                cluster_flag: bool, score_breakdown: dict, evidence: dict) -> int:
-    """Returns the signal id, or 0 if suppressed as a near-duplicate."""
+                cluster_flag: bool, score_breakdown: dict, evidence: dict) -> tuple[int, bool]:
+    """Returns (signal_id, already_alerted).
+    signal_id is 0 if suppressed as a near-duplicate.
+    already_alerted is True if the existing row had alerted=TRUE (skip re-sending)."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             # Check for a recent signal for this ticker within the cooldown window.
@@ -227,7 +229,7 @@ def save_signal(ticker: str, signal_date: date, score: int, signal_type: str,
             row = cur.fetchone()
             recent = {ticker: row} if row else {}
             if _is_suppressed(ticker, signal_date, score, signal_type, recent):
-                return 0
+                return 0, False
 
             cur.execute(
                 """
@@ -240,13 +242,14 @@ def save_signal(ticker: str, signal_date: date, score: int, signal_type: str,
                     cluster_flag    = EXCLUDED.cluster_flag,
                     score_breakdown = EXCLUDED.score_breakdown,
                     evidence        = EXCLUDED.evidence
-                RETURNING id
+                RETURNING id, alerted
                 """,
                 (ticker, signal_date, score, signal_type, cluster_flag,
                  _dumps(score_breakdown),
                  _dumps(evidence)),
             )
-            return cur.fetchone()[0]
+            signal_id, already_alerted = cur.fetchone()
+            return signal_id, bool(already_alerted)
 
 
 def batch_save_signals(signals: list) -> int:
