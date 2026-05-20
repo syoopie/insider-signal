@@ -490,13 +490,17 @@ with tab_backtest:
             row = latest[latest["horizon_days"] == h]
             if not row.empty:
                 r   = row.iloc[0]
-                n   = int(r.get("n_trades") or 0)
-                med = r.get("median_return")
+                n      = int(r.get("n_trades") or 0)
+                med    = r.get("median_return")
+                vs_50  = round(r["hit_rate"] - 50, 1)
                 col.metric(
-                    f"{h}d Hit Rate {_stat_sig_badge(n)}",
+                    f"{h}d Hit Rate",
                     f"{r['hit_rate']:.0f}%",
-                    delta=f"median {_fmt_pct(med)}" if med is not None else None,
-                    help=f"n={n} signals · 🟡 n<30 · 🔴 n<10 = low sample size",
+                    delta=vs_50,
+                    help=(
+                        f"n={n} signals · delta = pp above/below 50% baseline"
+                        + (f" · median excess {_fmt_pct(med)}" if med is not None else "")
+                    ),
                 )
 
         # ── Avg excess return chart ──
