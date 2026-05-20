@@ -360,7 +360,7 @@ with tab_signals:
                                 font_color="#ccc",
                             )
                             fig_bd.add_vline(x=0, line_color="gray", line_width=1)
-                            st.plotly_chart(fig_bd, use_container_width=True)
+                            st.plotly_chart(fig_bd, use_container_width=True, key=f"bd_{sig['id']}")
 
                     research = ev.get("research_basis", [])
                     if research:
