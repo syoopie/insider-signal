@@ -443,6 +443,13 @@ def main():
 
     _flush("final")
 
+    # ── DEDUP ─────────────────────────────────────────────────────────────────
+    if not args.dry_run:
+        from src.ingest.store import dedup_suppressed_signals
+        n_removed = dedup_suppressed_signals(since=start, until=end)
+        if n_removed:
+            log(f"  Dedup: removed {n_removed} signals suppressed by cooldown logic")
+
     # ── SUMMARY ───────────────────────────────────────────────────────────────
     phase("SUMMARY")
     elapsed = time.time() - t_start

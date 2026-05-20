@@ -322,6 +322,64 @@ def batch_save_signals(signals: list) -> int:
     return len(rows)
 
 
+def dedup_suppressed_signals(since=None, until=None) -> int:
+    """
+    Delete signals that would be suppressed by the cooldown logic but slipped
+    through because the prior signal didn't exist in the DB at write time.
+
+    Removes S2 when, within the cooldown window, an earlier S1 exists for the
+    same ticker that is of equal/higher type rank AND the score didn't jump by
+    _SIGNAL_SCORE_JUMP.  Same logic as _is_suppressed, applied retroactively.
+
+    Returns count of rows deleted.
+    """
+    type_rank_sql = """
+        CASE signal_type
+            WHEN 'CLUSTER_BUY' THEN 3
+            WHEN 'BUY'         THEN 2
+            WHEN 'WATCH'       THEN 1
+            ELSE 0
+        END
+    """
+    params = []
+    date_filter = ""
+    if since:
+        date_filter += " AND s2.signal_date >= %s"
+        params.append(since)
+    if until:
+        date_filter += " AND s2.signal_date <= %s"
+        params.append(until)
+
+    sql = f"""
+        WITH prev AS (
+            SELECT DISTINCT ON (s2.id)
+                s2.id,
+                ({type_rank_sql.replace('signal_type','s2.signal_type')}) AS s2_rank,
+                s2.score                                                    AS s2_score,
+                ({type_rank_sql.replace('signal_type','s1.signal_type')}) AS s1_rank,
+                s1.score                                                    AS s1_score
+            FROM signals s2
+            JOIN signals s1
+              ON  s1.ticker      = s2.ticker
+              AND s1.signal_date < s2.signal_date
+              AND s2.signal_date - s1.signal_date < {_SIGNAL_COOLDOWN_DAYS}
+              AND s1.signal_type != 'LOW'
+            {date_filter.replace('s2.', 's2.')}
+            ORDER BY s2.id, s1.signal_date DESC
+        )
+        DELETE FROM signals
+        WHERE id IN (
+            SELECT id FROM prev
+            WHERE s2_rank  <= s1_rank
+              AND s2_score  <  s1_score + {_SIGNAL_SCORE_JUMP}
+        )
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.rowcount
+
+
 def mark_signal_alerted(signal_id: int) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
