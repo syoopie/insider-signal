@@ -186,12 +186,28 @@ def format_telegram_message(evidence: dict) -> str:
     lines.append(f"Score <b>{score}</b>/100")
     lines.append("")
 
+    def _fmt_date(d) -> str:
+        if not d:
+            return ""
+        try:
+            if hasattr(d, "strftime"):
+                return d.strftime("%-m/%-d")
+            from datetime import datetime
+            return datetime.strptime(str(d)[:10], "%Y-%m-%d").strftime("%-m/%-d")
+        except Exception:
+            return str(d)[:10]
+
     # Cluster header
     insiders = e.get("insiders", [])
     if cluster.get("is_cluster"):
         n = cluster.get("insider_count", 0)
         total_spent = sum(float(ins.get("total_value") or 0) for ins in insiders)
-        lines.append(f"<b>👥 {n} insiders · {fmt_currency(total_spent)} total</b>")
+        buy_dates = sorted(set(
+            _fmt_date(ins.get("transaction_date")) for ins in insiders
+            if ins.get("transaction_date")
+        ))
+        date_span = f" · {buy_dates[0]}–{buy_dates[-1]}" if len(buy_dates) > 1 else (f" · {buy_dates[0]}" if buy_dates else "")
+        lines.append(f"<b>👥 {n} insiders · {fmt_currency(total_spent)} total{date_span}</b>")
     else:
         lines.append("<b>👤 Insider purchase</b>")
 
@@ -209,7 +225,8 @@ def format_telegram_message(evidence: dict) -> str:
             price_str = f" {price_label} ${ins['price']:.2f}"
         else:
             price_str = ""
-        lines.append(f"  • <b>{name}</b> ({role}){count_str}")
+        date_str = f" · {_fmt_date(ins.get('transaction_date'))}" if ins.get("transaction_date") else ""
+        lines.append(f"  • <b>{name}</b> ({role}){count_str}{date_str}")
         lines.append(f"    {shares} sh{price_str} = {val}{note}")
 
     lines.append("")

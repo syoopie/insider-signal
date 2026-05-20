@@ -210,7 +210,7 @@ def get_last_filed_date() -> Optional[date]:
 
 
 def save_signal(ticker: str, signal_date: date, score: int, signal_type: str,
-                cluster_flag: bool, score_breakdown: dict, evidence: dict) -> tuple[int, bool]:
+                cluster_flag: bool, score_breakdown: dict, evidence: dict) -> Tuple[int, bool]:
     """Returns (signal_id, already_alerted).
     signal_id is 0 if suppressed as a near-duplicate.
     already_alerted is True if the existing row had alerted=TRUE (skip re-sending)."""
