@@ -186,9 +186,9 @@ with tab_signals:
 
         with fc4:
             st.caption("Cap tier")
-            c_small   = st.checkbox("Small  (<$2B)",   value=True)
-            c_mid     = st.checkbox("Mid  ($2B–$10B)", value=True)
-            c_large   = st.checkbox("Large  (>$10B)",  value=False)
+            c_small   = st.checkbox("Small  (<\\$2B)",   value=True)
+            c_mid     = st.checkbox("Mid  (\\$2B–\\$10B)", value=True)
+            c_large   = st.checkbox("Large  (>\\$10B)",  value=False)
             c_unknown = st.checkbox("Unknown",         value=True)
         cap_tiers = (
             (["small"]   if c_small   else []) +
