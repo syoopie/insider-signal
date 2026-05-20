@@ -189,7 +189,10 @@ def run_backtest(threshold: int = 65, lookback_days: int = 365) -> List[Dict]:
 
         for sig in eligible:
             sig_date  = _parse_date(sig["signal_date"])
-            exec_date = sig_date + timedelta(days=EXEC_LAG_DAYS)
+            # Use filed_date + 1 + EXEC_LAG_DAYS so exec_date is always after discovery.
+            # signal_date may now be the purchase date (earlier than filed_date).
+            fd = _parse_date(sig.get("filed_date")) if sig.get("filed_date") else None
+            exec_date = (fd + timedelta(days=1 + EXEC_LAG_DAYS)) if fd else (sig_date + timedelta(days=EXEC_LAG_DAYS))
             exit_date = exec_date + timedelta(days=horizon)
             ticker    = sig["ticker"]
 
@@ -286,7 +289,8 @@ def run_backtest(threshold: int = 65, lookback_days: int = 365) -> List[Dict]:
             log(f"  ── Cluster 50-64: {len(cluster_weak_eligible)} signals ──")
         for sig in cluster_weak_eligible:
             sig_date  = _parse_date(sig["signal_date"])
-            exec_date = sig_date + timedelta(days=EXEC_LAG_DAYS)
+            fd = _parse_date(sig.get("filed_date")) if sig.get("filed_date") else None
+            exec_date = (fd + timedelta(days=1 + EXEC_LAG_DAYS)) if fd else (sig_date + timedelta(days=EXEC_LAG_DAYS))
             exit_date = exec_date + timedelta(days=horizon)
             ticker    = sig["ticker"]
             ticker_ret = get_price_change_pct(ticker, exec_date, exit_date)
@@ -411,7 +415,8 @@ def _get_historical_signals(since: date, threshold: int) -> List[Dict]:
             cur.execute(
                 """
                 SELECT s.ticker, s.signal_date, s.score, s.signal_type,
-                       s.cluster_flag, c.cap_tier
+                       s.cluster_flag, c.cap_tier,
+                       s.evidence->>'filed_date' AS filed_date
                 FROM signals s
                 LEFT JOIN companies c ON c.ticker = s.ticker
                 WHERE s.signal_date >= %s
@@ -423,7 +428,7 @@ def _get_historical_signals(since: date, threshold: int) -> List[Dict]:
             )
             rows = cur.fetchall()
     return [
-        dict(zip(["ticker", "signal_date", "score", "signal_type", "cluster_flag", "cap_tier"], r))
+        dict(zip(["ticker", "signal_date", "score", "signal_type", "cluster_flag", "cap_tier", "filed_date"], r))
         for r in rows
     ]
 
@@ -435,7 +440,8 @@ def _get_cluster_weak_signals(since: date) -> List[Dict]:
             cur.execute(
                 """
                 SELECT s.ticker, s.signal_date, s.score, s.signal_type,
-                       s.cluster_flag, c.cap_tier
+                       s.cluster_flag, c.cap_tier,
+                       s.evidence->>'filed_date' AS filed_date
                 FROM signals s
                 LEFT JOIN companies c ON c.ticker = s.ticker
                 WHERE s.signal_date >= %s
@@ -447,7 +453,7 @@ def _get_cluster_weak_signals(since: date) -> List[Dict]:
             )
             rows = cur.fetchall()
     return [
-        dict(zip(["ticker", "signal_date", "score", "signal_type", "cluster_flag", "cap_tier"], r))
+        dict(zip(["ticker", "signal_date", "score", "signal_type", "cluster_flag", "cap_tier", "filed_date"], r))
         for r in rows
     ]
 

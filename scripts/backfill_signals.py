@@ -370,7 +370,8 @@ def main():
         pending = []
 
     for filed_date, ticker in work_items:
-        signal_date      = filed_date + timedelta(days=1)
+        # Date of the latest purchase in the window (tx_rows sorted DESC by transaction_date)
+        signal_date = tx_rows[0].get("transaction_date") or (filed_date + timedelta(days=1))
         all_ticker_txs   = tx_by_ticker.get(ticker, [])
         tx_rows, all_prior = _get_window_txs(all_ticker_txs, filed_date)
 

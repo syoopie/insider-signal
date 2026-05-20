@@ -264,6 +264,8 @@ def main():
 
         company_name = tx_rows[0].get("company_name", ticker)
         filed_date = tx_rows[0].get("filed_date", "")
+        # tx_rows sorted DESC by transaction_date; row 0 is the latest purchase
+        signal_date = tx_rows[0].get("transaction_date") or today
 
         evidence = build_evidence(
             ticker=ticker,
@@ -275,12 +277,12 @@ def main():
             transactions=scored_txs,
             market_data=mdata,
             filed_date=str(filed_date) if filed_date else "",
-            signal_date=today,
+            signal_date=signal_date,
         )
 
         signal_id, already_alerted = save_signal(
             ticker=ticker,
-            signal_date=today,
+            signal_date=signal_date,
             score=aggregate_score,
             signal_type=signal_type,
             cluster_flag=is_cluster,
@@ -290,7 +292,7 @@ def main():
         _log(f"  {ticker:<6}  signal saved (id={signal_id})"
              + (" [already alerted]" if already_alerted else ""))
 
-        if signal_type in ("BUY", "CLUSTER_BUY"):
+        if signal_type == "CLUSTER_BUY":
             if already_alerted:
                 _log(f"  {ticker:<6}  Telegram alert SKIPPED (already sent)")
             else:
@@ -298,10 +300,9 @@ def main():
                 _log(f"  {ticker:<6}  Telegram alert {'SENT' if sent else 'FAILED'}")
                 if sent:
                     mark_signal_alerted(signal_id)
-            if signal_type == "CLUSTER_BUY":
-                n_cluster += 1
-            else:
-                n_buy += 1
+            n_cluster += 1
+        elif signal_type == "BUY":
+            n_buy += 1
         else:
             n_watch += 1
 
