@@ -169,21 +169,38 @@ with tab_signals:
     # ── Filters ──
     with st.expander("Filters", expanded=True):
         fc1, fc2, fc3, fc4 = st.columns(4)
-        lookback_days = fc1.slider("Lookback (days)", 7, 180, 30)
+
+        lookback_days = fc1.slider("Lookback (days)", 1, 30, 14)
         min_score     = fc2.slider("Min score", 0, 100, 50)
-        signal_types  = fc3.multiselect(
-            "Signal types",
-            ["CLUSTER_BUY", "BUY", "WATCH"],
-            default=["CLUSTER_BUY", "BUY"],
+
+        with fc3:
+            st.caption("Signal types")
+            t_cluster = st.checkbox("⚡ Cluster Buy", value=True)
+            t_buy     = st.checkbox("✅ Buy",         value=True)
+            t_watch   = st.checkbox("👁 Watch",       value=False)
+        signal_types = (
+            (["CLUSTER_BUY"] if t_cluster else []) +
+            (["BUY"]         if t_buy     else []) +
+            (["WATCH"]       if t_watch   else [])
         )
-        cap_tiers = fc4.multiselect(
-            "Cap tier",
-            ["small", "mid", "large", "unknown"],
-            default=["small", "mid", "unknown"],
+
+        with fc4:
+            st.caption("Cap tier")
+            c_small   = st.checkbox("Small  (<$2B)",   value=True)
+            c_mid     = st.checkbox("Mid  ($2B–$10B)", value=True)
+            c_large   = st.checkbox("Large  (>$10B)",  value=False)
+            c_unknown = st.checkbox("Unknown",         value=True)
+        cap_tiers = (
+            (["small"]   if c_small   else []) +
+            (["mid"]     if c_mid     else []) +
+            (["large"]   if c_large   else []) +
+            (["unknown"] if c_unknown else [])
         )
+
         st.caption(
-            "Defaults exclude large-cap (0% cluster hit rate at 90d) and WATCH signals "
-            "(~35% hit rate vs 55%+ for BUY/CLUSTER_BUY). Score ≥50 reduces noise by ~60%."
+            "Large-cap clusters: 0% hit rate at 90d (−16% avg excess). "
+            "WATCH: ~35% hit rate vs 55%+ for BUY/CLUSTER_BUY. "
+            "Score ≥50 cuts noise by ~60%."
         )
 
     since_date = date.today() - timedelta(days=lookback_days)
