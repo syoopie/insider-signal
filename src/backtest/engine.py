@@ -250,6 +250,8 @@ def run_backtest(threshold: int = 65, lookback_days: int = 365) -> List[Dict]:
         # ── Stratification ──────────────────────────────────────────────────
 
         by_score_band = {
+            "35-49": _group_metrics([r for r in returns if 35 <= r["score"] < 50]),
+            "50-64": _group_metrics([r for r in returns if 50 <= r["score"] < 65]),
             "65-74": _group_metrics([r for r in returns if 65 <= r["score"] < 75]),
             "75-84": _group_metrics([r for r in returns if 75 <= r["score"] < 85]),
             "85+":   _group_metrics([r for r in returns if r["score"] >= 85]),
