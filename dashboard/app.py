@@ -560,32 +560,47 @@ with tab_backtest:
             else:
                 st.info("No distribution data yet.")
 
-        def _strat_tab(key, tab):
+        def _render_pivot(key, tab, dim_col):
             with tab:
-                rows = []
+                data = {}
                 for _, r in latest.iterrows():
+                    h = f"{r['horizon_days']}d"
                     strat = _parse_metrics(r.get("metrics")).get(key) or {}
-                    for band, m in strat.items():
+                    for grp, m in (strat or {}).items():
                         if m:
-                            n = m.get("n", 0)
-                            rows.append({
-                                "Horizon": f"{r['horizon_days']}d", "Group": band,
-                                "N": n, "": _stat_sig_badge(n),
-                                "Hit Rate": f"{m.get('hit_rate', 0):.0f}%",
-                                "Avg Excess": _fmt_pct(m.get("avg_return")),
-                                "Median": _fmt_pct(m.get("median_return")),
-                                "P25": _fmt_pct(m.get("p25_return")),
-                                "P75": _fmt_pct(m.get("p75_return")),
-                            })
-                if rows:
-                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                    st.caption("🔴 n<10  🟡 n<30 — low-sample rows are directional only.")
-                else:
+                            data.setdefault(grp, {})[h] = m
+                if not data:
                     st.info("No stratified data yet.")
+                    return
+                h_cols = [f"{h}d" for h in horizons]
+                rows, min_ns = [], []
+                for grp in sorted(data):
+                    row = {dim_col: grp}
+                    ns_row = []
+                    for h in h_cols:
+                        m = data[grp].get(h) or {}
+                        n = m.get("n") or 0
+                        ns_row.append(n)
+                        row[f"{h} N"]      = n if n else "—"
+                        row[f"{h} Hit"]    = f"{m['hit_rate']:.0f}%" if m.get("hit_rate") is not None else "—"
+                        row[f"{h} Avg"]    = _fmt_pct(m.get("avg_return")) if m else "—"
+                        row[f"{h} Median"] = _fmt_pct(m.get("median_return")) if m else "—"
+                    min_ns.append(min(ns_row) if ns_row else 0)
+                    rows.append(row)
+                df = pd.DataFrame(rows)
+                def _color(row):
+                    n = min_ns[row.name]
+                    if n < 10:
+                        return ["background-color:#111111;color:#444444"] * len(row)
+                    if n < 30:
+                        return ["background-color:#181820;color:#888888"] * len(row)
+                    return [""] * len(row)
+                st.dataframe(df.style.apply(_color, axis=1), use_container_width=True, hide_index=True)
+                st.caption("Dimmed rows: n<30 (directional only). Grey rows: n<10 (ignore).")
 
-        _strat_tab("by_score_band", dt_score)
-        _strat_tab("by_cap_tier",   dt_cap)
-        _strat_tab("by_signal_type", dt_type)
+        _render_pivot("by_score_band",  dt_score, "Score Band")
+        _render_pivot("by_cap_tier",    dt_cap,   "Cap Tier")
+        _render_pivot("by_signal_type", dt_type,  "Signal Type")
 
         with dt_risk:
             st.caption("High % losses >20% or long losing streaks signal tail risk.")
