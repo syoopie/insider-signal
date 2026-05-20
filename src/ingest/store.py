@@ -18,18 +18,22 @@ _TYPE_RANK = {"CLUSTER_BUY": 3, "BUY": 2, "WATCH": 1, "LOW": 0}
 def _is_suppressed(ticker: str, signal_date: date, score: int, signal_type: str,
                    recent: dict) -> bool:
     """
-    Return True if this signal should be suppressed because a recent signal for
+    Return True if this signal should be suppressed because a nearby signal for
     the same ticker already covers the same episode.
 
-    recent: {ticker: (signal_date, score, signal_type)} for the most recent
-    signal per ticker in the last _SIGNAL_COOLDOWN_DAYS days.
+    Uses abs(days_apart) so that a later-dated existing signal (e.g. created by
+    a prior ingest run) also triggers suppression for an earlier-dated new signal
+    discovered in a subsequent run.
+
+    recent: {ticker: (signal_date, score, signal_type)} for the best nearby
+    signal per ticker within ±_SIGNAL_COOLDOWN_DAYS days.
     """
     prev = recent.get(ticker)
     if prev is None:
         return False
     prev_date, prev_score, prev_type = prev
-    days_since = (signal_date - prev_date).days
-    if days_since >= _SIGNAL_COOLDOWN_DAYS:
+    days_apart = abs((signal_date - prev_date).days)
+    if days_apart >= _SIGNAL_COOLDOWN_DAYS:
         return False
     if score >= prev_score + _SIGNAL_SCORE_JUMP:
         return False
@@ -216,15 +220,21 @@ def save_signal(ticker: str, signal_date: date, score: int, signal_type: str,
     already_alerted is True if the existing row had alerted=TRUE (skip re-sending)."""
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Check for a recent signal for this ticker within the cooldown window.
-            cutoff = signal_date - timedelta(days=_SIGNAL_COOLDOWN_DAYS)
+            # Check for a nearby signal within ±cooldown days (bidirectional).
+            # signal_date = transaction_date so an earlier transaction discovered
+            # later must also see signals dated after it.
+            lo = signal_date - timedelta(days=_SIGNAL_COOLDOWN_DAYS)
+            hi = signal_date + timedelta(days=_SIGNAL_COOLDOWN_DAYS)
             cur.execute(
                 """
                 SELECT signal_date, score, signal_type FROM signals
-                WHERE ticker = %s AND signal_date >= %s AND signal_date < %s
-                ORDER BY signal_date DESC LIMIT 1
+                WHERE ticker = %s AND signal_date > %s AND signal_date < %s
+                ORDER BY CASE signal_type
+                    WHEN 'CLUSTER_BUY' THEN 3 WHEN 'BUY' THEN 2
+                    WHEN 'WATCH' THEN 1 ELSE 0
+                END DESC, score DESC LIMIT 1
                 """,
-                (ticker, cutoff, signal_date),
+                (ticker, lo, hi),
             )
             row = cur.fetchone()
             recent = {ticker: row} if row else {}
