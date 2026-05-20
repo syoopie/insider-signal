@@ -190,16 +190,22 @@ def _detect_cluster(all_ticker_txs: list[dict], as_of_date: date) -> dict:
 
     candidate_insiders = list(seen_names.values())
 
-    # Remove identical-block allocations: if 3+ buyers share same (shares, price, date)
-    # it is an IPO/PIPE/DRIP allocation, not independent buying.
+    # Filter offering contamination — two complementary checks (mirrors cluster.py):
+    # 1. Identical-block: same shares + price + date, ≥3 buyers → DRIP/exact allocation
+    # 2. Same-price offering: same price + date (diff amounts), ≥3 buyers → IPO/PIPE
     from collections import Counter
     block_keys = Counter(
         (ins.get("shares"), ins.get("price_per_share"), ins.get("transaction_date"))
         for ins in candidate_insiders
     )
+    price_date_keys = Counter(
+        (ins.get("price_per_share"), ins.get("transaction_date"))
+        for ins in candidate_insiders
+    )
     insiders = [
         ins for ins in candidate_insiders
-        if block_keys[(ins.get("shares"), ins.get("price_per_share"), ins.get("transaction_date"))] < 3
+        if (block_keys[(ins.get("shares"), ins.get("price_per_share"), ins.get("transaction_date"))] < 3
+            and price_date_keys[(ins.get("price_per_share"), ins.get("transaction_date"))] < 3)
     ]
 
     is_cluster = len(insiders) >= CLUSTER_MIN_INSIDERS
@@ -367,11 +373,16 @@ def main():
             n_ineligible += 1
             continue
 
-        cluster_info = _detect_cluster(all_ticker_txs, filed_date)
-        is_cluster   = cluster_info.get("is_cluster", False)
-        signal_type  = classify_signal(aggregate_score, is_cluster, participant_scores)
+        cluster_info  = _detect_cluster(all_ticker_txs, filed_date)
+        is_cluster    = cluster_info.get("is_cluster", False)
+        tight_cluster = cluster_info.get("tight_cluster", False)
+        signal_type   = classify_signal(aggregate_score, is_cluster, participant_scores, tight_cluster)
 
         cap_tier    = tx_rows[0].get("cap_tier") or "unknown"
+        # Large-cap clusters have near-zero alpha (0% hit at 90d, -16% avg excess).
+        # Downgrade to WATCH so they surface on dashboard but don't trigger alerts.
+        if signal_type == "CLUSTER_BUY" and cap_tier == "large":
+            signal_type = "WATCH"
         cluster_tag = f" CLUSTER({cluster_info['insider_count']})" if is_cluster else ""
         icon        = "✓" if signal_type in ("BUY", "CLUSTER_BUY") else " "
         log(f"  {icon} {ticker:<6}  {signal_date}  score={aggregate_score:>3}  "

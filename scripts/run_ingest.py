@@ -245,12 +245,15 @@ def main():
             continue
 
         participant_scores = [stx["score_result"]["score"] for stx in scored_txs]
-        is_cluster = cluster_info.get("is_cluster", False)
-        cluster_n = cluster_info.get("insider_count", 0)
-        signal_type = classify_signal(aggregate_score, is_cluster, participant_scores)
+        is_cluster    = cluster_info.get("is_cluster", False)
+        tight_cluster = cluster_info.get("tight_cluster", False)
+        cluster_n     = cluster_info.get("insider_count", 0)
+        signal_type   = classify_signal(aggregate_score, is_cluster, participant_scores, tight_cluster)
 
-        cluster_tag = f" CLUSTER({cluster_n})" if is_cluster else ""
         effective_cap = (tx_rows[0].get("cap_tier") or mdata.get("cap_tier") or "unknown") if mdata else (tx_rows[0].get("cap_tier") or "unknown")
+        # Large-cap clusters have near-zero alpha (0% hit at 90d, -16% avg excess).
+        if signal_type == "CLUSTER_BUY" and effective_cap == "large":
+            signal_type = "WATCH"
         _log(f"  {ticker:<6}  score={aggregate_score:>3}  {signal_type}{cluster_tag}  "
              f"cap={effective_cap}  buyers={len(scored_txs)}")
 

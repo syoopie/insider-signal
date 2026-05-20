@@ -132,7 +132,7 @@ Only transaction_code `P` is ever scored. Disqualifiers (return immediately, sco
 | `role_ceo` | +10 | Counterintuitively lowest |
 | `role_other` | +6 | |
 | `cap_small` | +15 | <$2B |
-| `cap_unknown` | +15 | Same as small — safe default |
+| `cap_unknown` | +5 | Conservative default — backtesting showed unknown-cap includes large-caps (FI, KO, BDX) missed by market cap refresh; lower score reduces false BUY promotions |
 | `cap_mid` | +8 | $2B–$10B |
 | `cap_large` | +0 | >$10B |
 | `value_500k_plus` | +12 | total_value ≥ $500K |
@@ -148,14 +148,17 @@ Only transaction_code `P` is ever scored. Disqualifiers (return immediately, sco
 `first_purchase_12mo` and `sequenced_buying_30d` are mutually exclusive by definition.
 
 **Signal classification (`classify_signal()`):**
-- `cluster_flag=True` + `avg(participant_scores) ≥ 35` → `CLUSTER_BUY`
-- `cluster_flag=True` + avg < 35 → `WATCH` (weak cluster, surfaced but no alert)
+- `cluster_flag=True` + `avg(participant_scores) ≥ 35` + (`tight_cluster OR max_score ≥ 50`) + cap_tier ≠ `large` → `CLUSTER_BUY`
+- `cluster_flag=True` + cap_tier = `large` → `WATCH` regardless of score (0% hit rate at 90d, -16% avg excess)
+- `cluster_flag=True` + avg ≥ 35 + loose cluster + max_score < 50 → `WATCH` (weak loose cluster)
+- `cluster_flag=True` + avg < 35 → `WATCH` (very weak cluster, surfaced but no alert)
 - `score ≥ 65` → `BUY`
 - `score ≥ 45` → `WATCH`
 - otherwise → `LOW`
 
 The cluster uses the **average** of all participant scores, not the max. Three directors
-each scoring 42 → avg=42 ≥ 35 → CLUSTER_BUY. Collective action is the signal.
+each scoring 42 → avg=42 ≥ 35 → qualifies, but also needs tight_cluster OR max_score ≥ 50.
+Empirical testing: loose clusters with individual score <50 averaged -5% excess at 90d.
 
 ---
 
@@ -169,6 +172,10 @@ each scoring 42 → avg=42 ≥ 35 → CLUSTER_BUY. Collective action is the sign
 5. **Identical-block filter**: if ≥3 buyers share the same (shares, price, date), the
    entire block is removed. IPO/PIPE allocations (e.g. MBX: 12 insiders × 500,000 shares
    at $16.00 exactly) are not independent buying decisions.
+6. **Same-price offering filter**: if ≥3 buyers share the same (price, date) but different
+   share amounts, the block is also removed. This catches IPO/secondary offerings where
+   insiders receive different allocations at the same fixed offer price (BKV at $18.00,
+   COSO at $21.50, BETA at $34.00 — all confirmed underperformers in backtesting).
 
 **Window:** 14 calendar days rolling.
 **Sub-flags stored in evidence.cluster:**

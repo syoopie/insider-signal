@@ -79,17 +79,28 @@ def detect_clusters_for_ticker(ticker: str, as_of_date: date) -> dict:
 
     all_insiders = [dict(r) for r in rows]
 
-    # Filter offering/DRIP contamination: if 3+ buyers share identical (shares, price)
-    # on the same date it is a block allocation (IPO, PIPE, DRIP plan), not
-    # independent decisions. Remove the entire identical-block group.
+    # Filter offering contamination — two complementary checks:
+    #
+    # 1. Identical-block (exact duplicate): same shares + price + date with ≥3 buyers
+    #    → DRIP plan lots or exact-allocation blocks. Remove the entire group.
+    #
+    # 2. Same-price offering: same price + date (different share amounts) with ≥3 buyers
+    #    → IPO/PIPE/secondary where each insider gets a different allocation size at a
+    #    fixed offer price. These are not independent buying decisions.
+    #    (BKV IPO at $18.00, COSO at $21.50, BETA at $34.00 confirmed by backtest.)
     from collections import Counter
     block_keys = Counter(
         (ins["shares"], ins["price_per_share"], ins["transaction_date"])
         for ins in all_insiders
     )
+    price_date_keys = Counter(
+        (ins["price_per_share"], ins["transaction_date"])
+        for ins in all_insiders
+    )
     insiders = [
         ins for ins in all_insiders
-        if block_keys[(ins["shares"], ins["price_per_share"], ins["transaction_date"])] < 3
+        if (block_keys[(ins["shares"], ins["price_per_share"], ins["transaction_date"])] < 3
+            and price_date_keys[(ins["price_per_share"], ins["transaction_date"])] < 3)
     ]
 
     is_cluster = len(insiders) >= CLUSTER_MIN_INSIDERS
