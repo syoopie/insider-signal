@@ -167,7 +167,7 @@ tab_signals, tab_positions, tab_backtest, tab_history, tab_about = st.tabs([
 with tab_signals:
 
     # ── Filters ──
-    with st.expander("Filters", expanded=False):
+    with st.expander("Filters", expanded=True):
         fc1, fc2, fc3, fc4 = st.columns(4)
         lookback_days = fc1.slider("Lookback (days)", 7, 180, 30)
         min_score     = fc2.slider("Min score", 0, 100, 50)
