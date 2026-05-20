@@ -572,31 +572,38 @@ with tab_backtest:
                 if not data:
                     st.info("No stratified data yet.")
                     return
+
                 h_cols = [f"{h}d" for h in horizons]
-                rows, min_ns = [], []
-                for grp in sorted(data):
-                    row = {dim_col: grp}
-                    ns_row = []
+                rows, row_ns, row_gidx = [], [], []
+                for gidx, grp in enumerate(sorted(data)):
                     for h in h_cols:
                         m = data[grp].get(h) or {}
                         n = m.get("n") or 0
-                        ns_row.append(n)
-                        row[f"{h} N"]      = n if n else "—"
-                        row[f"{h} Hit"]    = f"{m['hit_rate']:.0f}%" if m.get("hit_rate") is not None else "—"
-                        row[f"{h} Avg"]    = _fmt_pct(m.get("avg_return")) if m else "—"
-                        row[f"{h} Median"] = _fmt_pct(m.get("median_return")) if m else "—"
-                    min_ns.append(min(ns_row) if ns_row else 0)
-                    rows.append(row)
+                        rows.append({
+                            dim_col:      grp,
+                            "Horizon":    h,
+                            "N":          n if n else "—",
+                            "Hit Rate":   f"{m['hit_rate']:.0f}%" if m.get("hit_rate") is not None else "—",
+                            "Avg Return": _fmt_pct(m.get("avg_return"))    if m else "—",
+                            "Median":     _fmt_pct(m.get("median_return")) if m else "—",
+                        })
+                        row_ns.append(n)
+                        row_gidx.append(gidx)
+
                 df = pd.DataFrame(rows)
+
                 def _color(row):
-                    n = min_ns[row.name]
+                    idx = row.name
+                    n   = row_ns[idx]
+                    alt = "background-color:#161625" if row_gidx[idx] % 2 == 1 else ""
                     if n < 10:
                         return ["background-color:#111111;color:#444444"] * len(row)
                     if n < 30:
                         return ["background-color:#181820;color:#888888"] * len(row)
-                    return [""] * len(row)
+                    return ([alt] * len(row)) if alt else [""] * len(row)
+
                 st.dataframe(df.style.apply(_color, axis=1), use_container_width=True, hide_index=True)
-                st.caption("Dimmed rows: n<30 (directional only). Grey rows: n<10 (ignore).")
+                st.caption("Dimmed rows: n<30 (directional only). Grey rows: n<10 (ignore). Alternating shading = group boundary.")
 
         _render_pivot("by_score_band",  dt_score, "Score Band")
         _render_pivot("by_cap_tier",    dt_cap,   "Cap Tier")
