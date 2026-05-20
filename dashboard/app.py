@@ -13,6 +13,7 @@ Sections:
 
 import os
 import json
+import requests
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -49,6 +50,23 @@ def _fmt_pct(val, prefix=True) -> str:
         return "N/A"
     sign = "+" if val >= 0 else ""
     return f"{sign}{val:.1f}%" if prefix else f"{val:.1f}%"
+
+
+@st.cache_data(ttl=300)
+def _fetch_current_price(ticker: str) -> float | None:
+    try:
+        r = requests.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
+            params={"interval": "1d", "range": "5d"},
+            headers={"User-Agent": "Mozilla/5.0 (compatible)"},
+            timeout=5,
+        )
+        if r.status_code != 200:
+            return None
+        meta = r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
+        return meta.get("regularMarketPrice")
+    except Exception:
+        return None
 
 
 def _stat_sig_badge(n: int) -> str:
@@ -94,19 +112,22 @@ st.caption("Signals derived from SEC Form 4 insider purchase disclosures.")
 
 # --- Sidebar filters ---
 st.sidebar.header("Filters")
-lookback_days = st.sidebar.slider("Signal lookback (days)", 7, 90, 14)
-min_score = st.sidebar.slider("Minimum score", 0, 100, 45)
+st.sidebar.caption("Defaults tuned to high-conviction signals. Widen to explore.")
+lookback_days = st.sidebar.slider("Signal lookback (days)", 7, 180, 30)
+min_score = st.sidebar.slider("Minimum score", 0, 100, 50)
 signal_types = st.sidebar.multiselect(
     "Signal types",
     ["CLUSTER_BUY", "BUY", "WATCH"],
-    default=["CLUSTER_BUY", "BUY", "WATCH"],
+    default=["CLUSTER_BUY", "BUY"],
 )
 cap_tiers = st.sidebar.multiselect(
     "Market cap tier",
     ["small", "mid", "large", "unknown"],
-    default=["small", "mid", "large", "unknown"],
+    default=["small", "mid", "unknown"],
 )
 st.sidebar.caption("Small < \\$2B · Mid \\$2B–\\$10B · Large ≥ \\$10B")
+st.sidebar.markdown("---")
+st.sidebar.caption("**Why these defaults?**\nLarge-cap clusters have 0% hit rate at 90d (−16% avg excess). WATCH signals ~1/3 hit rate. Score ≥50 cuts false signals by ~60%.")
 
 since_date = date.today() - timedelta(days=lookback_days)
 
@@ -123,11 +144,32 @@ LEFT JOIN companies c ON c.ticker = s.ticker
 WHERE s.signal_date >= %s
   AND s.score >= %s
   AND s.signal_type = ANY(%s)
-ORDER BY s.score DESC, s.signal_date DESC
+ORDER BY
+  CASE s.signal_type WHEN 'CLUSTER_BUY' THEN 1 WHEN 'BUY' THEN 2 ELSE 3 END ASC,
+  s.score DESC,
+  s.signal_date DESC
 """
 signals = query(signals_sql, (since_date, min_score, signal_types))
 if cap_tiers:
     signals = [s for s in signals if (s.get("cap_tier") or "unknown") in cap_tiers]
+
+# Secondary sort within CLUSTER_BUY: tight+exec > tight > exec > bare cluster
+def _signal_quality_key(sig):
+    ev = sig.get("evidence") or {}
+    if isinstance(ev, str):
+        try:
+            ev = json.loads(ev)
+        except Exception:
+            ev = {}
+    cl = ev.get("cluster", {})
+    if sig["signal_type"] != "CLUSTER_BUY":
+        return (10, -sig["score"])
+    is_tight = bool(cl.get("tight_cluster"))
+    is_exec  = bool(cl.get("executive_cluster"))
+    sub = 0 if (is_tight and is_exec) else (1 if is_tight else (2 if is_exec else 3))
+    return (sub, -sig["score"])
+
+signals.sort(key=_signal_quality_key)
 
 if not signals:
     st.info("No signals match the current filters.")
@@ -141,6 +183,48 @@ else:
     col4.metric("👁 Watch Signals", sum(1 for s in signals if s["signal_type"] == "WATCH"))
 
     st.divider()
+
+    # ── Top Picks callout ──
+    top_picks = [s for s in signals if s["signal_type"] == "CLUSTER_BUY"][:3]
+    if not top_picks:
+        top_picks = [s for s in signals if s["signal_type"] == "BUY"][:3]
+    if top_picks:
+        st.subheader("Top Picks")
+        tp_cols = st.columns(len(top_picks))
+        for tp_col, tp in zip(tp_cols, top_picks):
+            tp_ev = tp.get("evidence") or {}
+            if isinstance(tp_ev, str):
+                try:
+                    tp_ev = json.loads(tp_ev)
+                except Exception:
+                    tp_ev = {}
+            tp_cl = tp_ev.get("cluster", {})
+            is_tight = bool(tp_cl.get("tight_cluster"))
+            is_exec  = bool(tp_cl.get("executive_cluster"))
+            conviction = ("PRIME" if (is_tight and is_exec and tp["signal_type"] == "CLUSTER_BUY")
+                          else "STRONG" if (tp["signal_type"] == "CLUSTER_BUY" and (is_tight or is_exec))
+                          else "HIGH" if tp["signal_type"] == "CLUSTER_BUY"
+                          else "BUY")
+            badge_color = ("#00cc00" if conviction == "PRIME"
+                           else "#66bb00" if conviction == "STRONG"
+                           else "#aabb00" if conviction == "HIGH"
+                           else "#0088cc")
+            n_buyers = tp_cl.get("insider_count", 1) if tp["signal_type"] == "CLUSTER_BUY" else 1
+            buyer_str = f"{n_buyers} insiders" if n_buyers > 1 else "1 insider"
+            tp_cap = (tp.get("cap_tier") or "unknown").title()
+            tp_company = tp.get("name") or tp_ev.get("company_name") or ""
+            with tp_col:
+                st.markdown(
+                    f"<div style='border:1px solid {badge_color};border-radius:8px;padding:12px'>"
+                    f"<b style='color:{badge_color};font-size:1.1em'>{conviction}</b><br>"
+                    f"<b style='font-size:1.4em'>{tp['ticker']}</b>"
+                    f"{'<br><small>' + tp_company + '</small>' if tp_company and tp_company != tp['ticker'] else ''}"
+                    f"<br>Score: <b>{tp['score']}</b>/100 · {tp_cap}-cap"
+                    f"<br>{buyer_str} · {tp['signal_date']}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+        st.divider()
 
     TYPE_ICON  = {"CLUSTER_BUY": "⚡", "BUY": "✅", "WATCH": "👁"}
     TYPE_LABEL = {"CLUSTER_BUY": "Cluster Buy", "BUY": "Buy", "WATCH": "Watch"}
@@ -160,10 +244,23 @@ else:
         name_part  = f" · {company}" if company and company != sig["ticker"] else ""
         cluster    = ev.get("cluster", {})
         exec_tag   = " 🏢 exec" if cluster.get("executive_cluster") else ""
-        tight_tag  = " ⚡tight" if cluster.get("tight_cluster") else ""
+        tight_tag  = " tight-window" if cluster.get("tight_cluster") else ""
+
+        is_tight = bool(cluster.get("tight_cluster"))
+        is_exec  = bool(cluster.get("executive_cluster"))
+        if sig["signal_type"] == "CLUSTER_BUY" and is_tight and is_exec:
+            conv_badge = " 🔥**PRIME**"
+        elif sig["signal_type"] == "CLUSTER_BUY" and (is_tight or is_exec):
+            conv_badge = " ⚡**STRONG**"
+        elif sig["signal_type"] == "CLUSTER_BUY":
+            conv_badge = " **CLUSTER**"
+        elif sig["score"] >= 70:
+            conv_badge = " ✅**HIGH**"
+        else:
+            conv_badge = ""
 
         header = (
-            f"{icon} **{sig['ticker']}**{name_part} — "
+            f"{icon}{conv_badge} **{sig['ticker']}**{name_part} — "
             f"Score {sig['score']}/100 · {type_label} · {cap_label}"
             f"{exec_tag}{tight_tag} · {sig['signal_date']}"
         )
@@ -246,6 +343,9 @@ if not positions:
 else:
     st.caption("Current prices fetched live. Excess return = ticker return − SPY return since signal date +3.")
 
+    with st.spinner("Fetching live prices..."):
+        spy_price = _fetch_current_price("SPY")
+
     pos_rows = []
     for p in positions:
         sig_date = p["signal_date"]
@@ -269,29 +369,56 @@ else:
             if prices:
                 filed_price = sum(prices) / len(prices)
 
+        ticker = p["ticker"]
+        current_price = _fetch_current_price(ticker)
+        raw_return = None
+        if current_price and filed_price and filed_price > 0:
+            raw_return = (current_price - filed_price) / filed_price * 100
+
         pos_rows.append({
-            "Ticker": p["ticker"],
+            "Ticker": ticker,
             "Company": p.get("company_name") or "",
-            "Signal Date": str(sig_date),
             "Type": p["signal_type"],
             "Score": p["score"],
             "Cap": (p.get("cap_tier") or "?").title(),
+            "Signal Date": str(sig_date),
             "Days In": days_in,
             "Days Left": max(0, days_left),
-            "Avg Entry Price": _fmt_currency(filed_price),
-            "Status": "✅ Active" if days_left > 0 else "⏰ Elapsed",
+            "Avg Entry": _fmt_currency(filed_price),
+            "Current": _fmt_currency(current_price) if current_price else "N/A",
+            "Return": _fmt_pct(raw_return) if raw_return is not None else "N/A",
+            "Status": "Active" if days_left > 0 else "Elapsed",
         })
 
-    pos_df = pd.DataFrame(pos_rows)
-    st.dataframe(
-        pos_df.style.apply(
-            lambda row: ["background-color: #1a2a1a" if row["Status"] == "✅ Active" else "background-color: #2a1a1a"] * len(row),
-            axis=1,
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.caption("⚠️ Live P&L calculation requires Yahoo Finance API — connect your own price feed for real-time tracking.")
+    if pos_rows:
+        pos_df = pd.DataFrame(pos_rows)
+
+        def _color_row(row):
+            ret_str = row.get("Return", "N/A")
+            status  = row.get("Status", "")
+            if ret_str == "N/A":
+                bg = "#1a1a2a" if status == "Active" else "#2a2a2a"
+            else:
+                try:
+                    val = float(ret_str.replace("%", "").replace("+", ""))
+                    if val >= 10:
+                        bg = "#0a2a0a"
+                    elif val >= 0:
+                        bg = "#1a2a1a"
+                    elif val >= -10:
+                        bg = "#2a1a0a"
+                    else:
+                        bg = "#2a0a0a"
+                except ValueError:
+                    bg = "#1a1a2a"
+            return [f"background-color: {bg}"] * len(row)
+
+        st.dataframe(
+            pos_df.style.apply(_color_row, axis=1),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption("Return = (current − avg insider entry price) / entry. Not excess vs SPY — check backtest for benchmark-adjusted returns. Prices cached 5 min.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 3 — Backtest Performance

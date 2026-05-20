@@ -254,6 +254,7 @@ def main():
         # Large-cap clusters have near-zero alpha (0% hit at 90d, -16% avg excess).
         if signal_type == "CLUSTER_BUY" and effective_cap == "large":
             signal_type = "WATCH"
+        cluster_tag = f"(n={cluster_n})" if is_cluster else ""
         _log(f"  {ticker:<6}  score={aggregate_score:>3}  {signal_type}{cluster_tag}  "
              f"cap={effective_cap}  buyers={len(scored_txs)}")
 

@@ -60,13 +60,13 @@ src/
 scripts/
   bootstrap.py          # One-time: load historical Form 4s. Supports --start/--end/--force
   backfill_signals.py   # Rescore all stored transactions into signals table. --days/--force
-  refresh_market_caps.py# Batch update companies.market_cap via EDGAR frames + YF price
+  refresh_market_caps.py# 3-pass: EDGAR us-gaap frames → DEI frames → per-company API fallback; YF price
   run_ingest.py         # Daily ingest entry point (called by GitHub Actions)
   run_backtest.py       # Weekly backtest entry point
   update_tickers.py     # Refresh S&P500 + Russell2000 ticker universe
 
 dashboard/
-  app.py                # Streamlit dashboard — 4 sections (signals, positions, backtest, history)
+  app.py                # Streamlit dashboard — signals (w/ Top Picks + conviction badges), positions (live P&L), backtest, history
 
 .github/workflows/
   daily_ingest.yml      # Weekdays 11am UTC + workflow_dispatch
