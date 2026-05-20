@@ -350,12 +350,24 @@ def main():
     total_loaded = sum(len(v) for v in tx_by_ticker.values())
     log(f"Loaded {total_loaded} transactions into memory ({fmt_elapsed(time.time() - t_start)})")
 
-    # ── SCORING ───────────────────────────────────────────────────────────────
+    # ── SCORING + incremental writes ──────────────────────────────────────────
     phase("SCORING")
 
+    _FLUSH_EVERY = 200          # write to DB every N queued signals
     n_buy = n_cluster = n_watch = n_low = n_ineligible = 0
     n_saved = 0
-    signals_to_write = []
+    n_dry_run_total = 0         # for --dry-run reporting
+    pending = []                # signals queued for next DB flush
+
+    def _flush(label: str = "") -> None:
+        nonlocal n_saved, pending
+        if not pending or args.dry_run:
+            return
+        flushed = batch_save_signals(pending)
+        n_saved += flushed
+        tag = f"  ({label})" if label else ""
+        log(f"  [write] {flushed} → DB{tag}  total={n_saved}")
+        pending = []
 
     for filed_date, ticker in work_items:
         signal_date      = filed_date + timedelta(days=1)
@@ -408,7 +420,7 @@ def main():
             signal_date=signal_date,
         )
 
-        signals_to_write.append(dict(
+        pending.append(dict(
             ticker=ticker,
             signal_date=signal_date,
             score=aggregate_score,
@@ -417,6 +429,7 @@ def main():
             score_breakdown=breakdown_combined,
             evidence=evidence,
         ))
+        n_dry_run_total += 1
 
         if signal_type == "CLUSTER_BUY":
             n_cluster += 1
@@ -425,12 +438,10 @@ def main():
         else:
             n_watch += 1
 
-    # ── WRITE ─────────────────────────────────────────────────────────────────
-    if signals_to_write and not args.dry_run:
-        phase("WRITE")
-        log(f"Writing {len(signals_to_write)} signals to DB...")
-        n_saved = batch_save_signals(signals_to_write)
-        log(f"Done.")
+        if len(pending) >= _FLUSH_EVERY:
+            _flush()
+
+    _flush("final")
 
     # ── SUMMARY ───────────────────────────────────────────────────────────────
     phase("SUMMARY")
@@ -439,7 +450,7 @@ def main():
     log(f"  CLUSTER_BUY: {n_cluster}  BUY: {n_buy}  WATCH: {n_watch}  "
         f"LOW: {n_low}  ineligible: {n_ineligible}")
     if args.dry_run:
-        log(f"  DRY RUN — {len(signals_to_write)} signals would be written (use without --dry-run to commit)")
+        log(f"  DRY RUN — {n_dry_run_total} signals would be written (use without --dry-run to commit)")
     else:
         log(f"  Signals written: {n_saved}")
         if n_saved:

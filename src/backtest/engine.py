@@ -280,6 +280,8 @@ def run_backtest(threshold: int = 65, lookback_days: int = 365) -> List[Dict]:
             s for s in cluster_weak if _parse_date(s["signal_date"]) <= cutoff
         ]
         cluster_weak_returns = []
+        if cluster_weak_eligible:
+            log(f"  ── Cluster 50-64: {len(cluster_weak_eligible)} signals ──")
         for sig in cluster_weak_eligible:
             sig_date  = _parse_date(sig["signal_date"])
             exec_date = sig_date + timedelta(days=EXEC_LAG_DAYS)
@@ -289,10 +291,14 @@ def run_backtest(threshold: int = 65, lookback_days: int = 365) -> List[Dict]:
             spy_ret    = get_price_change_pct(SPY_TICKER, exec_date, exit_date)
             if spy_ret is None or ticker_ret is None:
                 continue
+            excess = round(ticker_ret - spy_ret, 2)
+            icon = "✓" if excess > 0 else "✗"
+            log(f"    {icon} {ticker:<6}  CLUSTER_WEAK  score={sig['score']:>3}"
+                f"  tkr={ticker_ret:>+6.1f}%  spy={spy_ret:>+6.1f}%  excess={excess:>+6.1f}%")
             cluster_weak_returns.append({
                 "ticker": ticker,
                 "score": sig["score"],
-                "excess_return": round(ticker_ret - spy_ret, 2),
+                "excess_return": excess,
                 "exec_date": exec_date.isoformat(),
             })
         cluster_5064_metrics = _group_metrics(cluster_weak_returns) if cluster_weak_returns else None
