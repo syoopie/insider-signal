@@ -872,11 +872,13 @@ monitoring but not acting on alone.
     st.markdown("""
 | Parameter | Value | Why |
 |-----------|-------|-----|
+| Signals included | `signal_type IN ('BUY','CLUSTER_BUY')` AND `(score ≥ 65 OR cluster_flag = TRUE)` | WATCH excluded; all cluster signals included regardless of score |
 | Signal date | `filed_date + 1` | Avoids look-ahead bias — you can't trade until the filing is public |
 | Execution date | `signal_date + 3 calendar days` | Realistic fill lag |
 | Benchmark | SPY for all; IWM also for small-cap | SPY understates the opportunity cost for Russell 2000 names |
 | Delisted stocks | −50% excess return | Blunt survivorship bias correction |
 | Horizons | 30 / 60 / 90 / 180 days | Based on literature; 60–90d is the peak alpha window |
+| Cluster 50–64 | Evaluated separately | CLUSTER_BUY signals with score 50–64 are excluded from the main pool but tracked in their own bucket |
 
 The backtest runs every Sunday via GitHub Actions. Results are stored in `backtest_runs` and
 displayed in the **Backtest** tab with hit rate, avg/median excess return, and risk metrics.
