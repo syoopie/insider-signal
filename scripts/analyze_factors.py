@@ -39,13 +39,15 @@ ALL_FACTORS = [
     "holdings_increase_30pct", "holdings_increase_15pct", "holdings_increase_5pct",
     "first_purchase_12mo", "sequenced_buying_30d", "prior_purchase_31_365d",
     "near_52wk_low_5pct", "near_52wk_low_10pct",
+    "cluster_size_4plus", "cluster_size_5plus", "cluster_size_6plus",
+    "fast_filing_0_1d", "fast_filing_2d",
 ]
 
 CURRENT_WEIGHTS = {
     "indirect_purchase":        -15,
     "role_cfo":                +15,
     "role_director":           +16,
-    "role_chairman":            +8,
+    "role_chairman":             0,
     "role_coo":                +15,
     "role_officer":            +12,
     "role_ceo":                  0,
@@ -56,14 +58,19 @@ CURRENT_WEIGHTS = {
     "cap_unknown":              +5,
     "value_500k_plus":         +15,
     "value_100k_plus":           0,
-    "holdings_increase_30pct": +10,
-    "holdings_increase_15pct":  +3,
+    "holdings_increase_30pct":   0,
+    "holdings_increase_15pct":   0,
     "holdings_increase_5pct":  +10,
     "first_purchase_12mo":       0,
     "sequenced_buying_30d":    +10,
     "prior_purchase_31_365d":  +15,
     "near_52wk_low_5pct":      +12,
     "near_52wk_low_10pct":      +7,
+    "cluster_size_4plus":       +5,
+    "cluster_size_5plus":       +8,
+    "cluster_size_6plus":      +12,
+    "fast_filing_0_1d":         +6,
+    "fast_filing_2d":           +2,
 }
 
 

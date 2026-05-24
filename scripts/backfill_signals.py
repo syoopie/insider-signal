@@ -47,7 +47,7 @@ from psycopg2.extras import RealDictCursor
 from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.db.connection import get_conn
 from src.ingest.store import batch_save_signals
-from src.signals.scorer import score_transaction, classify_signal
+from src.signals.scorer import score_transaction, classify_signal, cluster_size_bonus, filing_lag_bonus
 from src.signals.formatter import build_evidence
 
 setup_log_tee("backfill")
@@ -390,6 +390,36 @@ def main():
         cluster_info  = _detect_cluster(all_ticker_txs, filed_date)
         is_cluster    = cluster_info.get("is_cluster", False)
         tight_cluster = cluster_info.get("tight_cluster", False)
+        cluster_n     = cluster_info.get("insider_count", 0)
+
+        # --- Signal-level bonuses (cluster size + filing urgency) ---
+        if is_cluster and cluster_n >= 4:
+            cs_pts, cs_factor = cluster_size_bonus(cluster_n)
+            if cs_pts > 0:
+                aggregate_score = min(aggregate_score + cs_pts, 100)
+                breakdown_combined = dict(breakdown_combined)
+                breakdown_combined[cs_factor] = cs_pts
+
+        lags = []
+        for tx in tx_rows:
+            fd = tx.get("filed_date")
+            td = tx.get("transaction_date")
+            if fd and td:
+                try:
+                    if not hasattr(fd, "year"): fd = date.fromisoformat(str(fd)[:10])
+                    if not hasattr(td, "year"): td = date.fromisoformat(str(td)[:10])
+                    lag = (fd - td).days
+                    if lag >= 0:
+                        lags.append(lag)
+                except (ValueError, TypeError):
+                    pass
+        if lags:
+            fl_pts, fl_factor = filing_lag_bonus(min(lags))
+            if fl_pts > 0:
+                aggregate_score = min(aggregate_score + fl_pts, 100)
+                breakdown_combined = dict(breakdown_combined)
+                breakdown_combined[fl_factor] = fl_pts
+
         signal_type   = classify_signal(aggregate_score, is_cluster, participant_scores, tight_cluster)
 
         cap_tier    = tx_rows[0].get("cap_tier") or "unknown"

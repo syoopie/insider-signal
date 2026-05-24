@@ -36,7 +36,7 @@ from src.ingest.store import (
     save_signal, mark_signal_alerted, get_unalerted_signals, prune_old_data,
 )
 from src.market.prices import get_market_data
-from src.signals.scorer import score_transaction, classify_signal
+from src.signals.scorer import score_transaction, classify_signal, cluster_size_bonus, filing_lag_bonus
 from src.signals.cluster import detect_clusters_for_ticker, get_tickers_with_recent_purchases
 from src.signals.formatter import build_evidence
 from src.alerts.telegram import send_signal, send_error, send_daily_summary
@@ -248,6 +248,35 @@ def main():
         is_cluster    = cluster_info.get("is_cluster", False)
         tight_cluster = cluster_info.get("tight_cluster", False)
         cluster_n     = cluster_info.get("insider_count", 0)
+
+        # --- Signal-level bonuses (cluster size + filing urgency) ---
+        if is_cluster and cluster_n >= 4:
+            cs_pts, cs_factor = cluster_size_bonus(cluster_n)
+            if cs_pts > 0:
+                aggregate_score = min(aggregate_score + cs_pts, 100)
+                breakdown_combined = dict(breakdown_combined)
+                breakdown_combined[cs_factor] = cs_pts
+
+        lags = []
+        for tx in tx_rows:
+            fd = tx.get("filed_date")
+            td = tx.get("transaction_date")
+            if fd and td:
+                try:
+                    if not hasattr(fd, "year"): fd = date.fromisoformat(str(fd)[:10])
+                    if not hasattr(td, "year"): td = date.fromisoformat(str(td)[:10])
+                    lag = (fd - td).days
+                    if lag >= 0:
+                        lags.append(lag)
+                except (ValueError, TypeError):
+                    pass
+        if lags:
+            fl_pts, fl_factor = filing_lag_bonus(min(lags))
+            if fl_pts > 0:
+                aggregate_score = min(aggregate_score + fl_pts, 100)
+                breakdown_combined = dict(breakdown_combined)
+                breakdown_combined[fl_factor] = fl_pts
+
         signal_type   = classify_signal(aggregate_score, is_cluster, participant_scores, tight_cluster)
 
         effective_cap = (tx_rows[0].get("cap_tier") or mdata.get("cap_tier") or "unknown") if mdata else (tx_rows[0].get("cap_tier") or "unknown")

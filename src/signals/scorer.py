@@ -40,7 +40,7 @@ ROLE_SCORES = {
     "cfo":       15,  # +2.4%/-0.1% — slight positive, keep
     "director":  16,  # -2.7%/+6.2% — positive at 90d, keep
     "coo":       15,  # +7.6%/+27.5% — strong (small sample n=3-5)
-    "chairman":   8,  # -4.4%/-11.2% — negative, reduced from 14; too few samples to zero
+    "chairman":   0,  # -4.4%/-11.2% — confirmed negative; reduced from 14→8→0
     "officer":   12,  # +17.1%/-13.5% — mixed; 60d very strong
     "ceo":        0,  # -12.1%/-11.4% — confirmed negative at both horizons
     "other":      0,  # -22.2%/-2.8% — confirmed noise
@@ -165,22 +165,18 @@ def score_transaction(
         score += 15
 
     # --- Purchase as % of prior holdings (Pficdn et al.) ---
-    # holdings_30pct: reduced to 10 (was 15); mixed signal (-3.8%/+2.1% lift).
-    # holdings_15pct: reduced to 3 (was 5); essentially neutral (+0.9%/-0.8%).
-    # holdings_5pct: increased to 10 (was 5); strongly positive (+11.7%/+4.5% lift).
+    # holdings_30pct: removed (0); -5.67% lift at 60d (n=102) — confirmed harmful.
+    #   Fires for small-position insiders with inflated % increase — noisy, not informed.
+    # holdings_15pct: removed (0); -4.75%/-1.53% — confirmed negative at both horizons.
+    # holdings_5pct: strongly positive (+17.5%/+8.0% lift) — fires for large existing holders
+    #   adding a meaningful slice of an already-substantial position. Keep at 10.
     shares_bought = float(transaction.get("shares") or 0)
     shares_after  = float(transaction.get("shares_after") or 0)
     if shares_bought > 0 and shares_after > shares_bought:
         shares_before = shares_after - shares_bought
         pct_increase = shares_bought / shares_before * 100
-        if pct_increase >= 30:
-            breakdown["holdings_increase_30pct"] = 10  # was 15; mixed signal
-            score += 10
-        elif pct_increase >= 15:
-            breakdown["holdings_increase_15pct"] = 3   # was 5; essentially neutral
-            score += 3
-        elif pct_increase >= 5:
-            breakdown["holdings_increase_5pct"] = 10   # was 5; +11.7%/+4.5% — strong
+        if pct_increase >= 5:
+            breakdown["holdings_increase_5pct"] = 10   # +17.5%/+8.0% — strongest holdings signal
             score += 10
 
     # --- Timing: three mutually exclusive purchase-history factors ---
@@ -272,6 +268,35 @@ def classify_signal(
     if score >= 45:
         return "WATCH"
     return "LOW"
+
+
+def cluster_size_bonus(insider_count: int) -> tuple:
+    """
+    Additional points for clusters larger than the 3-insider minimum.
+    Each extra insider beyond the base 3 is an independent confirmation of the buy thesis.
+    Returns (points, factor_name). Applied at signal level (not per transaction).
+    """
+    if insider_count >= 6:
+        return 12, "cluster_size_6plus"
+    elif insider_count >= 5:
+        return 8, "cluster_size_5plus"
+    elif insider_count >= 4:
+        return 5, "cluster_size_4plus"
+    return 0, ""
+
+
+def filing_lag_bonus(min_lag_days: int) -> tuple:
+    """
+    Bonus for fast Form 4 filers. SEC requires filing within 2 business days.
+    Filing same/next calendar day suggests the insider prioritized disclosure — urgency signal.
+    Returns (points, factor_name). Applied at signal level (not per transaction).
+    min_lag_days: minimum (transaction → filed) lag across all cluster members.
+    """
+    if min_lag_days <= 1:
+        return 6, "fast_filing_0_1d"
+    elif min_lag_days == 2:
+        return 2, "fast_filing_2d"
+    return 0, ""
 
 
 def _parse_date(date_str: Optional[str]) -> Optional[date]:
