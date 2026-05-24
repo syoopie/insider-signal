@@ -61,6 +61,12 @@ Skipping either step leaves the DB stale and the backtest chart misleading.
 | GitHub Actions config | `.github/workflows/` — 4 workflow files |
 | Backtest lookback window | `scripts/run_backtest.py` → `LOOKBACK_DAYS = 730` |
 
+**Key thresholds (do not change without re-running full backfill + backtest):**
+- BUY: score ≥ 60 (reduced from 65 on 2026-05-25 after empirical weight recalibration)
+- CLUSTER_BUY: ≥3 direct insiders, 14d window, avg score ≥28 (was 35), tight OR max_score≥45 (was 50)
+- WATCH: score 45–59 OR weak cluster
+- Backtest lookback: 730 days
+
 ---
 
 ## What This System Does
@@ -323,27 +329,30 @@ before inserting. Safe to re-run on the same day. Historical runs accumulate ind
 
 | Factor | Points | Condition |
 |---|---|---|
-| `indirect_purchase` | **−8** | `is_direct = FALSE` (LLC/trust/family entity) |
-| `role_cfo` | +20 | role_category = 'cfo' |
+| `indirect_purchase` | **−15** | `is_direct = FALSE` — was -8; empirical lift -16%/60d, -27%/90d |
+| `role_cfo` | +15 | role_category = 'cfo' — was +20; negative 90d lift |
 | `role_director` | +16 | role_category = 'director' |
 | `role_chairman` | +14 | role_category = 'chairman' |
 | `role_coo` | +12 | role_category = 'coo' |
 | `role_officer` | +12 | role_category = 'officer' |
-| `role_ceo` | +10 | role_category = 'ceo' (counterintuitively lowest — more PR trades) |
-| `role_other` | +6 | anything else |
+| `role_ceo` | +10 | role_category = 'ceo' |
+| `role_other` | +0 | was +6; empirical lift -21% at both horizons — removed |
 | `cap_small` | +15 | cap_tier = 'small' (<$2B) — strongest alpha per Lakonishok & Lee |
 | `cap_mid` | +8 | cap_tier = 'mid' ($2B–$10B) |
 | `cap_large` | +0 | cap_tier = 'large' (>$10B) |
-| `cap_unknown` | +5 | cap_tier = 'unknown' — conservative; backtesting showed unknowns include large-caps like FI/KO/BDX |
-| `value_500k_plus` | +12 | total_value ≥ $500K |
-| `value_100k_plus` | +8 | total_value ≥ $100K (mutually exclusive with above) |
-| `holdings_increase_30pct` | +15 | (shares_bought / shares_before) ≥ 30% |
-| `holdings_increase_15pct` | +10 | 15–30% (mutually exclusive with above) |
-| `holdings_increase_5pct` | +5 | 5–15% (mutually exclusive with above) |
-| `first_purchase_12mo` | +10 | No prior P transaction in preceding 365 days |
-| `sequenced_buying_30d` | +8 | Second purchase within 30 days (mutually exclusive with above) |
-| `near_52wk_low_5pct` | +12 | Price within 5% of 52-week low |
-| `near_52wk_low_10pct` | +7 | Price within 10% of 52-week low (mutually exclusive with above) |
+| `cap_unknown` | +0 | was +5; -4.8%/60d, -1.2%/90d empirical lift |
+| `value_500k_plus` | +9 | total_value ≥ $500K — was +12; dollar size alone doesn't predict returns |
+| `value_100k_plus` | +5 | total_value ≥ $100K — was +8; negative empirical lift |
+| `holdings_increase_30pct` | +15 | (shares_bought / shares_before) ≥ 30% — strong 90d lift +7.7% |
+| `holdings_increase_15pct` | +5 | 15–30% — was +10; negative empirical lift |
+| `holdings_increase_5pct` | +5 | 5–15% — positive 60d lift +19.6% |
+| `prior_purchase_31_365d` | +12 | **New (2026-05-25)**: prior buy 31-364d ago (sustained conviction) — +9.3%/60d, +13.4%/90d |
+| `sequenced_buying_30d` | +8 | Prior buy within 30 days (rapid sequence) |
+| `first_purchase_12mo` | +3 | No prior buy in 365d — was +10; negative empirical lift; kept at +3 for novelty |
+| `near_52wk_low_5pct` | +12 | Price within 5% of 52-week low (only fires in daily ingest, not backfill) |
+| `near_52wk_low_10pct` | +7 | Price within 10% of 52-week low (same caveat) |
+
+**Timing factors are mutually exclusive** — exactly one of `sequenced_buying_30d`, `prior_purchase_31_365d`, or `first_purchase_12mo` fires per signal.
 
 `first_purchase_12mo` and `sequenced_buying_30d` are mutually exclusive by definition.
 
@@ -351,13 +360,13 @@ before inserting. Safe to re-run on the same day. Historical runs accumulate ind
 
 ```
 cluster_flag=True:
-    avg(participant_scores) >= 35 AND (tight_cluster OR max_score >= 50)
+    avg(participant_scores) >= 28 AND (tight_cluster OR max_score >= 45)
         AND cap_tier != 'large'  → CLUSTER_BUY
     cap_tier == 'large'          → WATCH  (0% hit rate at 90d, −16% avg excess)
-    avg >= 35 but loose + weak   → WATCH
-    avg < 35                     → WATCH  (very weak cluster — surfaced but no alert)
+    avg >= 28 but loose + weak   → WATCH
+    avg < 28                     → WATCH  (very weak cluster — surfaced but no alert)
 no cluster:
-    score >= 65                  → BUY
+    score >= 60                  → BUY  (was 65; reduced after 2026-05-25 recalibration)
     score >= 45                  → WATCH
     score < 45                   → LOW
 ```
@@ -658,7 +667,7 @@ Worst: LGF (Lions Gate) — insiders averaging down, −63.1% at 180d. No filter
 
 - **Never** commit `.env`, `secrets.toml`, or any credential file. The repo is public.
 - **Never** use `get_conn()` outside a `with` block — the context manager handles commit/rollback/close.
-- **Never** change the cluster threshold (14d, 3 insiders) or BUY threshold (65) without re-running the full backfill — every signal in the DB would be stale.
+- **Never** change the cluster threshold (14d, 3 insiders), BUY threshold (60), cluster avg (28), or cluster max_score (45) without re-running the full backfill — every signal in the DB would be stale.
 - **Never** add `ORDER BY RANDOM()` or non-deterministic queries to backfill — idempotency depends on deterministic processing order.
 - **Never** call `get_market_data()` in the backfill script — it fetches live prices which don't represent historical cap tiers. Use `tx.get("cap_tier")` from the companies join instead.
 - **Never** write to the DB from `dashboard/app.py` — the dashboard is strictly read-only.

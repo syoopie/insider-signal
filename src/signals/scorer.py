@@ -20,45 +20,44 @@ Cluster qualification note:
   each scoring 42 qualify as CLUSTER_BUY (avg=42 ≥ 35 threshold) even though
   no single insider cleared 50. The collective action is the signal.
 
-Score factor mutual exclusivity:
-  first_purchase_12mo and sequenced_buying_30d are mutually exclusive by
-  definition — first_purchase_12mo fires only when there are NO purchases in
-  the preceding 365 days, while sequenced_buying_30d fires only when there IS
-  a purchase within the preceding 30 days.
+Score factor mutual exclusivity (timing factors):
+  Three mutually exclusive purchase-history factors — exactly one fires per signal:
+  - sequenced_buying_30d  (+8):  prior buy within 30 days (rapid sequence)
+  - prior_purchase_31_365d (+12): prior buy in 31-364 days (sustained conviction)
+  - first_purchase_12mo   (+3):  no prior buy in 365 days (new/returning buyer)
 """
 
 from datetime import date, timedelta
 from typing import Optional
 
 
-# Role → base score delta
+# Role → base score delta.
+# Empirical calibration (2026-05-25): weights tuned against 60d/90d excess returns.
+# CFO reduced from 20→15: negative 90d lift in backtest (-3.6%).
+# role_other set to 0 (was 6): -21% lift at both horizons — noise, not signal.
 ROLE_SCORES = {
-    "cfo":      20,
-    "director": 16,
-    "coo":      12,
-    "chairman": 14,
-    "officer":  12,
-    "ceo":      10,
-    "other":     6,
+    "cfo":       15,  # was 20
+    "director":  16,
+    "coo":       12,
+    "chairman":  14,
+    "officer":   12,
+    "ceo":       10,
+    "other":      0,  # was 6; -21% empirical lift — removed
 }
 
-# Market cap tier → score delta
-# unknown is scored conservatively at mid-cap level (+8) rather than small-cap (+15).
-# Empirical backtesting showed unknown-cap BUY signals underperformed significantly
-# (avg -9% to -20% excess at 90d) because unresolved market caps include large-caps
-# like Fiserv, Coca-Cola, and Becton Dickinson that our EDGAR refresh missed.
-# Scoring them as small-cap pushed them over the BUY threshold undeservedly.
+# Market cap tier → score delta.
+# unknown set to 0 (was 5): -4.8% lift at 60d, -1.2% at 90d.
+# Unknown-cap includes large-caps like FI/KO/BDX that EDGAR bulk frames miss.
 CAP_SCORES = {
     "small":   15,
     "mid":      8,
     "large":    0,
-    "unknown":  5,
+    "unknown":  0,  # was 5; negative empirical lift
 }
 
-# Indirect purchases (is_direct=False) are made through LLCs/trusts/family
-# entities — demonstrably weaker signals and inflate artificial cluster counts
-# (e.g. fund partners each filing separately for the same block trade).
-INDIRECT_PENALTY = -8
+# Indirect purchase penalty increased from -8 to -15.
+# Empirical lift: -15.8% at 60d, -27.1% at 90d — far worse than the prior -8 captured.
+INDIRECT_PENALTY = -15
 
 
 def score_transaction(
@@ -157,15 +156,19 @@ def score_transaction(
     score += cap_pts
 
     # --- Transaction value (absolute) ---
-    # total_value already validated above (≥ $2,000)
+    # Empirical finding: dollar size alone does not predict returns.
+    # Reduced weights (was 12/8) — holdings % is far more predictive.
     if total_value >= 500_000:
-        breakdown["value_500k_plus"] = 12
-        score += 12
+        breakdown["value_500k_plus"] = 9  # was 12
+        score += 9
     elif total_value >= 100_000:
-        breakdown["value_100k_plus"] = 8
-        score += 8
+        breakdown["value_100k_plus"] = 5  # was 8
+        score += 5
 
     # --- Purchase as % of prior holdings (Pficdn et al.) ---
+    # holdings_30pct: strong 90d lift (+7.7%) — keep at 15.
+    # holdings_15pct: negative at both horizons; reduced to 5 (was 10).
+    # holdings_5pct: positive 60d lift (+19.6%) — keep at 5.
     shares_bought = float(transaction.get("shares") or 0)
     shares_after  = float(transaction.get("shares_after") or 0)
     if shares_bought > 0 and shares_after > shares_bought:
@@ -175,33 +178,40 @@ def score_transaction(
             breakdown["holdings_increase_30pct"] = 15
             score += 15
         elif pct_increase >= 15:
-            breakdown["holdings_increase_15pct"] = 10
-            score += 10
+            breakdown["holdings_increase_15pct"] = 5   # was 10; negative empirical lift
+            score += 5
         elif pct_increase >= 5:
             breakdown["holdings_increase_5pct"] = 5
             score += 5
 
-    # --- First purchase in 12+ months ---
-    cutoff_12mo = tx_date - timedelta(days=365)
-    recent_prior = [
-        p for p in prior_purchases
-        if _parse_date(p.get("transaction_date")) and
-        _parse_date(p.get("transaction_date")) >= cutoff_12mo
-    ]
-    if not recent_prior:
-        breakdown["first_purchase_12mo"] = 10
-        score += 10
+    # --- Timing: three mutually exclusive purchase-history factors ---
+    #
+    # Empirical finding (2026-05-25): the 9 signals where the insider had a
+    # prior purchase in the past 31-364 days ("sustained conviction" follow-up)
+    # averaged +9.3% at 60d and +13.4% at 90d — by far the strongest timing signal.
+    # first_purchase_12mo (no prior in 365d) showed NEGATIVE lift at both horizons
+    # despite receiving +10 pts; reduced to +3 to acknowledge novelty while not
+    # over-rewarding first-timers who may simply be one-off buyers.
+    cutoff_365d = tx_date - timedelta(days=365)
+    cutoff_30d  = tx_date - timedelta(days=30)
 
-    # --- Sequenced buying (2nd purchase within 30 days) ---
-    cutoff_30d = tx_date - timedelta(days=30)
-    recent_30d = [
-        p for p in prior_purchases
-        if _parse_date(p.get("transaction_date")) and
-        cutoff_30d <= _parse_date(p.get("transaction_date")) < tx_date
-    ]
-    if recent_30d:
+    prior_30d  = [p for p in prior_purchases
+                  if cutoff_30d  <= (_parse_date(p.get("transaction_date")) or date.min) < tx_date]
+    prior_365d = [p for p in prior_purchases
+                  if cutoff_365d <= (_parse_date(p.get("transaction_date")) or date.min) < tx_date]
+
+    if prior_30d:
+        # Rapid sequential buyer — high conviction in the near term
         breakdown["sequenced_buying_30d"] = 8
         score += 8
+    elif prior_365d:
+        # Sustained conviction: bought before, coming back after a medium gap
+        breakdown["prior_purchase_31_365d"] = 12
+        score += 12
+    else:
+        # No purchase in past year — first-time buyer (or very long gap)
+        breakdown["first_purchase_12mo"] = 3  # was 10; negative empirical lift
+        score += 3
 
     # --- Near 52-week low (tiered) ---
     price = float(transaction.get("price_per_share") or 0) or None
@@ -239,23 +249,27 @@ def classify_signal(
     tight_cluster: True if 3+ insiders bought within a 5-day sub-window.
 
     CLUSTER_BUY qualification:
-      - avg(participant_scores) >= 35 (collective quality floor)
-      - AND (tight_cluster OR max individual score >= 50)
-      Loose clusters (14d window only) with weak individual scores are surfaced
-      as WATCH — empirical testing showed loose low-score clusters average -5%
-      excess at 90d, while tight clusters and score-50+ clusters average +3-5%.
+      - avg(participant_scores) >= 28 (was 35; reduced because overall scores are
+        lower after empirical weight recalibration — keeps same relative filtering)
+      - AND (tight_cluster OR max individual score >= 45)
+        (max threshold reduced from 50→45 for same reason as avg threshold)
+      Loose clusters with weak individual scores are surfaced as WATCH.
+
+    BUY threshold: 60 (was 65; reduced because max achievable score without
+      live 52wk-low data is ~63, so 65 would suppress legitimate strong signals
+      during backfill where 52wk low is unavailable).
     """
     if cluster_flag:
         if participant_scores:
             cluster_avg = int(sum(participant_scores) / len(participant_scores))
         else:
             cluster_avg = score  # fallback for callers that don't supply scores
-        if cluster_avg >= 35:
-            if tight_cluster or score >= 50:
+        if cluster_avg >= 28:
+            if tight_cluster or score >= 45:
                 return "CLUSTER_BUY"
             return "WATCH"  # loose cluster with weak individual scores
         return "WATCH"  # very weak cluster: surface on dashboard, no alert
-    if score >= 65:
+    if score >= 60:
         return "BUY"
     if score >= 45:
         return "WATCH"
