@@ -504,8 +504,31 @@ with tab_backtest:
                 )
 
         # ── Avg excess return chart ──
-        unique_dates = bt_df["run_date"].nunique()
-        if unique_dates < 3:
+        # Use per-signal exec_date from detail so the x-axis spans the full
+        # signal history (up to LOOKBACK_DAYS) rather than just the number of
+        # weekly backtest runs recorded in backtest_runs.
+        detail_rows = []
+        for _, r in latest.iterrows():
+            h = r["horizon_days"]
+            for d in (_parse_metrics(r.get("metrics")).get("detail") or []):
+                if d.get("exec_date"):
+                    detail_rows.append({
+                        "exec_date": d["exec_date"][:10],
+                        "excess_return": d["excess_return"],
+                        "h": f"{h}d",
+                    })
+
+        if detail_rows:
+            det_df = pd.DataFrame(detail_rows)
+            det_df["exec_date"] = pd.to_datetime(det_df["exec_date"])
+            det_df["month"] = det_df["exec_date"].dt.to_period("M").dt.start_time
+            monthly = det_df.groupby(["month", "h"], as_index=False)["excess_return"].mean()
+            fig = px.line(
+                monthly, x="month", y="excess_return", color="h", markers=True,
+                labels={"excess_return": "Avg Excess Return vs SPY (%)", "month": "Signal Month", "h": "Horizon"},
+                title="Avg Excess Return vs SPY by Hold Horizon (monthly avg of individual signals)",
+            )
+        else:
             chart_df = latest.copy()
             chart_df["h"] = chart_df["horizon_days"].astype(str) + "d"
             fig = px.bar(
@@ -514,19 +537,11 @@ with tab_backtest:
                 color="avg_return",
                 color_continuous_scale=["#d62728", "#aec7e8", "#2ca02c"],
                 labels={"avg_return": "Avg Excess Return vs SPY (%)", "h": "Hold Horizon"},
-                title="Avg Excess Return vs SPY · trend line available after 3+ weekly runs",
+                title="Avg Excess Return vs SPY by Hold Horizon",
                 text="avg_return",
             )
             fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
             fig.update_layout(coloraxis_showscale=False, showlegend=False)
-        else:
-            trend = bt_df.copy()
-            trend["h"] = trend["horizon_days"].astype(str) + "d"
-            fig = px.line(
-                trend, x="run_date", y="avg_return", color="h", markers=True,
-                labels={"avg_return": "Avg Excess Return vs SPY (%)", "run_date": "Backtest Date", "h": "Horizon"},
-                title="Avg Excess Return vs SPY by Hold Horizon",
-            )
         fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
         st.plotly_chart(fig, use_container_width=True)
 

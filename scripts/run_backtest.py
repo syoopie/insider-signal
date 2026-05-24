@@ -20,7 +20,7 @@ from src.alerts.telegram import send_error
 setup_log_tee("backtest")
 
 THRESHOLD    = 65
-LOOKBACK_DAYS = 365
+LOOKBACK_DAYS = 730
 
 
 def main():
