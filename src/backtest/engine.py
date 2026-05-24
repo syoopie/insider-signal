@@ -140,10 +140,10 @@ def run_backtest(threshold: int = 65, lookback_days: int = 365) -> List[Dict]:
     log(f"Signal window: {since} → {today}")
 
     signals = _get_historical_signals(since, threshold)
-    # Also fetch CLUSTER_BUY signals with score 50–64 for separate analysis
-    cluster_weak = _get_cluster_weak_signals(since)
+    # Also fetch sub-threshold CLUSTER_BUY signals for separate analysis
+    cluster_weak = _get_cluster_weak_signals(since, threshold)
     log(f"Signals in DB: {len(signals)} (BUY/CLUSTER_BUY ≥{threshold}) + "
-        f"{len(cluster_weak)} weak clusters (score 50–64)")
+        f"{len(cluster_weak)} weak clusters (score <{threshold})")
 
     if not signals:
         log("  No BUY/CLUSTER_BUY signals found for this window.")
@@ -433,8 +433,8 @@ def _get_historical_signals(since: date, threshold: int) -> List[Dict]:
     ]
 
 
-def _get_cluster_weak_signals(since: date) -> List[Dict]:
-    """CLUSTER_BUY signals with score 50–64 (excluded from the main threshold)."""
+def _get_cluster_weak_signals(since: date, threshold: int = 60) -> List[Dict]:
+    """CLUSTER_BUY signals below the BUY score threshold (sub-threshold clusters)."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -446,10 +446,10 @@ def _get_cluster_weak_signals(since: date) -> List[Dict]:
                 LEFT JOIN companies c ON c.ticker = s.ticker
                 WHERE s.signal_date >= %s
                   AND s.signal_type = 'CLUSTER_BUY'
-                  AND s.score BETWEEN 50 AND 64
+                  AND s.score < %s
                 ORDER BY s.signal_date
                 """,
-                (since,),
+                (since, threshold),
             )
             rows = cur.fetchall()
     return [

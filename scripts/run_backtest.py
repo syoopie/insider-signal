@@ -19,7 +19,7 @@ from src.alerts.telegram import send_error
 
 setup_log_tee("backtest")
 
-THRESHOLD    = 65
+THRESHOLD    = 60   # matches classify_signal() BUY threshold in scorer.py
 LOOKBACK_DAYS = 730
 
 
