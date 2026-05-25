@@ -22,9 +22,9 @@ Cluster qualification note:
 
 Score factor mutual exclusivity (timing factors):
   Three mutually exclusive purchase-history factors — exactly one fires per signal:
-  - sequenced_buying_30d  (+8):  prior buy within 30 days (rapid sequence)
-  - prior_purchase_31_365d (+12): prior buy in 31-364 days (sustained conviction)
-  - first_purchase_12mo   (+3):  no prior buy in 365 days (new/returning buyer)
+  - sequenced_buying_30d    (+10): prior buy within 30 days (rapid sequence)
+  - prior_purchase_31_365d  (+15): prior buy in 31-364 days (sustained conviction)
+  - first_purchase_12mo     (-10): no prior buy in 365 days — first-time buyer penalty
 """
 
 from datetime import date, timedelta
@@ -32,18 +32,19 @@ from typing import Optional
 
 
 # Role → base score delta.
-# Empirical calibration round 2 (2026-05-25): full factor-lift analysis on 229/199 signals.
-# role_ceo removed (0): -12%/-11% lift at 60d/90d — confirmed harmful, not informative.
-# role_chairman reduced (8): only n=2 signals, -4%/-11% lift — precautionary reduction.
-# role_other kept at 0: -22%/-3% — confirmed noise.
+# Round 4 (2026-05-25): factor-lift analysis on 300/251 signals across 60d/90d.
+# role_ceo: -17.3%/-13.4% lift → moderate penalty (-5) to suppress CEO-only signals.
+# role_chairman: -4.4%/-10.1% → keep at 0 (n=2, too small to penalize confidently).
+# role_officer: +20.8%/−10.5% → mixed; keep at 12.
+# role_other: -24.4%/-11.9% → confirmed noise, keep at 0 (n=5, noisy).
 ROLE_SCORES = {
-    "cfo":       15,  # +2.4%/-0.1% — slight positive, keep
-    "director":  16,  # -2.7%/+6.2% — positive at 90d, keep
-    "coo":       15,  # +7.6%/+27.5% — strong (small sample n=3-5)
-    "chairman":   0,  # -4.4%/-11.2% — confirmed negative; reduced from 14→8→0
-    "officer":   12,  # +17.1%/-13.5% — mixed; 60d very strong
-    "ceo":        0,  # -12.1%/-11.4% — confirmed negative at both horizons
-    "other":      0,  # -22.2%/-2.8% — confirmed noise
+    "cfo":       15,  # -0.2%/+6.8% — good at 90d, keep
+    "director":  16,  # -2.4%/+0.9% — slight positive, keep
+    "coo":       15,  # -1.3%/+6.4% — good at 90d, keep
+    "chairman":   0,  # -4.4%/-10.1% — negative but n=2; keep at 0
+    "officer":   12,  # +20.8%/-10.5% — mixed; keep
+    "ceo":       -5,  # -17.3%/-13.4% — confirmed negative; moderate penalty
+    "other":      0,  # -24.4%/-11.9% — noise; n=5 too small to penalize further
 }
 
 # Market cap tier → score delta.
@@ -156,28 +157,23 @@ def score_transaction(
         breakdown[f"cap_{cap_tier}"] = cap_pts
     score += cap_pts
 
-    # --- Transaction value (absolute) ---
-    # value_500k_plus: increased to 15; strong 90d lift (+10.5%). Large committed buys predict returns.
-    # value_100k_plus: removed (0); confirmed negative at both horizons (-3.6%/-7.6%).
-    #   The 100k-500k range does not meaningfully separate insiders willing to commit real capital.
-    if total_value >= 500_000:
-        breakdown["value_500k_plus"] = 15  # was 9; +0.0%/+10.5% lift — 90d strong
-        score += 15
+    # Transaction value removed entirely (round 4): value_500k_plus had -4.7%/-6.5% lift
+    # at 60d/90d despite weight +15 — the largest single scoring error. Large dollar
+    # purchases correlate with negative outcomes, likely insiders averaging down in
+    # declining stocks. Dollar size doesn't predict alpha; quality factors do.
 
     # --- Purchase as % of prior holdings (Pficdn et al.) ---
-    # holdings_30pct: removed (0); -5.67% lift at 60d (n=102) — confirmed harmful.
-    #   Fires for small-position insiders with inflated % increase — noisy, not informed.
-    # holdings_15pct: removed (0); -4.75%/-1.53% — confirmed negative at both horizons.
-    # holdings_5pct: strongly positive (+17.5%/+8.0% lift) — fires for large existing holders
-    #   adding a meaningful slice of an already-substantial position. Keep at 10.
+    # holdings_5pct: +9.2%/+9.3% lift at 60d/90d — best non-role factor. Increased to 15.
+    #   Fires for insiders meaningfully adding to an existing position.
+    # holdings_30pct/15pct: confirmed negative at both horizons (removed in round 3).
     shares_bought = float(transaction.get("shares") or 0)
     shares_after  = float(transaction.get("shares_after") or 0)
     if shares_bought > 0 and shares_after > shares_bought:
         shares_before = shares_after - shares_bought
         pct_increase = shares_bought / shares_before * 100
         if pct_increase >= 5:
-            breakdown["holdings_increase_5pct"] = 10   # +17.5%/+8.0% — strongest holdings signal
-            score += 10
+            breakdown["holdings_increase_5pct"] = 15   # +9.2%/+9.3% — best factor; raised from 10
+            score += 15
 
     # --- Timing: three mutually exclusive purchase-history factors ---
     #
@@ -197,14 +193,16 @@ def score_transaction(
                   if cutoff_365d <= (_parse_date(p.get("transaction_date")) or date.min) < tx_date]
 
     if prior_30d:
-        # Rapid sequential buyer — high urgency/conviction
-        breakdown["sequenced_buying_30d"] = 10  # was 8
+        breakdown["sequenced_buying_30d"] = 10
         score += 10
     elif prior_365d:
-        # Sustained conviction: prior buy 31-364 days ago, coming back for more
-        breakdown["prior_purchase_31_365d"] = 15  # was 12; +8.2%/+15.7% — strongest timing signal
+        # Sustained conviction: prior buy 31-364 days ago (+2.4%/60d).
+        breakdown["prior_purchase_31_365d"] = 15
         score += 15
-    # else: first-time buyer (no prior in 365d) — no score added (was +3, confirmed negative)
+    else:
+        # First-time buyer in 12mo: -4.2%/-1.7% lift (n=174/156, round 4). Strengthen penalty.
+        breakdown["first_purchase_12mo"] = -10
+        score += -10
 
     # --- Near 52-week low (tiered) ---
     price = float(transaction.get("price_per_share") or 0) or None
@@ -242,24 +240,25 @@ def classify_signal(
     tight_cluster: True if 3+ insiders bought within a 5-day sub-window.
 
     CLUSTER_BUY qualification:
-      - avg(participant_scores) >= 25 (was 28; reduced because removing first_purchase_12mo
-        and value_100k_plus lowers typical individual scores by ~8 pts; keeps same
-        relative filtering intensity)
-      - AND (tight_cluster OR max individual score >= 35)
-        (max threshold reduced from 45→35 for same reason — e.g. director+small=31,
-        adding holdings_5pct gets to 41, but tight cluster alone should qualify)
+      - avg(participant_scores) >= 22 (lowered from 25; round 4 removes value_500k_plus
+        (-15 pts) which compresses individual scores; director+small = 31, but many
+        valid cluster participants may score 22-30 without a large holdings increase)
+      - AND (tight_cluster OR max individual score >= 30)
+        (lowered from 35 for same reason — director+small=31 already marginal)
       Loose clusters with weak individual scores are surfaced as WATCH.
 
-    BUY threshold: 60 (unchanged; strong single-insider signals still reach 60+
-      e.g. director+small+500k_plus+prior_purchase = 16+15+15+15 = 61).
+    BUY threshold: 60.
+      Achievable with: dir(16)+small(15)+holdings5pct(15)+prior_purchase(15) = 61.
+      Or: cfo(15)+small(15)+holdings5pct(15)+prior_purchase(15) = 60.
+      Effectively requires 3-4 strong positive factors — no cheap path via dollar-value.
     """
     if cluster_flag:
         if participant_scores:
             cluster_avg = int(sum(participant_scores) / len(participant_scores))
         else:
             cluster_avg = score  # fallback for callers that don't supply scores
-        if cluster_avg >= 25:
-            if tight_cluster or score >= 35:
+        if cluster_avg >= 22:
+            if tight_cluster or score >= 30:
                 return "CLUSTER_BUY"
             return "WATCH"  # loose cluster with weak individual scores
         return "WATCH"  # very weak cluster: surface on dashboard, no alert
@@ -272,30 +271,17 @@ def classify_signal(
 
 def cluster_size_bonus(insider_count: int) -> tuple:
     """
-    Additional points for clusters larger than the 3-insider minimum.
-    Each extra insider beyond the base 3 is an independent confirmation of the buy thesis.
-    Returns (points, factor_name). Applied at signal level (not per transaction).
+    Disabled in round 5: cluster_size_5plus had -1.5%/-0.3% lift — not discriminating.
+    Returns (0, "") for all inputs.
     """
-    if insider_count >= 6:
-        return 12, "cluster_size_6plus"
-    elif insider_count >= 5:
-        return 8, "cluster_size_5plus"
-    elif insider_count >= 4:
-        return 5, "cluster_size_4plus"
     return 0, ""
 
 
 def filing_lag_bonus(min_lag_days: int) -> tuple:
     """
-    Bonus for fast Form 4 filers. SEC requires filing within 2 business days.
-    Filing same/next calendar day suggests the insider prioritized disclosure — urgency signal.
-    Returns (points, factor_name). Applied at signal level (not per transaction).
-    min_lag_days: minimum (transaction → filed) lag across all cluster members.
+    Disabled in round 4: fast_filing_0_1d had -2.5%/-1.1% lift while firing on 61% of
+    signals — too broad to discriminate. Returns (0, "") for all inputs.
     """
-    if min_lag_days <= 1:
-        return 6, "fast_filing_0_1d"
-    elif min_lag_days == 2:
-        return 2, "fast_filing_2d"
     return 0, ""
 
 

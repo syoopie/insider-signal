@@ -50,27 +50,27 @@ CURRENT_WEIGHTS = {
     "role_chairman":             0,
     "role_coo":                +15,
     "role_officer":            +12,
-    "role_ceo":                  0,
+    "role_ceo":                  -5,  # round 4: penalty added
     "role_other":                0,
     "cap_small":               +15,
     "cap_mid":                   0,
     "cap_large":                 0,
     "cap_unknown":              +5,
-    "value_500k_plus":         +15,
+    "value_500k_plus":           0,   # round 4: removed (was +15; -4.7%/-6.5% lift)
     "value_100k_plus":           0,
     "holdings_increase_30pct":   0,
     "holdings_increase_15pct":   0,
-    "holdings_increase_5pct":  +10,
-    "first_purchase_12mo":       0,
+    "holdings_increase_5pct":  +15,   # round 4: raised from +10 (best factor: +9.2%/+9.3%)
+    "first_purchase_12mo":     -10,   # round 5: strengthened from -5 (-4.2%/-1.7% lift, n=174)
     "sequenced_buying_30d":    +10,
     "prior_purchase_31_365d":  +15,
     "near_52wk_low_5pct":      +12,
     "near_52wk_low_10pct":      +7,
-    "cluster_size_4plus":       +5,
-    "cluster_size_5plus":       +8,
-    "cluster_size_6plus":      +12,
-    "fast_filing_0_1d":         +6,
-    "fast_filing_2d":           +2,
+    "cluster_size_4plus":        0,   # round 4: removed (-5%/-7.6% lift)
+    "cluster_size_5plus":        0,   # round 5: removed (-1.5%/-0.3% lift)
+    "cluster_size_6plus":        0,   # round 4: removed (-8%/-8.7% lift)
+    "fast_filing_0_1d":          0,   # round 4: disabled (-2.5%/-1.1% lift, 61% fire rate)
+    "fast_filing_2d":            0,   # round 4: disabled
 }
 
 
