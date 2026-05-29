@@ -123,7 +123,7 @@ def _max_consecutive_losses(returns: list) -> int:
 
 # ── Main backtest ────────────────────────────────────────────────────────────
 
-def run_backtest(threshold: int = 65, lookback_days: int = 365) -> List[Dict]:
+def run_backtest(threshold: int = 60, lookback_days: int = 730) -> List[Dict]:
     """
     Evaluate all BUY/CLUSTER_BUY signals in the last `lookback_days` days.
     Returns one result dict per horizon (only horizons with completed exits).
