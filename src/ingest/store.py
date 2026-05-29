@@ -38,6 +38,9 @@ def _is_suppressed(ticker: str, signal_date: date, score: int, signal_type: str,
     if score >= prev_score + _SIGNAL_SCORE_JUMP:
         return False
     if _TYPE_RANK.get(signal_type, 0) > _TYPE_RANK.get(prev_type, 0):
+        # Intentional: a type upgrade (e.g. BUY → CLUSTER_BUY) is never suppressed,
+        # so both signals persist. This is by design — they represent two distinct
+        # entry points for the same thesis and are both visible in the Positions tab.
         return False
     return True
 
