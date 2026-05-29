@@ -421,8 +421,9 @@ with tab_positions:
             days_left = max(0, HOLD_HORIZON_DAYS - days_in)
             ev        = _parse_ev(p.get("evidence"))
             insiders  = ev.get("insiders", [])
-            prices    = [i.get("price") for i in insiders if i.get("price")]
-            entry     = sum(prices) / len(prices) if prices else None
+            total_val    = sum(float(i["total_value"])   for i in insiders if i.get("total_value"))
+            total_shares = sum(float(i["shares_bought"]) for i in insiders if i.get("shares_bought"))
+            entry        = total_val / total_shares if total_shares > 0 else None
             current   = _fetch_current_price(p["ticker"])
             ret       = (current - entry) / entry * 100 if (current and entry and entry > 0) else None
 
