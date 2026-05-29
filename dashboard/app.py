@@ -80,6 +80,20 @@ def _parse_metrics(raw) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _filterable_df(df: pd.DataFrame, key: str, style_fn=None, **kwargs) -> None:
+    """Renders a dataframe with a compact column-visibility popover above it."""
+    all_cols = list(df.columns)
+    _, btn_col = st.columns([8, 1])
+    with btn_col:
+        with st.popover("⚙", use_container_width=True):
+            selected = st.multiselect(
+                "Visible columns", all_cols, default=all_cols, key=f"col_{key}",
+            )
+    visible = df[selected] if selected else df
+    styled = visible.style.apply(style_fn, axis=1) if style_fn else visible
+    st.dataframe(styled, **kwargs)
+
+
 def _conviction(sig: dict, ev: dict) -> str:
     cl = ev.get("cluster", {})
     is_tight = bool(cl.get("tight_cluster"))
@@ -151,6 +165,14 @@ st.set_page_config(
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="collapsed",
+)
+
+st.markdown(
+    "<style>"
+    "@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');"
+    "html, body, [class*='css'] { font-family: 'IBM Plex Sans', sans-serif !important; }"
+    "</style>",
+    unsafe_allow_html=True,
 )
 
 st.title("📈 Insider Signal")
@@ -323,7 +345,7 @@ with tab_signals:
                             "Value":      _fmt_currency(i.get("total_value")),
                             "% Increase": f"+{i.get('pct_increase'):.0f}%" if i.get("pct_increase") else "N/A",
                         } for i in insiders])
-                        st.dataframe(ins_df, use_container_width=True, hide_index=True)
+                        _filterable_df(ins_df, key=f"insiders_{sig['id']}", use_container_width=True, hide_index=True)
 
                     # Context badges
                     if cl.get("is_cluster"):
@@ -454,10 +476,9 @@ with tab_positions:
                     bg = "#1a1a1a"
             return [f"background-color:{bg}"] * len(row)
 
-        st.dataframe(
-            pd.DataFrame(pos_rows).style.apply(_row_color, axis=1),
-            use_container_width=True,
-            hide_index=True,
+        _filterable_df(
+            pd.DataFrame(pos_rows), key="positions",
+            style_fn=_row_color, use_container_width=True, hide_index=True,
         )
         st.caption("Prices cached 5 min. Entry = avg purchase price across all insiders in the signal.")
 
@@ -617,7 +638,7 @@ with tab_backtest:
                             "Median":     _fmt_pct(m.get("median_return")) if m else "—",
                         })
 
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                _filterable_df(pd.DataFrame(rows), key=f"pivot_{key}", use_container_width=True, hide_index=True)
                 st.caption("N ⚠ = fewer than 10 signals (ignore). N ~ = fewer than 30 (directional only).")
 
         _render_pivot("by_score_band",  dt_score, "Score Band")
@@ -638,7 +659,7 @@ with tab_backtest:
                         "Missing SPY Data": risk.get("n_no_spy_data"),
                     })
             if risk_rows:
-                st.dataframe(pd.DataFrame(risk_rows), use_container_width=True, hide_index=True)
+                _filterable_df(pd.DataFrame(risk_rows), key="risk", use_container_width=True, hide_index=True)
             else:
                 st.info("No risk data yet.")
 
@@ -658,7 +679,7 @@ with tab_backtest:
                         "Median":    _fmt_pct(cl.get("median_return")),
                     })
             if cl_rows:
-                st.dataframe(pd.DataFrame(cl_rows), use_container_width=True, hide_index=True)
+                _filterable_df(pd.DataFrame(cl_rows), key="cluster5064", use_container_width=True, hide_index=True)
             else:
                 st.info("No cluster 50–64 data yet.")
 
@@ -732,7 +753,7 @@ with tab_history:
                 lambda x: "routine" if x is True else ("opportunistic" if x is False else "—")
             )
             df.columns = [c.replace("_", " ").title() for c in df.columns]
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            _filterable_df(df, key="tx_history", use_container_width=True, hide_index=True)
 
             buy_rows = [r for r in ticker_rows if r["transaction_code"] == "P"]
             if buy_rows:
@@ -759,7 +780,7 @@ with tab_history:
         """, (ticker_input,))
         if sig_rows:
             st.subheader(f"Signal history for {ticker_input}")
-            st.dataframe(pd.DataFrame(sig_rows), use_container_width=True, hide_index=True)
+            _filterable_df(pd.DataFrame(sig_rows), key="sig_history", use_container_width=True, hide_index=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
