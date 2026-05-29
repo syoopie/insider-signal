@@ -146,7 +146,7 @@ def score_transaction(
 
     # --- Role ---
     role = owner.get("role_category", "other")
-    role_pts = ROLE_SCORES.get(role, 6)
+    role_pts = ROLE_SCORES.get(role, 0)
     breakdown[f"role_{role}"] = role_pts
     score += role_pts
 

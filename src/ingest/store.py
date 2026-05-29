@@ -509,8 +509,9 @@ def prune_old_data(months: int = 24) -> Tuple[int, int]:
 
 
 def get_unalerted_signals(min_score: int = 45) -> List[dict]:
+    from psycopg2.extras import RealDictCursor
     with get_conn() as conn:
-        with conn.cursor() as cur:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
                 SELECT id, ticker, signal_date, score, signal_type, cluster_flag,

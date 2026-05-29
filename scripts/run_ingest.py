@@ -33,7 +33,7 @@ from src.ingest.edgar import fetch_form4_index
 from src.ingest.store import (
     write_filing,
     update_company_market_data, get_last_filed_date,
-    save_signal, mark_signal_alerted, get_unalerted_signals, prune_old_data,
+    save_signal, mark_signal_alerted, prune_old_data,
 )
 from src.market.prices import get_market_data
 from src.signals.scorer import score_transaction, classify_signal, cluster_size_bonus, filing_lag_bonus
