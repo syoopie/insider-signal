@@ -81,16 +81,38 @@ def _parse_metrics(raw) -> dict:
 
 
 def _filterable_df(df: pd.DataFrame, key: str, style_fn=None, **kwargs) -> None:
-    """Renders a dataframe with a compact column-visibility popover above it."""
-    all_cols = list(df.columns)
-    _, btn_col = st.columns([8, 1])
-    with btn_col:
-        with st.popover("⚙", use_container_width=True):
-            selected = st.multiselect(
-                "Visible columns", all_cols, default=all_cols, key=f"col_{key}",
-            )
-    visible = df[selected] if selected else df
-    styled = visible.style.apply(style_fn, axis=1) if style_fn else visible
+    """
+    Renders a dataframe with per-column value filters in a collapsible expander.
+    Columns with ≤12 unique values get a multiselect; others get a text-contains search.
+    """
+    if df.empty:
+        styled = df.style.apply(style_fn, axis=1) if style_fn else df
+        st.dataframe(styled, **kwargs)
+        return
+
+    filtered = df.copy()
+    with st.expander("🔍 Filter", expanded=False):
+        n_fcols = min(len(df.columns), 4)
+        fcols = st.columns(n_fcols)
+        for i, col in enumerate(df.columns):
+            with fcols[i % n_fcols]:
+                vals = df[col].dropna()
+                if vals.empty:
+                    continue
+                n_unique = vals.nunique()
+                if n_unique <= 12:
+                    options = sorted(vals.unique(), key=str)
+                    sel = st.multiselect(col, options, default=options, key=f"flt_{key}_{i}")
+                    if sel and len(sel) < len(options):
+                        filtered = filtered[filtered[col].isin(sel)]
+                else:
+                    q = st.text_input(col, key=f"flt_{key}_{i}", placeholder="contains…")
+                    if q:
+                        filtered = filtered[
+                            filtered[col].astype(str).str.contains(q, case=False, na=False)
+                        ]
+
+    styled = filtered.style.apply(style_fn, axis=1) if style_fn else filtered
     st.dataframe(styled, **kwargs)
 
 
