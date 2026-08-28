@@ -21,6 +21,10 @@ export function SignalCard({ signal, isNew = false }: { signal: Signal; isNew?: 
   const conviction = convictionFor(signal.signalType, signal.score, cluster);
   const bodyId = `signal-${signal.id}-detail`;
 
+  // For a plain BUY under 70 the conviction is literally "Buy", which the type
+  // badge beside it already says. Only show it when it adds something.
+  const showConviction = signal.signalType === "CLUSTER_BUY" || conviction === "HIGH";
+
   const tags: string[] = [];
   if (cluster?.tight_cluster) tags.push("tight window");
   if (cluster?.executive_cluster) tags.push("exec cluster");
@@ -66,7 +70,7 @@ export function SignalCard({ signal, isNew = false }: { signal: Signal; isNew?: 
 
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
               <SignalTypeBadge type={signal.signalType} />
-              <ConvictionBadge conviction={conviction} />
+              {showConviction && <ConvictionBadge conviction={conviction} />}
               <CapTierBadge tier={signal.capTier} />
               {signal.insiderCount > 1 && (
                 <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">

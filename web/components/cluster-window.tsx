@@ -32,7 +32,9 @@ export function ClusterWindow({ cluster, className }: { cluster: Cluster; classN
         <span>{fmtDate(cluster.window_start, { withYear: true })}</span>
         <span>
           {txns.length} purchase{txns.length === 1 ? "" : "s"} in{" "}
-          {Math.round(span / 86_400_000) + 1} days
+          {/* cluster.py sets window_start = as_of_date - 14 days and window_end =
+              as_of_date, so the span is already the window length. */}
+          {Math.round(span / 86_400_000)} days
         </span>
         <span>{fmtDate(cluster.window_end, { withYear: true })}</span>
       </div>

@@ -5,6 +5,8 @@ export function fmtCurrency(value: number | null | undefined): string {
   const v = Number(value);
   const abs = Math.abs(v);
   const sign = v < 0 ? "-" : "";
+  // Market caps are billions; without this tier they render as "$1200.0M".
+  if (abs >= 1_000_000_000) return `${sign}$${(abs / 1_000_000_000).toFixed(1)}B`;
   if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${sign}$${Math.round(abs / 1_000)}K`;
   return `${sign}$${abs.toFixed(2)}`;
