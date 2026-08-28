@@ -8,8 +8,10 @@ Read it in full before touching any code.
 ## Dashboard migration in progress (started 2026-08-29)
 
 The Streamlit dashboard (`dashboard/app.py`) is being replaced by a Next.js app in
-`web/`, hosted on Vercel. See `web/README.md` and `web/AGENTS.md` (Next.js 16 has
-breaking changes — read its bundled docs before editing `web/`).
+`web/`, hosted on Vercel. **Read `docs/web-migration.md` first** — it has the
+decisions, phase status, verified DB shapes, and how to resume each phase. Also
+`web/README.md` and `web/AGENTS.md` (Next.js 16 has breaking changes — read its
+bundled docs before editing `web/`).
 
 - The Python pipeline (`src/`, `scripts/`, `.github/workflows/`, the Neon schema,
   Telegram alerts) is **unchanged** by this migration.
