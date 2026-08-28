@@ -65,18 +65,19 @@ SEC EDGAR ──► src/ingest ──► Neon Postgres ◄── web/ (read-only
 | # | Phase | Status | Commit |
 | --- | --- | --- | --- |
 | 1 | Scaffold + freshness bar + placeholder routes | **Done** | `8521e98` |
-| 2 | Design system + `/preview` page | **Done** | (this commit) |
-| 3 | `/` Signals triage (filters, Top Picks, list, evidence, "new since last visit", calendar) | Not started | |
+| 2 | Design system + `/preview` page | **Done** | `3db1d6f` |
+| 3 | `/` Signals triage (filters, Top Picks, list, evidence, "new since last visit", calendar) | **Done** | `e80ed63`, `d26a512` |
 | 4 | `/backtest` (all Streamlit tab-3 charts + tables in Recharts) | Not started | |
 | 5 | `/ticker/[symbol]` + ticker search, on-demand price | Not started | |
 | 6 | `/clusters`, `/sectors` (needs SIC ingest add), signal calendar on `/` | Not started | |
 | 7 | `/how-it-works` (pipeline diagram, interactive scoring explainer) + `/api/revalidate` webhook in `daily_ingest.yml` | Not started | |
 | 8 | Docs sweep + delete `dashboard/`, drop `streamlit`/`plotly`, replace `keep_alive.yml` | Not started | |
 
-## What exists now (end of Phase 2)
+## What exists now (end of Phase 3)
 
-Routes: `/` (live pipeline stats), `/backtest` `/clusters` `/sectors` `/ticker`
-`/how-it-works` (styled placeholders), `/preview` (dev-only component gallery).
+Routes: `/` (the signals triage page — live), `/backtest` `/clusters` `/sectors`
+`/ticker` `/how-it-works` (styled placeholders), `/preview` (dev-only component
+gallery).
 
 Components (`web/components/`):
 
@@ -89,10 +90,13 @@ Components (`web/components/`):
 - `insider-table` — `DataTable` wired for `evidence.insiders[]`
 - `cluster-window` — 14-day timeline of a cluster's purchases
 - `charts` — `ChartCard`, `TimeSeriesChart`, `CategoryBarChart`, `Boxplot` (hand-drawn SVG)
+- Phase 3: `signal-filters`, `filter-chip` (`FilterChip` + `FilterGroup`),
+  `signal-calendar`, `signal-board`, `top-picks`, `signal-card`
 
 Libs: `lib/db.ts`, `lib/format.ts`, `lib/nav.ts`, `lib/types.ts` (zod),
 `lib/scoring-factors.ts` (factor metadata for the explainer + how-it-works),
-`lib/queries/pipeline.ts`.
+`lib/use-last-visit.ts`, `lib/signal-filters.ts`,
+`lib/queries/pipeline.ts`, `lib/queries/signals.ts`.
 
 ## How to resume
 
@@ -137,19 +141,56 @@ median_return, p25_return, p75_return, max_gain, max_loss } | null }`), `risk`,
 spy_return, excess_return }` (one row per evaluated signal; drives the
 excess-return-over-time chart via `exec_date`).
 
-### Phase 3 (Signals) — starting points
+### Phase 3 (Signals) — as built
 
-- Query: `lib/queries/signals.ts` — port the Streamlit `tab_signals` SQL
-  (`signals` LEFT JOIN `companies`, filters: lookback days, min score, signal
-  types, cap tiers). Parse `evidence` / `score_breakdown` with `lib/types.ts`.
-- Filters in URL search params via `nuqs` + localStorage fallback.
-- `SignalCard` (client): header row (ticker, company, `SignalTypeBadge`,
-  `ConvictionBadge`, score, `CapTierBadge`, date), expandable to `InsiderTable` +
-  `ScoreBar` + `ClusterWindow` + 52-week-low badge + `research_basis`.
-- Top Picks: top 3 CLUSTER_BUY else BUY, using `convictionFor()`.
-- "New since last visit": localStorage timestamp, badge signals with
-  `signal_date` / `evidence.filed_date` after it.
-- Signal calendar: count signals per day, small heatmap.
+`/` is the triage page. Filters live in the URL (`nuqs`), so a filtered view is
+a shareable link.
+
+- `lib/signal-filters.ts` — parsers shared by the server loader
+  (`loadSignalFilters`) and the client hook (`useQueryStates`), plus
+  `normalizeFilters` (the URL is user input: `days`, `min`, `types`, `caps` are
+  all clamped/whitelisted) and `matchesQuery` (used by both sides).
+- `lib/queries/signals.ts` — `getSignals(days, min, types, caps)` and
+  `getSignalCalendar(days)`, both `unstable_cache`d on bounded arguments only.
+  `applyDayFilter` narrows the cached window in memory.
+- Components: `signal-filters` (chips), `signal-calendar` (per-day strip,
+  click to pin), `signal-board` (summary, "new since last visit", list),
+  `top-picks`, `signal-card` (expandable evidence), `filter-chip`.
+- `lib/use-last-visit.ts` — `useSyncExternalStore` over localStorage, so the
+  server snapshot is empty and hydration matches.
+
+Two decisions worth keeping:
+
+- **Chips, not sliders.** The score is a sum of fixed integer factors, so a
+  continuous control implies precision the model doesn't have.
+- **Server/client filter split.** The four bounded filters and the day pin run
+  on the server (cached); free-text search runs in the browser against rows it
+  already has. Chip clicks issue one RSC request; typing issues none.
+
+The join to `companies` is a `LEFT JOIN LATERAL ... LIMIT 1`, not a plain join.
+`companies` is keyed by CIK, so `ON c.ticker = s.ticker` duplicates any signal
+whose ticker also belongs to a predecessor registrant — and the duplicate rows
+disagree on `cap_tier`. The Streamlit app has this bug. Cap tier resolves as
+`COALESCE(c.cap_tier, evidence->>'cap_tier', 'unknown')`, and the same
+expression is used for filtering and display so the two can't diverge.
+
+Still open for a later phase: `SignalCard` has no link to `/ticker/[symbol]`
+(that route lands in Phase 5); it links out to SEC EDGAR instead.
+
+### Verifying without Neon
+
+Neon's HTTP driver needs Neon's proxy, so a local Postgres is not reachable
+through `lib/db.ts` as written. To run the app against real data locally:
+
+1. `initdb` a scratch cluster, `psql -f src/db/schema.sql`, seed a few `signals`
+   rows (include two `companies` rows sharing one ticker — that is the case the
+   LATERAL join exists for).
+2. Temporarily point `query()` at `pg` behind an env flag, `pnpm build`,
+   `pnpm start`. Revert before committing.
+
+This is how Phase 3 was checked: filter combinations, cap-tier fallback when no
+`companies` row exists, hostile URLs (`?days=9999&min=-5&types=BOGUS`), the
+expand/popover/search/calendar interactions, and both themes.
 
 ### Phase 5 price fetch
 
@@ -189,3 +230,5 @@ Set `REVALIDATE_SECRET` in both Vercel env and GitHub secrets.
 - `dashboard/app.py`, `streamlit` + `plotly` in `requirements.txt`: removed in
   Phase 8 once parity is confirmed.
 - `Boxplot` whiskers render faint; revisit styling when Phase 4 uses it for real.
+- `/` no longer shows the pipeline stat cards (the freshness bar covers that, and
+  the full breakdown belongs on `/how-it-works` in Phase 7).
