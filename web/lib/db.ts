@@ -16,7 +16,11 @@ if (!connectionString && process.env.NODE_ENV === "production") {
 
 const client = connectionString ? neon(connectionString) : null;
 
-export type SqlParam = string | number | boolean | null;
+/**
+ * Postgres array parameters (for `= ANY($n::text[])`) are serialised to an array
+ * literal by the driver, so a `string[]` is a legal single parameter.
+ */
+export type SqlParam = string | number | boolean | null | string[];
 
 /**
  * Run a parameterised query. Returns `[]` (never throws) when the DB is
