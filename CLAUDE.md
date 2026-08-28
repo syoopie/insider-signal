@@ -5,6 +5,21 @@ Read it in full before touching any code.
 
 ---
 
+## Dashboard migration in progress (started 2026-08-29)
+
+The Streamlit dashboard (`dashboard/app.py`) is being replaced by a Next.js app in
+`web/`, hosted on Vercel. See `web/README.md` and `web/AGENTS.md` (Next.js 16 has
+breaking changes — read its bundled docs before editing `web/`).
+
+- The Python pipeline (`src/`, `scripts/`, `.github/workflows/`, the Neon schema,
+  Telegram alerts) is **unchanged** by this migration.
+- `web/` is read-only against the same Neon DB. Queries live in `web/lib/queries/`.
+- Work is phased; this CLAUDE.md's "Dashboard Sections" and "Stack" sections still
+  describe Streamlit and get rewritten when the migration's doc-sweep phase lands.
+- The feature branch is `feat/web-vercel-migration`.
+
+---
+
 ## Auto-Commit and Push Policy
 
 **Always automatically commit and push every change you make.**

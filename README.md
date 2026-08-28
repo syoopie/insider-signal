@@ -43,6 +43,7 @@ The key is filtering. Not all insider buys carry signal — pre-arranged plans, 
 | [docs/architecture.md](docs/architecture.md) | System diagram, data flow, project structure, database schema, cost breakdown, key terms |
 | [docs/research.md](docs/research.md) | Academic references for every scoring factor, backtest methodology, factors not implemented and why |
 | [docs/faq.md](docs/faq.md) | Common questions about the system, the research, and day-to-day operation |
+| [web/README.md](web/README.md) | The Next.js dashboard (on Vercel) that is replacing the Streamlit app |
 
 ---
 
@@ -66,7 +67,7 @@ See [docs/setup.md](docs/setup.md) for the full guide. At a high level:
 |---|---|---|
 | Compute + scheduler | GitHub Actions (public repo) | Free |
 | Database | Neon PostgreSQL (0.5 GB free tier) | Free |
-| Dashboard | Streamlit Community Cloud | Free |
+| Dashboard | Next.js on Vercel (`web/`) — migrating off Streamlit Community Cloud | Free |
 | Alerts | Telegram Bot API | Free |
 | Filing data | SEC EDGAR API (public) | Free |
 | Market data | Yahoo Finance via yfinance | Free |
