@@ -13,6 +13,8 @@ import {
 } from "recharts";
 import {
   ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
@@ -53,6 +55,16 @@ const SERIES_VARS = [
 
 export type SeriesDef = { key: string; label: string };
 
+/**
+ * Recharts sorts legend items by value and tooltip rows by name, which turns an
+ * ordered set of horizons ("30d","60d","90d","180d") into "180d, 30d, 60d, 90d".
+ * This restores the order the series were declared in.
+ */
+function seriesOrder(series: SeriesDef[]) {
+  return (item: { dataKey?: unknown }) =>
+    series.findIndex((s) => s.key === String(item.dataKey ?? ""));
+}
+
 function configFor(series: SeriesDef[]): ChartConfig {
   return Object.fromEntries(
     series.map((s, i) => [s.key, { label: s.label, color: SERIES_VARS[i % SERIES_VARS.length] }]),
@@ -65,6 +77,7 @@ export function TimeSeriesChart({
   series,
   xKey = "x",
   yFormat = (v) => String(v),
+  xFormat,
   referenceY,
   height = 260,
 }: {
@@ -72,6 +85,7 @@ export function TimeSeriesChart({
   series: SeriesDef[];
   xKey?: string;
   yFormat?: (v: number) => string;
+  xFormat?: (v: string) => string;
   referenceY?: number;
   height?: number;
 }) {
@@ -86,6 +100,7 @@ export function TimeSeriesChart({
           axisLine={false}
           tickMargin={8}
           minTickGap={32}
+          tickFormatter={xFormat}
           className="text-xs"
         />
         <YAxis
@@ -99,7 +114,10 @@ export function TimeSeriesChart({
         {referenceY != null && (
           <ReferenceLine y={referenceY} strokeDasharray="4 4" className="stroke-muted-foreground" />
         )}
-        <ChartTooltip content={<ChartTooltipContent />} />
+        <ChartTooltip content={<ChartTooltipContent />} itemSorter={seriesOrder(series)} />
+        {series.length > 1 && (
+          <ChartLegend content={<ChartLegendContent />} itemSorter={seriesOrder(series)} />
+        )}
         {series.map((s) => (
           <Line
             key={s.key}
@@ -150,7 +168,10 @@ export function CategoryBarChart({
         {referenceY != null && (
           <ReferenceLine y={referenceY} strokeDasharray="4 4" className="stroke-muted-foreground" />
         )}
-        <ChartTooltip content={<ChartTooltipContent />} />
+        <ChartTooltip content={<ChartTooltipContent />} itemSorter={seriesOrder(series)} />
+        {series.length > 1 && (
+          <ChartLegend content={<ChartLegendContent />} itemSorter={seriesOrder(series)} />
+        )}
         {series.map((s) => (
           <Bar key={s.key} dataKey={s.key} fill={`var(--color-${s.key})`} radius={[4, 4, 0, 0]} />
         ))}
@@ -183,7 +204,11 @@ export function Boxplot({ rows, unit = "%" }: { rows: BoxRow[]; unit?: string })
   return (
     <div className="space-y-3">
       {rows.map((r) => (
-        <div key={r.label} className="grid grid-cols-[64px_1fr] items-center gap-3">
+        <div
+          key={r.label}
+          className="grid grid-cols-[64px_1fr] items-center gap-3"
+          title={`${r.label}: worst ${r.min}${unit} · p25 ${r.p25}${unit} · median ${r.median}${unit} · p75 ${r.p75}${unit} · best ${r.max}${unit}`}
+        >
           <span className="text-xs font-medium text-muted-foreground">{r.label}</span>
           <div className="relative h-6">
             {/* zero line */}
@@ -192,10 +217,20 @@ export function Boxplot({ rows, unit = "%" }: { rows: BoxRow[]; unit?: string })
               style={{ left: `${x(0)}%` }}
               aria-hidden
             />
-            {/* whisker */}
+            {/* whisker, with end caps so min and max are readable as points */}
             <div
-              className="absolute top-1/2 h-px -translate-y-1/2 bg-muted-foreground"
+              className="absolute top-1/2 h-px -translate-y-1/2 bg-muted-foreground/70"
               style={{ left: `${x(r.min)}%`, width: `${x(r.max) - x(r.min)}%` }}
+            />
+            <div
+              className="absolute top-1/2 h-2.5 w-px -translate-y-1/2 bg-muted-foreground/70"
+              style={{ left: `${x(r.min)}%` }}
+              title={`worst ${r.min}${unit}`}
+            />
+            <div
+              className="absolute top-1/2 h-2.5 w-px -translate-y-1/2 bg-muted-foreground/70"
+              style={{ left: `${x(r.max)}%` }}
+              title={`best ${r.max}${unit}`}
             />
             {/* box */}
             <div
