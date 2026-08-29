@@ -76,6 +76,9 @@ CAP_SCORES = {
 # Empirical lift: -10.2% at 60d, -18.2% at 90d — severe and consistent.
 INDIRECT_PENALTY = -15
 
+# A single insider purchase above this is a filing error, not a signal.
+MAX_PLAUSIBLE_PURCHASE = 1_000_000_000
+
 
 def score_transaction(
     transaction: dict,
@@ -126,6 +129,14 @@ def score_transaction(
     total_value = transaction.get("total_value") or 0
     if total_value < 2_000:
         return {"score": 0, "breakdown": {"trivial_value": "DISQUALIFIED"}, "disqualified": True, "eligible": False}
+
+    # Upper bound on a single insider's open-market purchase. EDGAR accepts
+    # filer errors: Dover filed a code-A award of 25,788 shares with 25,788 in
+    # the price field, and Table I debt filings put the principal amount in both
+    # (see parser). No individual buy in an S&P 500 + Russell 2000 universe is
+    # $1B, so anything above it is a data error, not a conviction signal.
+    if total_value > MAX_PLAUSIBLE_PURCHASE:
+        return {"score": 0, "breakdown": {"implausible_value": "DISQUALIFIED"}, "disqualified": True, "eligible": False}
 
     # Hard disqualifier: routine trader (CMP 2012)
     # Routine = bought in the same calendar month in ≥2 of the preceding 3 years.

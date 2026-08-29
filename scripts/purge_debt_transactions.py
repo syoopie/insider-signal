@@ -21,19 +21,34 @@ import argparse
 from src.db.connection import get_conn
 from src.ingest.common import log, phase
 
-# Equity priced at its own share count is arithmetically impossible above a few
-# dollars; below that it is a coincidence worth leaving alone.
-SELECT_SQL = """
+# A debt filing reports the principal amount in both share and price fields AND
+# omits sharesOwnedFollowingTransaction, because it reports holdings as a value.
+# Both conditions together are the signature; shares = price alone is not, since
+# EDGAR also accepts plain filer errors on equity rows (Dover filed a code-A
+# award of 25,788 shares with 25,788 in the price field). Those are real
+# transactions with a bad price and are left alone — the scorer's
+# MAX_PLAUSIBLE_PURCHASE ceiling keeps them out of signals.
+_MATCH = """
+    t.shares = t.price_per_share
+    AND t.shares > 1000
+    AND t.shares_after IS NULL
+"""
+
+SELECT_SQL = f"""
     SELECT f.accession_number, c.ticker, t.insider_name,
            t.transaction_date, t.shares, t.total_value
     FROM transactions t
     JOIN form4_filings f ON f.id = t.filing_id
     LEFT JOIN companies c ON c.cik = f.cik
-    WHERE t.shares = t.price_per_share AND t.shares > 1000
+    WHERE {_MATCH}
     ORDER BY t.total_value DESC
 """
 
-DELETE_SQL = "DELETE FROM transactions WHERE shares = price_per_share AND shares > 1000"
+DELETE_SQL = f"""
+    DELETE FROM transactions t
+    USING form4_filings f
+    WHERE f.id = t.filing_id AND {_MATCH}
+"""
 
 
 def main() -> None:
