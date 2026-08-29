@@ -107,6 +107,25 @@ def test_timing_factors_are_mutually_exclusive(make_tx):
     assert first["breakdown"].get("first_purchase_12mo") == -10
 
 
+def test_transaction_date_may_be_a_date_object(make_tx):
+    """
+    psycopg2 returns DATE columns as date objects, so every row scored from the
+    database arrived this way. Slicing one raises TypeError, and the old parse
+    swallowed it and fell back to date.today() — silently measuring every timing
+    factor from today instead of from the trade.
+    """
+    as_obj = score(make_tx(transaction_date=date(2024, 9, 1)))
+    as_str = score(make_tx(transaction_date="2024-09-01"))
+    assert as_obj["breakdown"] == as_str["breakdown"]
+    assert as_obj["score"] == as_str["score"]
+
+    # A prior buy 40 days before the trade is sustained conviction, not a first
+    # purchase. Reading the date as today would place it inside the 30d window.
+    priors = [{"transaction_date": "2024-07-23"}]
+    scored = score(make_tx(transaction_date=date(2024, 9, 1)), priors=priors)
+    assert scored["breakdown"].get("prior_purchase_31_365d") == 15
+
+
 def test_first_purchase_penalty_needs_a_full_year_of_history(make_tx):
     """
     "No prior purchase in 365 days" is only evidence when the database actually

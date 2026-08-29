@@ -368,8 +368,9 @@ def main():
     # ── MONTHLY PRUNING ───────────────────────────────────────────────────────
     if today.day == 1:
         _phase("MONTHLY PRUNE")
-        tx_del, filing_del = prune_old_data(months=24)
-        _log(f"Pruned {tx_del} transactions and {filing_del} filings older than 2 years")
+        tx_del, filing_del, sig_del = prune_old_data(months=24)
+        _log(f"Pruned {tx_del} transactions, {filing_del} filings and {sig_del} signals "
+             f"older than 2 years")
 
     # ── DAILY SUMMARY ─────────────────────────────────────────────────────────
     _phase("WRAP UP")

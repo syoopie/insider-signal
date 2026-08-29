@@ -142,11 +142,13 @@ def score_transaction(
     # Routine = bought in the same calendar month in ≥2 of the preceding 3 years.
     # If the transaction row already has is_routine pre-computed (stored at ingest
     # time), use it directly — avoids dependence on pruned historical data.
-    tx_date_str = transaction.get("transaction_date") or ""
-    try:
-        tx_date = date.fromisoformat(tx_date_str[:10])
-    except (ValueError, TypeError):
-        tx_date = date.today()
+    # psycopg2 hands back a date object, not a string. Slicing one raises
+    # TypeError, so this used to fall through to date.today() for every row that
+    # came out of the database — which is every real row. Every timing factor
+    # and the routine month check were then measured from today rather than from
+    # the trade, so a 2024 purchase had its "prior 365 days" evaluated against
+    # 2025-2026. _parse_date accepts both forms.
+    tx_date = _parse_date(transaction.get("transaction_date")) or date.today()
 
     stored_is_routine = transaction.get("is_routine")
     if stored_is_routine is True:

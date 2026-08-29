@@ -22,10 +22,16 @@ Flags:
   --start / --end  Explicit date range instead of --days.
   --dry-run        Score and log without writing anything to the database.
                    Use this to preview what would be written before committing.
-  --force          Overwrite signals that already exist in the signals table
-                   (same ticker + signal_date). Without --force, existing rows
-                   are skipped so the script is safe to re-run incrementally.
+  --force          Rebuild the range from scratch: delete every signal dated in
+                   it, then rescore. Without --force, existing rows are skipped
+                   so the script is safe to re-run incrementally.
                    Use --force after re-scoring rule changes or to repair data.
+
+                   The delete matters. Signals are keyed (ticker, signal_date),
+                   and signal_date moves when scoring rules change which
+                   purchases are eligible, so an upsert alone leaves the old row
+                   behind under its old key. 1,467 of 2,799 stored signals were
+                   still carrying factors removed from the model rounds ago.
 
 Usage:
   python3 scripts/backfill_signals.py --days 90
@@ -102,6 +108,21 @@ def _bulk_load_transactions(tickers: list[str]) -> dict[str, list[dict]]:
     for row in rows:
         by_ticker[row["ticker"]].append(row)
     return by_ticker
+
+
+def _delete_signals_in_range(start: date, end: date) -> int:
+    """
+    Clear the range so --force rebuilds it rather than layering on top.
+
+    signal_date is the latest eligible purchase in the window, so a scoring
+    change that alters eligibility moves the key. Upserting under the new key
+    leaves the old row orphaned at the old one, which is how signals scored
+    under three different models ended up coexisting in the table.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM signals WHERE signal_date BETWEEN %s AND %s", (start, end))
+            return cur.rowcount
 
 
 def _get_existing_signal_keys(start: date, end: date) -> set[tuple]:
@@ -258,6 +279,12 @@ def main():
 
     history_start = get_history_start()
     log(f"History floor for first-purchase checks: {history_start or 'unknown'}")
+
+    # A filing at the start edge can report a purchase a little earlier, so the
+    # clear window reaches back past `start` to catch those keys too.
+    if args.force and not args.dry_run:
+        removed = _delete_signals_in_range(start - timedelta(days=30), end)
+        log(f"Force rebuild: cleared {removed} existing signal(s) in range")
 
     if not work_items:
         log("Nothing to process. Run bootstrap.py first to load transaction data.")

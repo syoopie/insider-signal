@@ -512,21 +512,36 @@ def backfill_routine_flags(batch_size: int = 500) -> int:
     return updated
 
 
-def prune_old_data(months: int = 24) -> Tuple[int, int]:
-    """Delete transactions and filings older than `months` months. Returns (tx_deleted, filing_deleted)."""
+def prune_old_data(months: int = 24) -> Tuple[int, int, int]:
+    """
+    Delete transactions, filings and signals older than `months`.
+
+    Signals were never pruned. Because backfill only rescores its own date
+    range, anything older kept whatever scoring model was current when it was
+    written, and the dashboard showed all of it side by side. Retention has to
+    cover signals too, or the table accumulates rows no rescore can ever reach.
+
+    Returns (tx_deleted, filing_deleted, signal_deleted).
+    """
+    cutoff = f"{int(months)} months"
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM transactions WHERE transaction_date < NOW() - INTERVAL '%s months'",
-                (months,),
+                "DELETE FROM transactions WHERE transaction_date < NOW() - %s::interval",
+                (cutoff,),
             )
             tx_deleted = cur.rowcount
             cur.execute(
-                "DELETE FROM form4_filings WHERE filed_date < NOW() - INTERVAL '%s months'",
-                (months,),
+                "DELETE FROM form4_filings WHERE filed_date < NOW() - %s::interval",
+                (cutoff,),
             )
             filing_deleted = cur.rowcount
-    return tx_deleted, filing_deleted
+            cur.execute(
+                "DELETE FROM signals WHERE signal_date < NOW() - %s::interval",
+                (cutoff,),
+            )
+            signal_deleted = cur.rowcount
+    return tx_deleted, filing_deleted, signal_deleted
 
 
 def get_unalerted_signals(min_score: int = 45) -> List[dict]:
