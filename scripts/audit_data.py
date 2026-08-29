@@ -10,6 +10,7 @@ carry a NULL is_routine).
     uv run python scripts/audit_data.py
 """
 from src.db.connection import get_cursor
+from src.db.purchases import purchase_rollup
 
 CHECKS = [
     # ---- companies ----------------------------------------------------------
@@ -109,6 +110,35 @@ CHECKS = [
           SELECT 1 FROM companies c WHERE c.ticker=s.ticker AND c.cap_tier='large')"""),
     ("signals: alerted=true but type not BUY/CLUSTER_BUY",
      "SELECT count(*) v FROM signals WHERE alerted=true AND signal_type NOT IN ('BUY','CLUSTER_BUY')"),
+
+    # ---- purchase rollup invariants (src/db/purchases.py) -------------------
+    # The rollup totals same-day broker fills but must not total the repeats a
+    # joint Form 4 emits, one per co-filer. Both look like several rows for one
+    # insider on one day; only the fills have differing share counts or prices.
+    # Getting this backwards multiplies a real purchase by the number of
+    # co-filers, so these two invariants are worth checking on every audit.
+    ("rollup: value exceeds the raw rows it came from (double-count)",
+     f"""SELECT count(*) v FROM ({purchase_rollup()}) r
+         JOIN (SELECT f.cik, t.insider_name, t.transaction_date, t.is_direct,
+                      sum(t.total_value) raw_v
+               FROM transactions t JOIN form4_filings f ON f.id=t.filing_id
+               WHERE t.transaction_code='P'
+               GROUP BY 1,2,3,4) raw
+           ON raw.cik=r.cik AND raw.insider_name=r.insider_name
+          AND raw.transaction_date=r.transaction_date AND raw.is_direct=r.is_direct
+         WHERE r.total_value > raw.raw_v + 0.01"""),
+    ("rollup: shares exceed the distinct fills they came from (joint-filing leak)",
+     f"""SELECT count(*) v FROM ({purchase_rollup()}) r
+         JOIN (SELECT f.cik, d.insider_name, d.transaction_date, d.is_direct,
+                      sum(d.shares) distinct_shares
+               FROM (SELECT DISTINCT t.filing_id, t.insider_name, t.transaction_date,
+                            t.is_direct, t.shares, t.price_per_share
+                     FROM transactions t WHERE t.transaction_code='P') d
+               JOIN form4_filings f ON f.id=d.filing_id
+               GROUP BY 1,2,3,4) raw
+           ON raw.cik=r.cik AND raw.insider_name=r.insider_name
+          AND raw.transaction_date=r.transaction_date AND raw.is_direct=r.is_direct
+         WHERE r.shares > raw.distinct_shares + 0.01"""),
 
     # ---- backtest_runs ------------------------------------------------------
     ("backtest: total rows", "SELECT count(*) v FROM backtest_runs"),
