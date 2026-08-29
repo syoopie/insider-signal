@@ -396,6 +396,14 @@ before inserting. Safe to re-run on the same day. Historical runs accumulate ind
 
 ## Scoring Logic
 
+**Before changing any weight in this section, read
+[`docs/scoring-improvement-plan.md`](docs/scoring-improvement-plan.md).** The weights below
+were set by univariate lift measured on a sample the model itself selected, with no holdout.
+The score also has a *theoretical maximum of 61* against a BUY threshold of 60, so it is a
+four-factor conjunction rather than a ranking, and any weight change of more than a point
+relocates a large block of signals at once. The plan covers what to fix first and why adding
+factors to the current apparatus will not help.
+
 ### Hard Disqualifiers (checked in order, early-exit with score=0)
 
 1. `transaction_code != 'P'` → not an open-market purchase, skip entirely

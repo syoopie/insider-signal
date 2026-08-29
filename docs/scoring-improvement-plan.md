@@ -1,0 +1,529 @@
+# Scoring Improvement Plan
+
+Written 2026-08-29, against the clean post-audit baseline (backtest run_date 2026-08-29).
+
+This plan argues that **the scoring model cannot be improved by changing weights or adding
+factors until the measurement apparatus is rebuilt**, and lays out the rebuild, the
+evaluation protocol, and the variables worth adding once those exist.
+
+Every number below was measured against the production database or live Yahoo Finance on
+2026-08-29. Where something is inference rather than measurement it says so.
+
+---
+
+## 1. Summary
+
+The current model is a four-factor conjunction wearing the costume of a 100-point additive
+score, tuned across five rounds by a procedure that cannot distinguish signal from noise.
+
+Three facts, each independently sufficient to block progress:
+
+1. **The score has a theoretical maximum of 61 and the BUY threshold is 60.** A signal is a
+   BUY if and only if all four positive factors fire. There is no ranking, no headroom, and
+   no way for one factor to compensate for another.
+2. **The negative class is thrown away.** 9,477 insider purchase-days produce 1,406 stored
+   signals, because `signal_type == "LOW"` is discarded before the write. Of those, 347 are
+   ever priced. We are fitting a model on 3.7% of the data, selected by the model itself.
+3. **Factor weights are set by univariate lift computed on the sample that already passed the
+   filter.** Conditioning on a sum induces negative correlation among its terms, so this
+   procedure manufactures spurious negative lift for heavily-weighted factors. The tuning
+   history is consistent with it having measured mostly that artifact.
+
+Fixing measurement is worth more than any new variable. The plan is therefore ordered:
+substrate first, protocol second, model form third, new variables fourth.
+
+---
+
+## 2. Evidence
+
+### 2.1 The score is degenerate
+
+Maximum attainable score from the current weight table:
+
+```
+role_director            +16   (best role)
+cap_small                +15   (best cap tier)
+holdings_increase_5pct   +15
+prior_purchase_31_365d   +15   (best timing factor)
+                        ----
+                          61
+```
+
+Observed distribution over all 1,406 stored signals:
+
+| score | signals | of which BUY |
+|---|---|---|
+| 61 | 222 | 202 |
+| 60 | 51 | 44 |
+| 46 | 594 | 0 |
+| 45 | 133 | 0 |
+| everything else | 406 | 2 |
+
+246 of 248 BUY signals sit at 60 or 61. Two values (46 and 61) hold 58% of the population.
+The four scores above 61 are stale rows from a May 2026 scoring round, discussed in 2.5.
+
+`min(score, 100)` in `score_transaction` has never been reached and cannot be.
+
+**Consequence.** "Score ≥ 60" is the boolean `director-or-cfo AND small-cap AND holdings-up-5%
+AND prior-purchase`. Every weight change of more than one point relocates a large block of
+signals across the threshold at once, which is why successive tuning rounds swung
+`first_purchase_12mo` from +10 to −10 and `role_ceo` from +10 to −5 on a 61-point scale.
+
+### 2.2 The four load-bearing factors barely discriminate
+
+Fire rate across the 1,406 stored signals:
+
+| factor | fires | rate | weight |
+|---|---|---|---|
+| `cap_small` | 1,078 | 77% | +15 |
+| `role_director` | 1,070 | 76% | +16 |
+| `holdings_increase_5pct` | 1,043 | 74% | +15 |
+| `prior_purchase_31_365d` | 797 | 57% | +15 |
+
+A factor present in three quarters of the population carries almost no information about
+which member of that population to pick. These four are the entire model.
+
+The rates are themselves inflated by selection: they are conditional on a signal having been
+stored, and storage requires clearing WATCH, which these factors are what produce.
+
+Meanwhile the cells that recent weight changes were based on:
+`role_chairman` n=2, `role_ceo` n=18, `cap_mid` n=19, `role_officer` n=72.
+
+### 2.3 The negative class is discarded
+
+`scripts/backfill_signals.py:403` — `if signal_type == "LOW": continue`.
+
+| stage | count |
+|---|---|
+| P transaction rows, last 730d | 13,294 |
+| eligible (not 10b5-1) | 11,938 |
+| distinct insider purchase-days | **9,477** across 1,314 issuers |
+| stored signals (all types) | **1,406** — 1,021 WATCH, 248 BUY, 137 CLUSTER_BUY |
+| priced by the backtest, 30d horizon | **347** |
+| priced by the backtest, 180d horizon | 253 |
+
+Two separate losses. LOW is dropped entirely, and signals are keyed `(ticker, signal_date)`,
+so five insiders buying the same company on the same day collapse into one row carrying
+**only the highest-scoring insider's breakdown** (`backfill_signals.py:237-239`). The other
+four contribute nothing to any subsequent analysis, and the return gets attributed to one
+person's factors.
+
+You cannot estimate whether a factor predicts return from a sample that only contains
+observations the factor helped select.
+
+### 2.4 Returns are not dividend-adjusted
+
+`src/market/prices.py:239` reads `indicators.quote[0].close`. Yahoo's chart API also exposes
+`indicators.adjclose[0].adjclose`. Measured on 2026-08-29:
+
+| symbol | window | raw close return | adjusted return | gap |
+|---|---|---|---|---|
+| NVDA (10:1 split) | 2024-05-20 → 2024-06-20 | +43.05% | +43.06% | 0.01pp |
+| SPY | 2024 full year | +24.45% | +26.05% | **1.60pp** |
+| T (high yield) | 2024 full year | +31.07% | +39.19% | **8.12pp** |
+
+Splits are already handled — the NVDA test rules out the catastrophic failure mode. Dividends
+are not.
+
+This is not a wash against the SPY benchmark, because the error is proportional to
+(ticker yield − SPY yield) × horizon. Insider buying works best in small-cap value names,
+which yield more than SPY. **We are systematically understating the excess return of exactly
+the signals the system is built to find**, in proportion to holding period, and any factor
+correlated with dividend yield has its lift mismeasured. One-line fix, material effect.
+
+### 2.5 The weight-setting tool has its own defects
+
+`scripts/analyze_factors.py` is what produced every weight in the table. Three problems:
+
+- **Fuzzy join.** The backtest's `detail` rows carry no signal id and no signal date
+  (`engine.py:262-271`), so the analysis matches a return to a signal by searching for
+  `abs((exec_date − signal_date).days − 4) < 8` (`analyze_factors.py:100-111`). For a ticker
+  with several signals in a fortnight this can attribute a return to the wrong one.
+- **Stale rows in scope.** Its signal query has no date filter. 204 signals dated 2024-05-16
+  to 2024-07-29 predate the 730-day backfill window and still carry breakdowns from the May
+  2026 model — 156 of them reference factors that no longer exist (`value_500k_plus`,
+  `holdings_increase_30pct`, `fast_filing_0_1d`, `near_52wk_low_*`). *Measured:* zero of
+  these fall inside the current backtest window, and the nearest is more than 30 days from
+  the earliest `exec_date`, so they are not contaminating today's output. It is a live
+  landmine, not a live wound.
+- **Univariate lift.** `avg(return | factor present) − avg(return | factor absent)` ignores
+  every other factor. `cap_small` and `role_director` co-occur heavily; shared variance is
+  credited to both.
+
+Combined with a filtered sample, univariate lift is not a weak estimator of factor value.
+It is a biased one, and the bias has the wrong sign for the factors that matter most.
+
+### 2.6 No holdout, and the data is already burned
+
+Five tuning rounds, roughly 27 candidate factors, one 730-day sample, no train/test split, no
+standard errors, no multiple-comparison control. The 730-day window is also a single market
+regime, and overlapping 180-day holding windows mean the 253 observations at that horizon
+contain far fewer than 253 independent draws.
+
+CLAUDE.md already carries the caveat that round 4/5 weights were derived while the
+`transaction_date` type bug was active. That is correct and it is the smaller problem.
+
+### 2.7 What is *not* wrong
+
+Worth stating so effort does not go here:
+
+- The ingest and parser are correct as of the 2026-08-29 audit.
+- `purchase_rollup` is the right grain for a purchase and is shared by all three call sites.
+- Cluster detection filters (identical-block, same-price-offering, direct-only, $25k floor)
+  are sound and tested.
+- Splits are handled.
+- The `filed_date` windowing and the `exec_date = filed_date + 4` convention are
+  point-in-time correct. No look-ahead.
+- Signal dating is fine and documented.
+
+---
+
+## 3. Phase 1 — Build the research substrate
+
+No scoring change in this phase. Nothing here alters a single stored score.
+
+### 1A. A local daily price panel
+
+**What.** Adjusted daily closes, raw closes, and volume for all 1,364 tickers that have ever
+had a P transaction, plus SPY, IWM, and a handful of sector ETFs, over the full 730+ day
+window. One Yahoo request per symbol for the whole range.
+
+**Cost.** ~1,370 requests at the existing 0.5s throttle ≈ 12 minutes, once. ~690k rows.
+Stored as parquet under `data/prices/` (gitignored, ~10–15MB compressed), not in Neon.
+
+**Why it is the highest-leverage item.** It converts every downstream question from a 30-minute
+network-bound job into a local join. Labelling all 9,477 purchase-days at four horizons
+becomes seconds. That changes what experiments are affordable, which is the actual constraint
+on this project.
+
+**Why not in Neon.** The database is at 105MB of the 500MB free tier (transactions 57MB,
+form4_filings 30MB). A 690k-row price table with its index would be 60–80MB. Affordable but
+not free, and the pipeline does not need it — only research does.
+
+### 1B. Point-in-time price context stored on the transaction
+
+This is how the 52-week-low factor gets reinstated without violating the invariant that
+killed it.
+
+CLAUDE.md is explicit: *"Do not add a factor only one path can compute."* The old factor
+broke that because backfill had no price history. The fix is not to give backfill live
+prices; it is to **store the price context as of the transaction date on the transaction row**,
+so the scorer stays a pure function of stored data.
+
+```sql
+ALTER TABLE transactions
+  ADD COLUMN IF NOT EXISTS px_close_at_tx        NUMERIC,
+  ADD COLUMN IF NOT EXISTS px_52wk_high_at_tx    NUMERIC,
+  ADD COLUMN IF NOT EXISTS px_52wk_low_at_tx     NUMERIC,
+  ADD COLUMN IF NOT EXISTS px_ret_21d_at_tx      NUMERIC,
+  ADD COLUMN IF NOT EXISTS px_ret_63d_at_tx      NUMERIC,
+  ADD COLUMN IF NOT EXISTS px_ret_252d_at_tx     NUMERIC,
+  ADD COLUMN IF NOT EXISTS px_vol_21d_at_tx      NUMERIC,
+  ADD COLUMN IF NOT EXISTS px_dollar_vol_21d     NUMERIC;
+```
+
+- **Live path** (`run_ingest.py`): one YF fetch per ticker per run, which it already does for
+  `get_market_data`. Computes and stores.
+- **History**: a one-time `scripts/backfill_price_context.py` computing the same values from
+  the parquet panel.
+- **Scorer**: reads the stored columns. Both paths agree by construction.
+
+~13k rows × 8 numerics ≈ 1MB in Neon. Negligible.
+
+Both writers must use one shared function so they cannot drift — the same discipline
+`src/db/purchases.py` applies to the rollup. Put it in `src/market/context.py`.
+
+### 1C. Persist the negative class
+
+Add a `scored_purchases` table at the true grain — one row per (filing, insider,
+transaction_date, is_direct) — holding the score, the full breakdown, and every candidate
+feature, for **every** eligible P transaction including the ones that classify LOW.
+
+`signals` stays exactly as it is: it is the alerting and dashboard surface and nothing about
+it should change. `scored_purchases` is the research table. Roughly 9,477 rows per backfill,
+a few MB.
+
+This is the single change that makes model fitting possible.
+
+### 1D. Label everything
+
+`scripts/build_research_dataset.py` joins `scored_purchases` to the price panel and emits one
+parquet with, per purchase:
+
+- forward returns at 30/60/90/180d from `exec_date = filed_date + 4`
+- excess vs SPY, vs IWM, vs the SIC-division sector ETF, and vs a size-matched bucket
+- a delisting flag, and the `no_data` / `error` distinction the audit already established
+- every feature from section 5
+
+Reproducible from a committed script, re-runnable in seconds, the input to everything in
+phases 2 and 3.
+
+### 1E. Repairs
+
+- Switch `get_price_change` to `adjclose` with a fallback to `close` when absent (2.4).
+- Add `signal_id` and `signal_date` to backtest `detail` rows; delete the fuzzy join in
+  `analyze_factors.py` (2.5).
+- Delete or rescore the 204 pre-window stale signals (2.5).
+- Add a date filter to `analyze_factors.py`'s signal query.
+
+**Phase 1 exit criterion.** `build_research_dataset.py` produces ≥9,000 labelled purchases at
+the 90-day horizon, and re-running the existing backtest against the price panel reproduces
+the 2026-08-29 headline numbers within 0.5pp on raw closes. If it does not reproduce, the
+panel is wrong and nothing downstream is trustworthy.
+
+---
+
+## 4. Phase 2 — The evaluation protocol
+
+Fix this before fitting anything. It is what decides whether a change is real.
+
+**Splits.** Strict time order, no shuffling. Roughly:
+
+| split | window | approx purchases |
+|---|---|---|
+| train | 2024-08 → 2025-11 | ~5,500 |
+| validation | 2025-12 → 2026-03 | ~1,500 |
+| test | 2026-04 → 2026-08 | ~1,200 |
+
+Test is touched **once**, at the end. The 180d horizon has almost no completed test-period
+exits, so treat 60d/90d as primary and 180d as a directional check only.
+
+**Purge and embargo.** A 90-day holding window straddles the boundary. Purge any training
+observation whose exit date falls inside the validation window, and embargo a further
+horizon-length gap. Without this the split leaks.
+
+**Effective sample size.** Overlapping windows and clustering by ticker mean nominal n
+overstates independence badly. Report the number of distinct (ticker, month) cells alongside
+every n, and cluster standard errors by ticker and by calendar month. A result that survives
+only under i.i.d. assumptions is not a result.
+
+**Estimation.** Multivariate, not univariate. Cross-sectional regression of excess return on
+standardised features, plus a logistic model of P(excess > 0), both with clustered SEs.
+Report coefficient, SE, t-stat, and n for every factor. A factor with n < 100 in the training
+split does not get a weight, it gets a note.
+
+**Multiple comparisons.** Benjamini-Hochberg across the candidate set at each round, with the
+false-discovery rate stated. Five prior rounds already spent degrees of freedom on this data;
+treat borderline results with more suspicion than the p-value alone suggests.
+
+**Baselines to beat.** Any proposal must beat all four out-of-sample:
+
+1. Every eligible P purchase, equal weight (the "no model" baseline).
+2. Every small-cap eligible purchase.
+3. The current model as it stands today.
+4. A random ranking with the same selection count.
+
+**Reported metrics.** Mean and median excess return, hit rate, information ratio, decile
+spread of the score (top decile minus bottom decile — this is the direct test of whether the
+score ranks), max drawdown of an equal-weight portfolio, and the fraction of return coming
+from the top 5% of trades. The 2026-08-29 run has negative median excess at 90d and 180d
+against strongly positive means; any successor model must be judged on whether it improves
+the median, not just the mean.
+
+---
+
+## 5. Phase 3 — Model form
+
+Three candidates, evaluated head to head under the section 4 protocol.
+
+**A. Recalibrated additive score.** Keep the integer point system, but fit the weights to
+standardised multivariate coefficients and rescale so the realised distribution spans most of
+0–100 instead of piling on two values. Preserves the dashboard's scoring explainer and the
+evidence blob unchanged.
+
+**B. Regularised logistic regression** on standardised features, predicting P(excess > 0) at
+90d, with the output mapped to a 0–100 score by its in-sample percentile. Ridge or elastic
+net, penalty chosen on validation. Coefficients remain readable, which matters because
+`/how-it-works` explains the model to the user.
+
+**C. Gradient-boosted trees.** The published microcap work
+([arXiv 2602.06198](https://arxiv.org/html/2602.06198)) reports AUC 0.70 on 17,237 microcap
+purchases with 11 features and a strict temporal split. That is roughly twice our sample with
+a narrower universe.
+
+**Recommendation: B for production, C as a ceiling check only.** At ~5,500 training
+observations clustered into far fewer independent cells, a boosted model will fit noise and
+the protocol above will not reliably catch it. Run C to learn what the achievable ceiling
+looks like and which features carry it; ship B unless C beats it out-of-sample by a margin
+that survives clustered standard errors.
+
+**Separately, and possibly more important than the model: change what the threshold means.**
+Replace "score ≥ 60" with "top K signals per week by score". A fixed score cutoff on a
+distribution that shifts with the weight table is why every retune reshuffles the alert
+volume. A rank cutoff makes alert volume a decision, not an accident, and makes successive
+models directly comparable at equal selectivity.
+
+---
+
+## 6. Phase 4 — Variables
+
+Ordered by expected value per unit of effort. Each entry says how to get it and how to use it.
+
+### Tier 1 — already in the database, no new fetching
+
+**Net insider demand at the firm.** We store **91,296 sale rows across 1,831 issuers** and
+ignore every one of them. Construct, over the 90 days before the trade: dollar buys ÷ (buys +
+sells), the count of distinct buyers minus distinct sellers, and a flag for whether *this*
+insider also sold recently. Lakonishok & Lee's headline result is a buy-minus-sell spread,
+and we are only using half of it. Cheapest large win available.
+
+**Insider track record.** More than 1,400 insiders have ≥2 distinct purchase days (670 have
+exactly 2, 285 have 3, 153 have 4). For each purchase, the mean excess return of that
+insider's *prior* purchases, strictly point-in-time, shrunk toward zero by
+`n / (n + k)` with k tuned on validation. Supported by
+[Cline et al., *The Persistence of Opportunistic Insider Trading*](https://onlinelibrary.wiley.com/doi/10.1111/fima.12177)
+(Financial Management 2017). Per-insider n is thin, so also compute it at the firm level,
+where n is much larger.
+
+**Averaging down.** Purchase price relative to this insider's own most recent prior purchase
+price at the same issuer, and relative to the issuer's 90-day return. The worst outcome in
+the entire history — LGF at −63.1% — is documented in CLAUDE.md as "insiders averaging down"
+with no filter implemented. This is that filter, and it is computable from data we already
+hold.
+
+**Cluster intensity, continuous.** Replace the binary `cluster_flag` in scoring with: distinct
+buyer count, total dollar value, number of distinct role categories represented, span in days,
+and buyers as a fraction of the issuer's known insider roster (derivable from all filers ever
+seen for that CIK). The current 3-insider/14-day rule stays as the *detection* definition for
+`/clusters`; this is about what the scorer sees.
+
+**Purchase size relative to the insider's own history.** Current transaction value ÷ that
+insider's trailing mean. The arXiv model ranks this 9th of 11 by importance. Note that raw
+dollar value was removed in round 4 for negative lift, which is a finding this normalised
+version should be tested against rather than assumed to inherit.
+
+**Sector.** `sic_description` now covers 2,042 of 2,142 companies. Use the SIC division as a
+categorical and, more valuably, as the benchmark leg for a sector-relative label.
+
+**Joint role.** Officers who also sit on the board, parsed from the raw title string. Cheap,
+and the literature finds the effect concentrated in managers rather than large shareholders.
+
+**Filing lag — as a rare-event flag, not a continuous factor.** *Measured:* 12,247 of 13,294
+P transactions file within 0–4 days. There is almost no variance to exploit, which retro-
+actively justifies disabling `fast_filing_0_1d` (though not the reasoning given at the time).
+But **330 transactions file 30+ days late**, up to 3,075 days. Late disclosure is a different
+animal and deserves its own flag. One row files *before* the transaction date; that is a data
+error and should be caught by `audit_data.py`.
+
+### Tier 2 — free, unlocked by the price panel (Phase 1A/1B)
+
+**Distance from the 52-week high, as of the transaction date.** The arXiv microcap model puts
+this at 0.360 of total feature importance, more than four times the next feature. Treat that
+number with care — gain-based importance favours continuous features over binary ones, so it
+overstates the gap against flags. But it is the strongest external evidence available that our
+deliberate removal of price context cost real predictive power.
+
+**Distance from the 52-week low, as of the transaction date.** The factor CLAUDE.md removed,
+reinstated correctly this time: point-in-time, stored at ingest, computable by both paths.
+
+**Momentum: 21d / 63d / 252d returns to the transaction date.** The same paper reports a
+*monotonic* relationship in the direction opposite to naive contrarian intuition —
+transactions disclosed after >10% appreciation returned a mean CAR of 6.3% versus 2.3% after
+declines. Test both signs; do not assume ours will match a microcap-only sample.
+
+**Realised volatility (21d) and dollar volume (21d).** Volume doubles as a liquidity screen.
+The arXiv sample required ≥$200k average daily dollar volume; we impose no liquidity filter
+at all, and thin names are where a backtest most overstates what is tradeable.
+
+**Price deviation between transaction and disclosure.** What the stock did in the 0–4 days
+between the trade and the filing. Ranked 8th of 11 in the reference model.
+
+**Better labels.** Sector-relative and size-matched excess returns instead of SPY alone, and
+a beta-adjusted variant. Some of what currently reads as insider alpha is a small-cap beta
+loading that IWM already partly reveals.
+
+### Tier 3 — free, new fetching, moderate effort
+
+**Fundamentals from EDGAR XBRL bulk frames.** Exactly the mechanism `refresh_market_caps.py`
+already uses for shares outstanding, pointed at `StockholdersEquity`, `Revenues`,
+`NetIncomeLoss`, `AssetsCurrent`, `LiabilitiesCurrent`. Gives book-to-market, profitability,
+and leverage. Lakonishok & Lee find insider predictive power concentrated in value stocks, so
+book-to-market is the single most theoretically-motivated addition on this list. One bulk call
+per concept per quarter. Point-in-time discipline is essential: use the period actually filed
+and available as of the transaction date, never the latest.
+
+**Earnings and filing proximity.** Days from the purchase to the nearest 10-Q/10-K, from the
+EDGAR submissions API that `edgar.py` already caches. Distinguishes a buy in an open window
+just after results from one at a quarter-end.
+
+**Short interest.** FINRA publishes consolidated equity short interest free, bi-monthly, via
+[its data catalogue](https://www.finra.org/finra-data/browse-catalog/equity-short-interest)
+and an [API](https://api.finra.org/data/group/otcMarket/name/EquityShortInterest). Insider
+buying against heavy short interest is a well-known setup. Ranked below fundamentals because
+it is bi-monthly, needs its own symbol mapping, and the exchange-listed and OTC files differ.
+
+### Tier 4 — explicitly not proposed
+
+- **13F institutional ownership.** Heavy parsing, quarterly, stale by up to 45 days.
+- **Table II derivative activity.** Requires a parser change plus a full 2-year re-bootstrap.
+  Revisit only if Tier 1–3 stalls.
+- **News and sentiment.** No free source with the coverage and point-in-time integrity this
+  needs. Anything cheap enough to use here is look-ahead-contaminated.
+- **A biotech/pharma dummy** as a standalone feature. The reference model includes one, but
+  with `sic_description` we get the whole sector partition properly rather than one hand-picked
+  industry.
+
+---
+
+## 7. Sequencing
+
+Each phase ends in a falsifiable check. Do not start the next until the current one passes.
+
+| # | Work | Gate |
+|---|---|---|
+| 1 | Adjusted closes (2.4); `signal_id` in backtest detail; purge stale signals | Backtest re-runs; measured delta from dividend adjustment reported per horizon |
+| 2 | Price panel + `build_research_dataset.py` | ≥9,000 labelled purchases at 90d; existing backtest reproduced within 0.5pp on raw closes |
+| 3 | `scored_purchases` table; backfill writes LOW | Row count ≈ 9,477; every stored signal reconciles to its purchase rows |
+| 4 | Evaluation protocol as a committed script | Reproduces today's headline numbers on the test split; all four baselines computed |
+| 5 | Tier 1 features + multivariate estimation on train/validation | Ranked factor table with clustered SEs and BH-adjusted p-values |
+| 6 | `price_context` columns + Tier 2 features | Live and backfill paths produce identical values for the same transaction |
+| 7 | Fit A / B / C; select on validation | Chosen model beats all four baselines on validation at 60d and 90d |
+| 8 | Single test-set evaluation | Pre-registered. Report whatever it says, including a null result |
+| 9 | Ship: new weights, rank-based threshold, `/how-it-works` update, full backfill + backtest | Golden rule; `audit_data.py` clean |
+
+Phases 1–4 change no scores and can land incrementally without invalidating the database.
+Phase 6 onward triggers the golden rule.
+
+## 8. Risks
+
+**Overfitting is the primary risk and it is already partly realised.** Five rounds of tuning
+have been spent on this data. Even a correct protocol applied now inherits contaminated
+priors. Mitigation: prefer the simplest model that works, pre-register the test evaluation,
+and treat a null result as publishable.
+
+**One regime.** 730 days. Nothing here can distinguish a factor that works from one that
+worked since 2024. Mitigation: report performance by calendar half-year and refuse to ship a
+factor whose sign flips across sub-periods.
+
+**Thin cells persist.** Adding features to a 9,477-row dataset with heavy ticker clustering
+does not make chairman purchases numerous. Enforce the n ≥ 100 floor honestly.
+
+**Yahoo Finance is unofficial.** The whole label depends on it. The price panel makes this
+worse in one way — a single bad fetch poisons every experiment — and better in another, since
+a cached panel is auditable and reproducible where per-run fetches are not. Snapshot the
+panel with a checksum and never silently refetch.
+
+**Neon 0.5GB.** At 105MB now. `scored_purchases` and the price-context columns add a few MB.
+Keeping the price panel local is what makes this safe; do not move it into Neon without
+re-checking headroom.
+
+**Survivorship in the price panel.** Fetching by current ticker misses renames and
+acquisitions. The existing −50% delisting convention is a blunt instrument that the panel will
+make easier to examine but does not by itself fix.
+
+## 9. What this plan deliberately does not do
+
+- It does not change any weight, threshold, or classification rule before Phase 7.
+- It does not touch ingest, the parser, cluster detection, or the alerting path.
+- It does not add a factor the backfill cannot compute. The price-context columns exist
+  specifically to preserve that invariant.
+- It does not replace `signals`. The dashboard and Telegram contract is unchanged.
+
+## 10. References
+
+- Lakonishok & Lee (2001), *Are Insider Trades Informative?*
+- Cohen, Malloy & Pomorski (2012), [*Decoding Inside Information*](https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1540-6261.2012.01740.x), Journal of Finance 67(3)
+- Jeng, Metrick & Zeckhauser (2003), *Estimating the Returns to Insider Trading*
+- Cline, Gokkaya & Liu (2017), [*The Persistence of Opportunistic Insider Trading*](https://onlinelibrary.wiley.com/doi/10.1111/fima.12177), Financial Management
+- [*Insider Purchase Signals in Microcap Equities: Gradient Boosting Detection of Abnormal Returns*](https://arxiv.org/html/2602.06198) (arXiv 2602.06198) — preprint, not peer reviewed; treat the feature-importance figures as indicative
+- [FINRA Equity Short Interest](https://www.finra.org/finra-data/browse-catalog/equity-short-interest)

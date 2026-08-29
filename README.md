@@ -77,6 +77,7 @@ anything is scored.
 | [docs/research.md](docs/research.md) | Academic basis for each factor, backtest methodology, factors deliberately not implemented |
 | [docs/faq.md](docs/faq.md) | Common questions about the system and its day-to-day operation |
 | [docs/web-migration.md](docs/web-migration.md) | How the dashboard moved from Streamlit to Next.js, and why |
+| [docs/scoring-improvement-plan.md](docs/scoring-improvement-plan.md) | Why the current weights cannot be trusted, and the staged plan to re-derive them |
 | [scripts/README.md](scripts/README.md) | When to run each script |
 | [web/README.md](web/README.md) | Local dev, environment variables, deployment |
 | [CLAUDE.md](CLAUDE.md) | Authoritative reference for AI agents working on this codebase |
