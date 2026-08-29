@@ -42,7 +42,7 @@ from src.ingest.common import (
     EdgarRateLimitError, EdgarBlockedError, EdgarServerError,
 )
 from src.ingest.edgar import fetch_form4_index
-from src.ingest.store import write_filing
+from src.db.store import write_filing
 from src.db.connection import apply_schema, get_conn
 
 log_path = setup_log_tee("bootstrap")

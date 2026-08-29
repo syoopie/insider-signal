@@ -31,9 +31,7 @@ include = ["src*"]
 
 [tool.pytest.ini_options]
 # `src` is a real installed package after `uv sync`, so no path juggling is
-# needed for it. `scripts` is added so tests can import the operational
-# entrypoints (run_ingest, backfill_signals) directly without executing them.
-pythonpath = ["scripts"]
+# needed. Tests never import the scripts/ entrypoints.
 testpaths = ["tests"]
 
 [tool.ruff]

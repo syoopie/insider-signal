@@ -3,11 +3,11 @@
 # The Python pipeline runs on GitHub Actions, not locally. The only thing to run
 # on your machine is the Next.js app in web/, which reads the same Neon database.
 #
-# Run with:  powershell -ExecutionPolicy Bypass -File scripts/start.ps1
-# (or just double-click scripts/start.bat)
+# Run with:  powershell -ExecutionPolicy Bypass -File scripts/dev/start.ps1
+# (or just double-click scripts/dev/start.bat)
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path $PSScriptRoot -Parent
+$root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $webDir = Join-Path $root "web"
 $port = 3000
 

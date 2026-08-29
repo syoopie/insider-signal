@@ -106,9 +106,10 @@ space. Chip-style filters (a handful of discrete values) are safe to cache on.
 one row per evaluated signal across four horizons; the chart needs a monthly
 mean, so it is reduced in the query module rather than shipped to the browser.
 
-**Cluster logic is never reimplemented.** `cluster.py` applies six eligibility
-filters and `backfill_signals.py` already carries a second copy that must be kept
-in sync. `/clusters` reads `signals.evidence.cluster` and recomputes nothing.
+**Cluster logic is never reimplemented.** `cluster.py`'s
+`cluster_from_transactions()` is the one implementation of the six eligibility
+filters; the live path and `backfill_signals.py` both call it. `/clusters` reads
+`signals.evidence.cluster` and recomputes nothing.
 
 **Recharts sorts legends by value and tooltips by name.** For an ordered series
 set (`30d, 60d, 90d, 180d`) that renders as `180d, 30d, 60d, 90d`. `charts.tsx`

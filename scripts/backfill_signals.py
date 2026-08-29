@@ -43,7 +43,7 @@ from psycopg2.extras import RealDictCursor
 
 from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.db.connection import get_conn
-from src.ingest.store import batch_save_signals
+from src.db.store import batch_save_signals
 from src.signals.cluster import cluster_from_transactions
 from src.signals.scorer import score_transaction, classify_signal, cluster_size_bonus, filing_lag_bonus
 from src.signals.formatter import build_evidence
@@ -387,7 +387,7 @@ def main():
 
     # ── DEDUP ─────────────────────────────────────────────────────────────────
     if not args.dry_run:
-        from src.ingest.store import dedup_suppressed_signals
+        from src.db.store import dedup_suppressed_signals
         n_removed = dedup_suppressed_signals(since=start, until=end)
         if n_removed:
             log(f"  Dedup: removed {n_removed} signals suppressed by cooldown logic")

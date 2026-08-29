@@ -53,15 +53,18 @@ git push
 2. `src/signals/cluster.py` — cluster detection (3+ insiders = CLUSTER_BUY)
 3. `src/backtest/engine.py` — backtest engine (how signal quality is measured)
 
-**The golden rule — any change to scorer.py or cluster.py must be followed by:**
+**The golden rule — any change to `src/signals/` must be followed by:**
 ```bash
+uv run pytest -q                                             # < 1 sec — catches obvious breaks
 uv run python scripts/backfill_signals.py --days 730 --force  # ~8 min
 uv run python scripts/run_backtest.py                         # ~30 min
 git add src/signals/ scripts/backfill_signals.py
 git commit -m "..."
 git push
 ```
-Skipping either step leaves the DB stale and the backtest chart misleading.
+Skipping the backfill or backtest leaves the DB stale and the backtest chart
+misleading. `cluster.py`'s `cluster_from_transactions` is shared by the live path
+and `backfill_signals.py` — there is no second copy to keep in sync.
 
 **Where to find things:**
 
@@ -75,8 +78,8 @@ Skipping either step leaves the DB stale and the backtest chart misleading.
 | Backtest metrics structure | `src/backtest/engine.py` → `metrics_blob` dict near bottom of `run_backtest()` |
 | DB connection | `src/db/connection.py` → `get_conn()` (always use as context manager) |
 | Schema / migrations | `src/db/schema.sql` |
-| Write a filing to DB | `src/ingest/store.py` → `write_filing()` |
-| Write a signal to DB | `src/ingest/store.py` → `save_signal()` or `batch_save_signals()` |
+| Write a filing to DB | `src/db/store.py` → `write_filing()` |
+| Write a signal to DB | `src/db/store.py` → `save_signal()` or `batch_save_signals()` |
 | EDGAR API client | `src/ingest/edgar.py` → `_get()`, rate-limited to 8 req/sec |
 | Form 4 XML parser | `src/ingest/parser.py` → `parse_form4()` |
 | Role classification | `src/ingest/parser.py` → `classify_role()` |
@@ -137,7 +140,7 @@ src/ingest/parser.py
     parse_form4(xml_str)                    ← returns {issuer, owner, transactions[]}
     classify_role(raw_title)                ← keyword-match → cfo/ceo/director/officer/etc.
     ↓
-src/ingest/store.py
+src/db/store.py
     write_filing(cur, filing_meta, parsed)  ← upserts companies, form4_filings, transactions
     _compute_is_routine(cur, name, cik)     ← checks if insider bought same month ≥2/3 prior yrs
     ↓  (daily ingest also runs scoring immediately after writing)
@@ -150,7 +153,7 @@ src/signals/cluster.py
 src/signals/formatter.py
     build_evidence(tx, company, cluster)    ← assembles JSONB evidence blob
     ↓
-src/ingest/store.py
+src/db/store.py
     batch_save_signals(signals)             ← upserts signals table; deduplicates within cooldown
     ↓
 [weekly — GitHub Actions Sunday 12pm UTC]
@@ -173,17 +176,19 @@ through the ingest and backtest scripts.
 
 ```
 src/
+  config.py             # loads .env once; database_url() / telegram_credentials()
   db/
     connection.py       # get_conn() — psycopg2 context manager; handles commit/rollback/close
+    store.py            # write_filing(), save_signal(), batch_save_signals(), prune_old_data()
     schema.sql          # CREATE TABLE + idempotent ALTER TABLE migrations (run this to init DB)
   ingest/
     edgar.py            # EDGAR API client — rate-limited, User-Agent required, tenacity retries
     parser.py           # Form 4 XML → normalized dict; classify_role() keyword matcher
-    store.py            # write_filing(), batch_save_signals(), backfill_routine_flags()
     common.py           # log(), phase(), setup_log_tee(), fmt_elapsed() — shared logging utils
   signals/
+    constants.py        # BUY_SCORE / WATCH_SCORE / cluster cutoffs — the classification thresholds
     scorer.py           # score_transaction(), classify_signal() — the scoring model
-    cluster.py          # detect_clusters_for_ticker() — cluster detection
+    cluster.py          # cluster_from_transactions() + detect_clusters_for_ticker() — cluster detection
     formatter.py        # build_evidence() — assembles the JSONB evidence blob stored in signals
   market/
     prices.py           # get_price_change_pct() — YF chart API; get_market_data() for cap/52wk
@@ -192,14 +197,20 @@ src/
   alerts/
     telegram.py         # send_signal_alert(), send_error() — Telegram Bot API
 
-scripts/
+scripts/                # see scripts/README.md for the full when-to-run table
+  run_ingest.py         # Daily ingest entry point (GitHub Actions)
+  run_backtest.py       # Weekly backtest entry point. LOOKBACK_DAYS = 730
   bootstrap.py          # One-time: load historical Form 4s. Args: --start, --end, --force
   backfill_signals.py   # Rescore all stored P transactions → signals table. Args: --days, --force
   refresh_market_caps.py# 3-pass cap refresh: EDGAR us-gaap → DEI → per-company API → YF price
-  run_ingest.py         # Daily ingest entry point (called by GitHub Actions)
-  run_backtest.py       # Weekly backtest entry point. LOOKBACK_DAYS = 730
   update_tickers.py     # Refresh S&P500 + Russell2000 ticker universe in companies table
   backfill_sic.py       # Fill companies.sic_code/sic_description from EDGAR submissions API
+  analyze_factors.py    # Factor-return correlation report (read-only)
+  dev/start.{ps1,sh,bat}# Launch the Next.js dashboard in web/ locally
+
+tests/                  # pytest, no DB — scorer, cluster, parser, formatter
+
+pyproject.toml          # package + deps (uv); uv.lock is the lockfile
 
 web/                    # Next.js 16 dashboard (Vercel). See web/README.md and web/AGENTS.md.
   app/                  # Routes: / /backtest /clusters /sectors /ticker /how-it-works
@@ -411,7 +422,8 @@ high-score clusters averaged +3–5%.
 
 ## Cluster Detection
 
-**File**: `src/signals/cluster.py` → `detect_clusters_for_ticker(ticker, cur)`
+**File**: `src/signals/cluster.py`. `cluster_from_transactions(txs, as_of_date)` is
+the rule; `detect_clusters_for_ticker(ticker, as_of_date)` loads the rows and calls it.
 
 ### Eligibility filters (ALL must pass to count toward the 3-insider threshold):
 1. `transaction_code = 'P'`
@@ -427,9 +439,9 @@ high-score clusters averaged +3–5%.
 - `executive_cluster`: True if CFO/CEO/COO/Chairman is among participants
 - `tight_cluster`: True if ≥3 distinct insiders bought within a 5-day sub-window
 
-**CRITICAL**: `backfill_signals.py` has its own in-memory `_detect_cluster()` that
-mirrors these exact filters. If you change `cluster.py`, you **must** update
-`backfill_signals.py` to match, then re-run the backfill.
+`backfill_signals.py` bulk-loads each ticker's P transactions and passes them to
+the same `cluster_from_transactions()` — there is no second implementation to keep
+in sync. `test_cluster.py` covers every filter above.
 
 ---
 
@@ -448,7 +460,7 @@ mirrors these exact filters. If you change `cluster.py`, you **must** update
 - `classify_role(raw_title)` uses regex patterns on the raw title string — order matters (CFO checked before Officer)
 - 10b5-1 detection uses the `isSubjectToRule10b51` checkbox in the XML
 
-### Store Layer (`src/ingest/store.py`)
+### Store Layer (`src/db/store.py`)
 - `write_filing(cur, filing_meta, parsed, ticker)` — must be called with an open cursor (not its own connection); the caller manages the transaction
 - `_compute_is_routine()` looks back up to 3 years for same-month P transactions. Returns `None` if the DB doesn't have enough history (avoids false positives)
 - `batch_save_signals(signals)` — preferred over `save_signal()` for bulk operations; handles within-batch deduplication by processing in date order
@@ -646,8 +658,7 @@ Worst: LGF (Lions Gate) — insiders averaging down, −63.1% at 180d. No filter
 - Check `evidence->>'filed_date'` is populated — signals before 2024-04-03 won't exist.
 
 **Cluster signal missing or wrong signal type:**
-- `cluster.py` and `backfill_signals.py` must have identical eligibility filters. Drift = stale clusters in DB.
-- Verify the cluster filters: direct-only, ≥$25K, no identical-block, no same-price-offering.
+- Live and backfill share `cluster_from_transactions()`, so a drifted-copy bug is no longer possible; check the filters themselves (direct-only, ≥$25K, no identical-block, no same-price-offering) and `test_cluster.py`.
 - Re-run: `uv run python scripts/backfill_signals.py --days 730 --force`
 
 **Backtest chart shows only a short date range:**

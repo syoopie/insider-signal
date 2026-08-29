@@ -4,11 +4,11 @@
 # The Python pipeline runs on GitHub Actions, not locally. The only thing to run
 # on your machine is the Next.js app in web/, which reads the same Neon database.
 #
-# Run with: ./scripts/start.sh  (or: bash scripts/start.sh)
+# Run with: ./scripts/dev/start.sh  (or: bash scripts/dev/start.sh)
 
 set -uo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 web_dir="$root/web"
 port=3000
 

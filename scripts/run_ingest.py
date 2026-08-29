@@ -28,7 +28,7 @@ from src.ingest.common import (
 )
 from src.db.connection import apply_schema, get_conn
 from src.ingest.edgar import fetch_form4_index
-from src.ingest.store import (
+from src.db.store import (
     write_filing,
     update_company_market_data, get_last_filed_date,
     save_signal, mark_signal_alerted, prune_old_data,
