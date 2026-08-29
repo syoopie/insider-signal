@@ -30,6 +30,13 @@ Score factor mutual exclusivity (timing factors):
 from datetime import date, timedelta
 from typing import Optional
 
+from src.signals.constants import (
+    BUY_SCORE,
+    CLUSTER_MIN_AVG_SCORE,
+    CLUSTER_MIN_MAX_SCORE,
+    WATCH_SCORE,
+)
+
 
 # Role → base score delta.
 # Round 4 (2026-05-25): factor-lift analysis on 300/251 signals across 60d/90d.
@@ -257,14 +264,14 @@ def classify_signal(
             cluster_avg = int(sum(participant_scores) / len(participant_scores))
         else:
             cluster_avg = score  # fallback for callers that don't supply scores
-        if cluster_avg >= 22:
-            if tight_cluster or score >= 30:
+        if cluster_avg >= CLUSTER_MIN_AVG_SCORE:
+            if tight_cluster or score >= CLUSTER_MIN_MAX_SCORE:
                 return "CLUSTER_BUY"
             return "WATCH"  # loose cluster with weak individual scores
         return "WATCH"  # very weak cluster: surface on dashboard, no alert
-    if score >= 60:
+    if score >= BUY_SCORE:
         return "BUY"
-    if score >= 45:
+    if score >= WATCH_SCORE:
         return "WATCH"
     return "LOW"
 

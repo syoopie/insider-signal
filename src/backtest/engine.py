@@ -6,7 +6,7 @@ Methodology (bias-controlled):
   - Execution date = signal date + 3 calendar days (realistic fill lag)
   - Benchmark: SPY return over same window
   - Delisted stocks: yfinance returns empty / last price → treated as -50% loss
-  - Parameters (threshold=65, cluster_window=14d) set from literature, not tuned
+  - Parameters (threshold = BUY_SCORE, cluster_window = 14d) set from literature, not tuned
 
 Enhanced metrics (stored in backtest_runs.metrics JSONB):
   - Score-band stratification: 65–74, 75–84, 85+
@@ -31,6 +31,7 @@ from typing import List, Dict, Optional
 from src.db.connection import get_conn
 from src.market.prices import get_price_change_pct
 from src.ingest.common import log, phase, fmt_elapsed
+from src.signals.constants import BUY_SCORE
 
 
 HORIZONS = [30, 60, 90, 180]
@@ -123,7 +124,7 @@ def _max_consecutive_losses(returns: list) -> int:
 
 # ── Main backtest ────────────────────────────────────────────────────────────
 
-def run_backtest(threshold: int = 60, lookback_days: int = 730) -> List[Dict]:
+def run_backtest(threshold: int = BUY_SCORE, lookback_days: int = 730) -> List[Dict]:
     """
     Evaluate all BUY/CLUSTER_BUY signals in the last `lookback_days` days.
     Returns one result dict per horizon (only horizons with completed exits).
@@ -433,7 +434,7 @@ def _get_historical_signals(since: date, threshold: int) -> List[Dict]:
     ]
 
 
-def _get_cluster_weak_signals(since: date, threshold: int = 60) -> List[Dict]:
+def _get_cluster_weak_signals(since: date, threshold: int = BUY_SCORE) -> List[Dict]:
     """CLUSTER_BUY signals below the BUY score threshold (sub-threshold clusters)."""
     with get_conn() as conn:
         with conn.cursor() as cur:

@@ -1,0 +1,25 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, feat/web-vercel-migration]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      - name: Lint
+        run: uv run ruff check src scripts tests
+
+      - name: Tests
+        run: uv run pytest -q

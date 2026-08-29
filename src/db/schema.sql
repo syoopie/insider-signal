@@ -10,7 +10,12 @@ CREATE TABLE IF NOT EXISTS companies (
     updated_at  TIMESTAMPTZ DEFAULT now()
 );
 
+-- EDGAR's submissions JSON carries a human-readable industry label alongside the
+-- SIC code. Keeping it avoids hard-coding a code->name table in the dashboard.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS sic_description TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_companies_ticker ON companies(ticker);
+CREATE INDEX IF NOT EXISTS idx_companies_sic ON companies(sic_code);
 
 CREATE TABLE IF NOT EXISTS form4_filings (
     id               SERIAL PRIMARY KEY,

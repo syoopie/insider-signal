@@ -19,7 +19,7 @@ GitHub Actions (free scheduled compute)
 Neon PostgreSQL (free cloud database)
         │
         ▼
-Streamlit Dashboard (free hosted web app)
+Next.js Dashboard on Vercel (free hosted web app, read-only)
 Telegram Bot (free, sends alerts to phone)
 ```
 
@@ -49,11 +49,18 @@ Telegram Bot (free, sends alerts to phone)
 2. For each signal: fetch stock price at `signal_date + 3 days` (execution lag) and at +30, +60, +90, +180 days
 3. Fetch SPY return over the same windows as benchmark
 4. Compute hit rate, avg excess return, and Sharpe per horizon
-5. Write results to `backtest_runs`; displayed in the dashboard backtest chart
+5. Write results to `backtest_runs`; displayed on the dashboard's `/backtest` page
 
-### Keep-Alive (twice daily, 8 AM + 8 PM UTC)
+### Cache refresh (after each successful ingest)
 
-Pings the Streamlit app URL to prevent the 12-hour inactivity sleep. Cold-start takes ~30 seconds; keeping it warm avoids that delay.
+The daily ingest job POSTs to the dashboard's `/api/revalidate` endpoint so the
+new signals appear immediately rather than after the normal 15-minute cache
+expiry. The step is optional, never fails the run, and is skipped when
+`REVALIDATE_URL` is not configured.
+
+There is no keep-alive job. Vercel does not sleep. Neon still scales to zero
+after a few minutes idle, so the first query after a quiet period is slow — a
+periodic ping would not reliably prevent that and is not worth the workflow.
 
 ---
 
@@ -65,10 +72,10 @@ insider-signal/
 │   └── workflows/
 │       ├── daily_ingest.yml        # Weekdays 6 AM ET
 │       ├── weekly_backtest.yml     # Sundays noon UTC
-│       └── keep_alive.yml          # 8 AM + 8 PM UTC daily
+│       └── bootstrap.yml           # Manual only
 ├── src/
 │   ├── db/
-│   │   ├── connection.py           # Neon connection (direct + pooled)
+│   │   ├── connection.py           # Neon connection (direct)
 │   │   └── schema.sql              # Table definitions
 │   ├── ingest/
 │   │   ├── common.py               # Shared logging utilities
@@ -85,12 +92,15 @@ insider-signal/
 │   │   └── prices.py               # Yahoo Finance: market cap + 52-week low
 │   └── backtest/
 │       └── engine.py               # Historical signal accuracy validation
-├── dashboard/
-│   └── app.py                      # Streamlit web dashboard (read-only)
+├── web/                            # Next.js dashboard on Vercel (read-only)
+│   ├── app/                        # Routes: / /backtest /clusters /sectors /ticker
+│   ├── components/                 # UI, charts, tables
+│   └── lib/queries/                # One typed query module per concern
 ├── scripts/
 │   ├── bootstrap.py                # One-time historical data loader
 │   ├── run_ingest.py               # Daily ingest entrypoint
 │   ├── run_backtest.py             # Weekly backtest entrypoint
+│   ├── backfill_sic.py             # Fills industry codes from EDGAR (for /sectors)
 │   └── update_tickers.py           # Refreshes S&P 500 + Russell 2000 universe
 ├── docs/
 │   ├── scoring.md                  # Scoring algorithm and factor table
@@ -100,8 +110,8 @@ insider-signal/
 │   └── research.md                 # Academic references
 ├── data/
 │   └── tickers.txt                 # Tracked ticker universe (~3,500)
-├── requirements.txt                # Dashboard deps (Streamlit Cloud)
-└── requirements-ingest.txt         # Full pipeline deps (GitHub Actions + local)
+├── pyproject.toml                  # Python package + pipeline deps (managed by uv)
+└── uv.lock                         # Pinned dependency lockfile
 ```
 
 ---
@@ -178,7 +188,7 @@ CREATE TABLE backtest_runs (
 |---|---|---|---|
 | Compute + scheduler | GitHub Actions | Unlimited (public repo) | ~150 min/month |
 | Database | Neon PostgreSQL | 0.5 GB | ~160 MB at steady state |
-| Dashboard | Streamlit Community Cloud | Unlimited public apps | 1 app |
+| Dashboard | Vercel Hobby | 100 GB bandwidth/month | Well under |
 | Alerts | Telegram Bot API | Unlimited | 1–5 messages/day |
 | Market data | Yahoo Finance (via yfinance) | Informal, unlimited | ~50–100 tickers/day |
 | Filing data | SEC EDGAR API | Public, unlimited | ~500 requests/day |
@@ -199,7 +209,7 @@ CREATE TABLE backtest_runs (
 
 **Neon** — Free cloud-hosted PostgreSQL. Scale-to-zero (spins down when idle) — all scheduling is handled by GitHub Actions, never by in-database cron.
 
-**Streamlit** — Python library for data dashboards. Streamlit Community Cloud hosts apps for free; apps sleep after ~12 hours of inactivity.
+**Next.js / Vercel** — The dashboard is a Next.js app in `web/`, hosted free on Vercel. It reads the same Neon database over Neon's HTTP driver and never writes to it.
 
 **10b5-1 Plan** — A legal arrangement where an insider pre-schedules future trades months in advance. Research shows these have zero predictive alpha — they're disqualified before scoring.
 

@@ -1,0 +1,98 @@
+import pytest
+
+from src.ingest.parser import classify_role, parse_form4
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        ("Chief Financial Officer", "cfo"),
+        ("CFO", "cfo"),
+        ("EVP and Treasurer", "cfo"),
+        ("Chief Executive Officer", "ceo"),
+        ("President and CEO", "ceo"),
+        ("Chief Operating Officer", "coo"),
+        ("Chairman of the Board", "chairman"),
+        ("Director", "director"),
+        ("Trustee", "director"),
+        ("President", "officer"),
+        ("EVP, General Counsel", "officer"),
+        ("Secretary", "officer"),
+        ("10% Owner", "other"),
+        ("", "other"),
+    ],
+)
+def test_classify_role(title, expected):
+    assert classify_role(title) == expected
+
+
+def test_classify_role_specificity_cfo_beats_officer():
+    # "Chief Financial Officer" contains "officer" but must resolve to cfo
+    assert classify_role("Chief Financial Officer") == "cfo"
+
+
+MINIMAL_FORM4 = """<?xml version="1.0"?>
+<ownershipDocument>
+  <issuer>
+    <issuerCik>0000123456</issuerCik>
+    <issuerName>Acme Corp</issuerName>
+    <issuerTradingSymbol>acme</issuerTradingSymbol>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000999888</rptOwnerCik>
+      <rptOwnerName>Jane Insider</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerRelationship>
+      <isDirector>0</isDirector>
+      <isOfficer>1</isOfficer>
+      <officerTitle>Chief Financial Officer</officerTitle>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-05-12-05:00</value></transactionDate>
+      <transactionCoding>
+        <transactionCode>P</transactionCode>
+      </transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>2000</value></transactionShares>
+        <transactionPricePerShare><value>12.50</value></transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction><value>5000</value></sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership><value>D</value></directOrIndirectOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+</ownershipDocument>
+"""
+
+
+def test_parse_form4_happy_path():
+    parsed = parse_form4(MINIMAL_FORM4, {"filed_date": "2026-05-14", "accession_number": "x-1"})
+    assert parsed["issuer"] == {"cik": "123456", "ticker": "ACME", "name": "Acme Corp"}
+    assert parsed["owner"]["name"] == "Jane Insider"
+    assert parsed["owner"]["role_category"] == "cfo"
+    assert len(parsed["transactions"]) == 1
+    tx = parsed["transactions"][0]
+    assert tx["transaction_code"] == "P"
+    assert tx["transaction_date"] == "2026-05-12"  # timezone offset stripped
+    assert tx["shares"] == 2000.0
+    assert tx["price_per_share"] == 12.5
+    assert tx["total_value"] == 25_000.0
+    assert tx["shares_after"] == 5000.0
+    assert tx["is_direct"] is True
+
+
+def test_parse_form4_malformed_returns_empty():
+    assert parse_form4("<not-xml", {}) == {}
+
+
+def test_parse_form4_10b51_footnote_detected():
+    xml = MINIMAL_FORM4.replace("</ownershipDocument>", "<footnote>Sale under a Rule 10b5-1 plan</footnote></ownershipDocument>")
+    parsed = parse_form4(xml, {})
+    assert parsed["transactions"][0]["is_10b51"] is True

@@ -9,23 +9,17 @@ Both are fire-and-forget: log on failure but never raise (alerts must not
 crash the ingest pipeline).
 """
 
-import os
 import requests
 from datetime import date
-from typing import Tuple
+
+from src.config import telegram_credentials
 
 
 TELEGRAM_API = "https://api.telegram.org"
 
 
-def _get_credentials() -> Tuple[str, str]:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-    return token, chat_id
-
-
 def _send(text: str) -> bool:
-    token, chat_id = _get_credentials()
+    token, chat_id = telegram_credentials()
     if not token or not chat_id:
         print("Telegram not configured — skipping alert")
         return False

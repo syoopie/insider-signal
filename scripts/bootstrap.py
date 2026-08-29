@@ -29,14 +29,11 @@ DB writes remain in the main thread (psycopg2 is not thread-safe).
 """
 
 import sys
-import os
 import argparse
 import time
 from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import psycopg2
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.ingest.common import (
     setup_log_tee, log, phase, fmt_elapsed,
@@ -45,7 +42,7 @@ from src.ingest.common import (
     EdgarRateLimitError, EdgarBlockedError, EdgarServerError,
 )
 from src.ingest.edgar import fetch_form4_index
-from src.ingest.store import get_last_filed_date, write_filing
+from src.db.store import write_filing
 from src.db.connection import apply_schema, get_conn
 
 log_path = setup_log_tee("bootstrap")
@@ -377,7 +374,7 @@ if __name__ == "__main__":
         print(f"\nFATAL: EDGAR server error after retries — {e}")
         print("EDGAR may be down. Check https://www.sec.gov/cgi-bin/browse-edgar for status.")
         sys.exit(1)
-    except Exception as e:
+    except Exception:
         import traceback
         print(f"FATAL ERROR:\n{traceback.format_exc()}")
         sys.exit(1)

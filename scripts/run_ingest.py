@@ -20,8 +20,6 @@ from datetime import date, timedelta, datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from psycopg2.extras import RealDictCursor
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 from src.ingest.common import (
     setup_log_tee, log as _log, phase as _phase, fmt_elapsed,
     load_ticker_universe, load_cik_map, in_universe, fetch_and_parse,
@@ -30,7 +28,7 @@ from src.ingest.common import (
 )
 from src.db.connection import apply_schema, get_conn
 from src.ingest.edgar import fetch_form4_index
-from src.ingest.store import (
+from src.db.store import (
     write_filing,
     update_company_market_data, get_last_filed_date,
     save_signal, mark_signal_alerted, prune_old_data,
@@ -358,7 +356,7 @@ def main():
     ts_path = os.path.join(os.path.dirname(__file__), "..", "last_run.txt")
     with open(ts_path, "w") as f:
         f.write(f"{today.isoformat()}\n")
-    _log(f"last_run.txt updated")
+    _log("last_run.txt updated")
 
     total_elapsed = time.time() - t_start
     _log(f"=== Done in {total_elapsed:.1f}s ===")

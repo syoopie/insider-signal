@@ -18,23 +18,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.11'
-          cache: pip
+          enable-cache: true
 
       - name: Install dependencies
-        run: pip install -r requirements-ingest.txt
+        run: uv sync --no-dev
 
       - name: Refresh market caps
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python scripts/refresh_market_caps.py
+        run: uv run python scripts/refresh_market_caps.py
 
       - name: Run backtest
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python scripts/run_backtest.py
+        run: uv run python scripts/run_backtest.py
