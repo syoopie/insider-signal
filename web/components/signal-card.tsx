@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ExternalLink, Layers, TrendingDown } from "lucide-react";
+import Link from "next/link";
+import { ArrowRight, ChevronDown, ExternalLink, Layers, TrendingDown } from "lucide-react";
 import { CapTierBadge, ConvictionBadge, SignalTypeBadge, convictionFor } from "@/components/badges";
 import { ClusterWindow } from "@/components/cluster-window";
 import { InsiderTable } from "@/components/insider-table";
@@ -58,6 +59,7 @@ export function SignalCard({ signal, isNew = false }: { signal: Signal; isNew?: 
               <span className="font-mono text-base font-semibold tracking-tight">
                 {signal.ticker}
               </span>
+              <span className="sr-only">— expand for evidence</span>
               <span className="min-w-0 truncate text-sm text-muted-foreground">
                 {signal.companyName}
               </span>
@@ -190,17 +192,26 @@ export function SignalCard({ signal, isNew = false }: { signal: Signal; isNew?: 
                 )}
               </dl>
 
-              <a
-                href={`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${encodeURIComponent(
-                  signal.ticker,
-                )}&type=4&dateb=&owner=include&count=40`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-              >
-                Verify on SEC EDGAR
-                <ExternalLink className="size-3" aria-hidden />
-              </a>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <Link
+                  href={`/ticker/${encodeURIComponent(signal.ticker)}`}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-2 hover:underline"
+                >
+                  Full history for {signal.ticker}
+                  <ArrowRight className="size-3" aria-hidden />
+                </Link>
+                <a
+                  href={`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${encodeURIComponent(
+                    signal.ticker,
+                  )}&type=4&dateb=&owner=include&count=40`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  Verify on SEC EDGAR
+                  <ExternalLink className="size-3" aria-hidden />
+                </a>
+              </div>
             </div>
           </div>
         </div>

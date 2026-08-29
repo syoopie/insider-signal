@@ -1,3 +1,8 @@
+// Hard boundary. A client component that imports a *value* from any query
+// module pulls this file — and with it the database client and every SQL
+// string — into the browser bundle. This turns that into a build error naming
+// the offending import instead of a silent leak.
+import "server-only";
 import { neon } from "@neondatabase/serverless";
 
 /**

@@ -8,8 +8,11 @@ import {
   Line,
   LineChart,
   ReferenceLine,
+  Scatter,
+  ScatterChart,
   XAxis,
   YAxis,
+  ZAxis,
 } from "recharts";
 import {
   ChartContainer,
@@ -258,5 +261,87 @@ export function Boxplot({ rows, unit = "%" }: { rows: BoxRow[]; unit?: string })
         </span>
       </div>
     </div>
+  );
+}
+
+/**
+ * Purchases over time: one dot per open-market buy, positioned by date and
+ * price, sized by the number of shares.
+ *
+ * Split into two series rather than coloured by a field, because the split —
+ * opportunistic versus routine — is the single most important thing on the
+ * chart. A routine buy scores zero: the insider buys every year in the same
+ * month whatever the price, so it carries no information. Two series give it a
+ * legend entry and a shape of its own instead of a colour a reader has to decode.
+ */
+export type PurchasePoint = {
+  /** Epoch milliseconds — a numeric axis keeps the time spacing honest. */
+  t: number;
+  price: number;
+  shares: number;
+  label: string;
+};
+
+export function PurchaseScatter({
+  opportunistic,
+  routine,
+  height = 300,
+  xFormat,
+}: {
+  opportunistic: PurchasePoint[];
+  routine: PurchasePoint[];
+  height?: number;
+  xFormat: (v: number) => string;
+}) {
+  const config: ChartConfig = {
+    opportunistic: { label: "Opportunistic", color: "var(--color-success)" },
+    routine: { label: "Routine", color: "var(--color-muted-foreground)" },
+  };
+  const all = [...opportunistic, ...routine];
+  const maxShares = Math.max(1, ...all.map((p) => p.shares));
+
+  return (
+    <ChartContainer config={config} className="w-full" style={{ height }}>
+      <ScatterChart margin={{ left: 4, right: 12, top: 8, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+        <XAxis
+          type="number"
+          dataKey="t"
+          domain={["dataMin", "dataMax"]}
+          tickFormatter={xFormat}
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          minTickGap={40}
+          className="text-xs"
+        />
+        <YAxis
+          type="number"
+          dataKey="price"
+          tickFormatter={(v: number) => `$${v}`}
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          width={56}
+          className="text-xs"
+        />
+        <ZAxis type="number" dataKey="shares" range={[40, 420]} domain={[0, maxShares]} />
+        <ChartTooltip content={<ChartTooltipContent nameKey="label" />} />
+        <ChartLegend content={<ChartLegendContent />} />
+        <Scatter
+          name="opportunistic"
+          data={opportunistic}
+          fill="var(--color-opportunistic)"
+          fillOpacity={0.7}
+        />
+        <Scatter
+          name="routine"
+          data={routine}
+          fill="var(--color-routine)"
+          fillOpacity={0.45}
+          shape="square"
+        />
+      </ScatterChart>
+    </ChartContainer>
   );
 }
