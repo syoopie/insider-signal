@@ -37,6 +37,21 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scripts/run_ingest.py
 
+      - name: Refresh dashboard cache
+        # The dashboard caches query results for 15 minutes. Without this it
+        # would serve yesterday's signals for a quarter of an hour after the
+        # ingest that produced today's. Never fails the run: the cache expires
+        # on its own, so a missed bust is a delay, not an outage.
+        if: success() && env.REVALIDATE_URL != ''
+        continue-on-error: true
+        env:
+          REVALIDATE_URL: ${{ secrets.REVALIDATE_URL }}
+          REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET }}
+        run: |
+          curl -fsS -X POST "$REVALIDATE_URL" \
+            -H "Authorization: Bearer $REVALIDATE_SECRET" \
+            --max-time 30 || echo "Cache refresh failed; the 15-minute TTL will catch up."
+
       - name: Commit last_run.txt
         # Keeps repo active so GitHub doesn't disable scheduled workflows after 60 days
         run: |

@@ -49,6 +49,7 @@ Environment variables to set in Vercel (Production + Preview):
 | --- | --- |
 | `DATABASE_URL` | Neon connection string (same as the `DATABASE_URL` GitHub Actions secret) |
 | `NEXT_PUBLIC_SITE_URL` | The deployed URL, e.g. `https://insider-signal.vercel.app` (optional) |
+| `REVALIDATE_SECRET` | Shared secret for `POST /api/revalidate` (optional; without it the route refuses every request) |
 
 Pushes to `main` deploy to production; other branches get preview deployments.
 
@@ -56,8 +57,23 @@ Pushes to `main` deploy to production; other branches get preview deployments.
 
 Data queries are wrapped in `unstable_cache` with a 15-minute revalidation and
 tags (`pipeline`, `signals`, `backtest`). The pipeline changes at most once per
-weekday, so pages serve from the edge and refresh on their own. A later phase
-adds `POST /api/revalidate` so the ingest workflow can push updates instantly.
+weekday, so pages serve from the edge and refresh on their own.
+
+`POST /api/revalidate` closes the gap right after an ingest, when the dashboard
+would otherwise serve yesterday's signals for another quarter of an hour. It
+takes `Authorization: Bearer $REVALIDATE_SECRET` and busts all three tags with
+the `"max"` profile, so no visitor ever blocks on the refresh.
+
+To wire it up, set two GitHub Actions secrets:
+
+| Secret | Value |
+| --- | --- |
+| `REVALIDATE_URL` | `https://<your-deployment>/api/revalidate` |
+| `REVALIDATE_SECRET` | The same value as the Vercel `REVALIDATE_SECRET` env var |
+
+`daily_ingest.yml` calls it after a successful run. The step is skipped when
+`REVALIDATE_URL` is unset and never fails the workflow — a missed bust just
+means the 15-minute TTL catches up on its own.
 
 ## Layout
 
