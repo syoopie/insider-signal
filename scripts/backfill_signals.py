@@ -44,14 +44,13 @@ from psycopg2.extras import RealDictCursor
 from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.db.connection import get_conn
 from src.ingest.store import batch_save_signals
+from src.signals.cluster import cluster_from_transactions
 from src.signals.scorer import score_transaction, classify_signal, cluster_size_bonus, filing_lag_bonus
 from src.signals.formatter import build_evidence
 
 setup_log_tee("backfill")
 
-SCORING_WINDOW_DAYS  = 7   # mirror run_ingest: score P transactions from last N days
-CLUSTER_WINDOW_DAYS  = 14  # mirror cluster.py
-CLUSTER_MIN_INSIDERS = 3
+SCORING_WINDOW_DAYS = 7   # mirror run_ingest: score P transactions from last N days
 
 
 # ── Bulk data loaders ─────────────────────────────────────────────────────────
@@ -151,97 +150,11 @@ def _get_window_txs(all_ticker_txs: list[dict], filed_date: date) -> tuple[list,
     return tx_rows, all_prior
 
 
-_EXECUTIVE_ROLES = {"cfo", "ceo", "coo", "chairman"}
-TIGHT_CLUSTER_DAYS   = 5
-CLUSTER_MIN_VALUE    = 25_000   # mirrors cluster.py — filters DRIP/401k noise
-
-
-def _detect_cluster(all_ticker_txs: list[dict], as_of_date: date) -> dict:
-    """
-    Cluster detection from pre-loaded transaction data (mirrors cluster.py logic).
-    Filters:
-      - indirect purchases (is_direct=False) — fund-partner duplicates
-      - trivially small purchases (< CLUSTER_MIN_VALUE) — DRIP/401k noise
-      - identical-block buys (3+ buyers with same shares+price+date) — IPO/PIPE allocations
-    """
-    window_start = as_of_date - timedelta(days=CLUSTER_WINDOW_DAYS)
-    seen_names: dict[str, dict] = {}
-    for tx in all_ticker_txs:
-        td = tx.get("transaction_date")
-        if td is None:
-            continue
-        if isinstance(td, str):
-            try:
-                td = date.fromisoformat(td[:10])
-            except ValueError:
-                continue
-        if not (window_start <= td <= as_of_date):
-            continue
-        if tx.get("is_direct") is False:
-            continue
-        if (tx.get("total_value") or 0) < CLUSTER_MIN_VALUE:
-            continue
-        name = tx.get("insider_name") or "Unknown"
-        if name not in seen_names:
-            seen_names[name] = tx
-
-    candidate_insiders = list(seen_names.values())
-
-    # Filter offering contamination — two complementary checks (mirrors cluster.py):
-    # 1. Identical-block: same shares + price + date, ≥3 buyers → DRIP/exact allocation
-    # 2. Same-price offering: same price + date (diff amounts), ≥3 buyers → IPO/PIPE
-    from collections import Counter
-    block_keys = Counter(
-        (ins.get("shares"), ins.get("price_per_share"), ins.get("transaction_date"))
-        for ins in candidate_insiders
-    )
-    price_date_keys = Counter(
-        (ins.get("price_per_share"), ins.get("transaction_date"))
-        for ins in candidate_insiders
-    )
-    insiders = [
-        ins for ins in candidate_insiders
-        if (block_keys[(ins.get("shares"), ins.get("price_per_share"), ins.get("transaction_date"))] < 3
-            and price_date_keys[(ins.get("price_per_share"), ins.get("transaction_date"))] < 3)
-    ]
-
-    is_cluster = len(insiders) >= CLUSTER_MIN_INSIDERS
-
-    executive_cluster = is_cluster and any(
-        (ins.get("role_category") or "").lower() in _EXECUTIVE_ROLES
-        for ins in insiders
-    )
-
-    tight_cluster = False
-    if is_cluster:
-        parsed_dates = []
-        for ins in insiders:
-            td = ins.get("transaction_date")
-            if td is None:
-                continue
-            if isinstance(td, date):
-                parsed_dates.append(td)
-            else:
-                try:
-                    parsed_dates.append(date.fromisoformat(str(td)[:10]))
-                except (ValueError, TypeError):
-                    pass
-        parsed_dates.sort()
-        for i in range(len(parsed_dates) - CLUSTER_MIN_INSIDERS + 1):
-            span = (parsed_dates[i + CLUSTER_MIN_INSIDERS - 1] - parsed_dates[i]).days
-            if span <= TIGHT_CLUSTER_DAYS:
-                tight_cluster = True
-                break
-
-    return {
-        "is_cluster":       is_cluster,
-        "insider_count":    len(insiders),
-        "insiders":         insiders,
-        "window_start":     window_start,
-        "window_end":       as_of_date,
-        "executive_cluster": executive_cluster,
-        "tight_cluster":    tight_cluster,
-    }
+# Cluster detection lives in src/signals/cluster.py. Backfill pre-loads all of a
+# ticker's P transactions in one bulk query and hands them to the same function
+# the live path uses, so "what counts as a cluster" is defined in exactly one
+# place. `_bulk_load_transactions` already excludes 10b5-1 trades and orders
+# rows newest-first, which is what cluster_from_transactions expects.
 
 
 def _score_ticker_txs(
@@ -384,7 +297,7 @@ def main():
             n_ineligible += 1
             continue
 
-        cluster_info  = _detect_cluster(all_ticker_txs, filed_date)
+        cluster_info  = cluster_from_transactions(all_ticker_txs, filed_date)
         is_cluster    = cluster_info.get("is_cluster", False)
         tight_cluster = cluster_info.get("tight_cluster", False)
         cluster_n     = cluster_info.get("insider_count", 0)
