@@ -207,6 +207,21 @@ def update_company_market_data(cik: str, market_cap: Optional[int], cap_tier: Op
             )
 
 
+def get_history_start() -> Optional[date]:
+    """
+    Earliest filing date the database holds — the point before which we saw
+    nothing at all. Scoring uses it to tell "this insider had no prior purchase"
+    apart from "we cannot see whether they did". Keyed off filed_date, not
+    transaction_date, because a single very late filing would otherwise pull the
+    floor years earlier than our real coverage.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT MIN(filed_date) FROM form4_filings")
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+
+
 def get_last_filed_date() -> Optional[date]:
     """Returns the most recent filed_date stored, or None if DB is empty."""
     with get_conn() as conn:

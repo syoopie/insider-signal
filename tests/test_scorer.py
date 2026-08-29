@@ -107,14 +107,43 @@ def test_timing_factors_are_mutually_exclusive(make_tx):
     assert first["breakdown"].get("first_purchase_12mo") == -10
 
 
-def test_near_52wk_low_tiers(make_tx):
+def test_first_purchase_penalty_needs_a_full_year_of_history(make_tx):
+    """
+    "No prior purchase in 365 days" is only evidence when the database actually
+    covers those 365 days. It did not for the first year of ingest, so 87% of
+    signals before 2025-04-03 took the penalty against 32% after — a fact about
+    the ingest start date, not about insiders.
+    """
+    tx = make_tx(transaction_date="2026-06-15")
+
+    covered = score_transaction(tx, {"role_category": "director"}, {}, {}, [],
+                                history_start=date(2024, 1, 1))
+    assert covered["breakdown"].get("first_purchase_12mo") == -10
+
+    cold = score_transaction(tx, {"role_category": "director"}, {}, {}, [],
+                             history_start=date(2026, 1, 1))
+    assert "first_purchase_12mo" not in cold["breakdown"]
+    assert cold["breakdown"].get("first_purchase_unverifiable") == 0
+    assert cold["score"] == covered["score"] + 10
+
+    # Unknown floor keeps the old behaviour rather than silently waiving it.
+    assert score_transaction(tx, {"role_category": "director"}, {}, {}, [],
+                             history_start=None)["breakdown"].get("first_purchase_12mo") == -10
+
+
+def test_live_price_data_cannot_change_the_score(make_tx):
+    """
+    The score must depend only on stored filing data.
+
+    The 52-week-low factor broke this: it fired in live ingest, which has a
+    Yahoo quote, and never in the historical backfill, which does not. The same
+    purchase scored up to 12 points apart depending on which path saw it, and a
+    --force backfill silently reclassified signals the live path had written.
+    """
     at_low = score(make_tx(price_per_share=10), market={"price_52wk_low": 10})
-    assert at_low["breakdown"]["near_52wk_low_5pct"] == 12
-    mid_band = score(make_tx(price_per_share=10.6), market={"price_52wk_low": 10})
-    assert mid_band["breakdown"]["near_52wk_low_10pct"] == 7
-    far = score(make_tx(price_per_share=12), market={"price_52wk_low": 10})
-    assert "near_52wk_low_5pct" not in far["breakdown"]
-    assert "near_52wk_low_10pct" not in far["breakdown"]
+    no_market = score(make_tx(price_per_share=10), market={})
+    assert at_low["score"] == no_market["score"]
+    assert not any("52wk" in f for f in at_low["breakdown"])
 
 
 def test_score_is_capped_at_100(make_tx):

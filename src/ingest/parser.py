@@ -5,7 +5,14 @@ Key design decisions:
 - Only returns non-derivative transactions (Table I) — derivative transactions
   (options, warrants) add complexity and noise to the signal.
 - Role classification uses keyword matching on raw title strings from the filing.
-- 10b5-1 detection uses the explicit checkbox field in the XML.
+- 10b5-1 detection reads <aff10b5One>, the document-level checkbox the SEC added
+  when it amended Rule 10b5-1 (effective February 2023), then narrows to the
+  individual transaction via its own footnote references. See _tx_is_10b51.
+
+Only the FIRST <reportingOwner> is recorded. Joint Form 4s report one decision
+under several names (a fund and its general partner, say), so collapsing them to
+one insider is what cluster counting wants. It does mean the stored
+insider_name for such a filing is whichever owner EDGAR listed first.
 """
 
 import re
@@ -57,6 +64,37 @@ def _float(element, tag: str) -> Optional[float]:
 def _bool_flag(element, tag: str) -> bool:
     val = _text(element, tag, "0")
     return val in ("1", "true", "True", "yes")
+
+
+_10B51_RE = re.compile(r"10b5[\s\-]?1", re.IGNORECASE)
+
+
+def _footnote_texts(root) -> dict:
+    """{footnote id: text}. Matches <footnote> at any depth; EDGAR nests them in
+    <footnotes> but some filing agents emit them bare."""
+    return {fn.get("id"): (fn.text or "") for fn in root.findall(".//footnote")}
+
+
+def _tx_is_10b51(tx_el, footnotes: dict, doc_flag: Optional[bool]) -> bool:
+    """
+    Whether this single transaction was made under a pre-arranged 10b5-1 plan.
+
+    <aff10b5One> is filing-wide, so when it is set every transaction in the
+    filing qualifies. When it is clear, a transaction still qualifies if one of
+    the footnotes *it references* names the rule — a filing can mix a plan sale
+    with an ordinary open-market buy, and only the sale should be disqualified.
+
+    doc_flag is None for filings predating the February 2023 element, where the
+    only available evidence is the footnote set as a whole.
+    """
+    if doc_flag:
+        return True
+    for ref in tx_el.findall(".//footnoteId"):
+        if _10B51_RE.search(footnotes.get(ref.get("id"), "")):
+            return True
+    if doc_flag is None:
+        return any(_10B51_RE.search(t) for t in footnotes.values())
+    return False
 
 
 def _clean_date(raw: Optional[str]) -> Optional[str]:
@@ -121,25 +159,15 @@ def parse_form4(xml_content: str, filing_metadata: dict) -> dict:
         }
 
     # --- Non-Derivative Transactions (Table I — what we score) ---
+    aff_raw = _text(root, ".//aff10b5One")
+    doc_10b51 = None if aff_raw is None else aff_raw in ("1", "true", "True", "yes")
+    footnotes = _footnote_texts(root)
+
     transactions = []
     for tx_el in root.findall(".//nonDerivativeTransaction"):
         tx_date_str = _clean_date(_text(tx_el, ".//transactionDate/value") or _text(tx_el, "transactionDate"))
         tx_code = _text(tx_el, ".//transactionCoding/transactionCode") or _text(tx_el, "transactionCode")
-        is_10b51 = _bool_flag(tx_el, ".//transactionCoding/transactionFormType") or False
-
-        # Explicit 10b5-1 plan checkbox
-        coding_el = tx_el.find(".//transactionCoding")
-        if coding_el is not None:
-            plan_val = _text(coding_el, "equitySwapInvolved") or "0"
-            # The actual 10b5-1 field name varies; check footnotes text too
-            is_10b51 = _bool_flag(coding_el, "transactionTimeliness") or is_10b51
-
-        # Check footnotes for 10b5-1 mentions as a fallback
-        footnotes_xml = xml_content.lower()
-        has_10b51_footnote = "10b5-1" in footnotes_xml or "rule 10b5" in footnotes_xml
-
-        acquired_disposed = _text(tx_el, ".//transactionAmounts/transactionAcquiredDisposedCode/value") or \
-                            _text(tx_el, ".//transactionAcquiredDisposedCode/value")
+        is_10b51 = _tx_is_10b51(tx_el, footnotes, doc_10b51)
 
         shares_el = tx_el.find(".//transactionAmounts/transactionShares/value")
         price_el = tx_el.find(".//transactionAmounts/transactionPricePerShare/value")
@@ -170,22 +198,17 @@ def parse_form4(xml_content: str, filing_metadata: dict) -> dict:
         if shares is not None and price is not None:
             total_value = shares * price
 
-        # Dispositions are negative-value for S transactions
-        if tx_code == "S" and total_value is not None:
-            total_value = abs(total_value)
-
         direct_indirect = _text(tx_el, ".//ownershipNature/directOrIndirectOwnership/value", "D")
         is_direct = direct_indirect == "D"
 
         transactions.append({
             "transaction_date": tx_date_str,
             "transaction_code": tx_code or "",
-            "acquired_disposed": acquired_disposed or "A",
             "shares": shares,
             "price_per_share": price,
             "total_value": total_value,
             "shares_after": shares_after,
-            "is_10b51": is_10b51 or has_10b51_footnote,
+            "is_10b51": is_10b51,
             "is_direct": is_direct,
         })
 

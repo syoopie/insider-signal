@@ -7,7 +7,10 @@ so the dashboard and backtest have data immediately.
 No EDGAR fetching — operates entirely on transactions already stored.
 No Telegram alerts — this is a batch backfill, not real-time detection.
 
-Signal date is set to filed_date + 1 (same point-in-time rule as live ingest).
+Signal date is the date of the latest purchase in the window, matching live
+ingest. It is NOT filed_date + 1; the backtest avoids look-ahead by deriving
+exec_date from evidence.filed_date instead. See "Signal dating" in CLAUDE.md.
+
 Market cap tier is read from the companies table; live Yahoo Finance is not
 called because current prices do not represent historical cap tiers.
 
@@ -43,7 +46,7 @@ from psycopg2.extras import RealDictCursor
 
 from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.db.connection import get_conn
-from src.db.store import batch_save_signals
+from src.db.store import batch_save_signals, get_history_start
 from src.signals.cluster import cluster_from_transactions
 from src.signals.scorer import score_transaction, classify_signal, cluster_size_bonus, filing_lag_bonus
 from src.signals.formatter import build_evidence
@@ -129,23 +132,32 @@ def _get_existing_signal_keys(start: date, end: date) -> set[tuple]:
 def _get_window_txs(all_ticker_txs: list[dict], filed_date: date) -> tuple[list, list]:
     """
     Split pre-loaded transactions into:
-      tx_rows   — transactions in [filed_date - 6, filed_date]  (scoring window)
-      all_prior — transactions before the scoring window         (history for routine/first-buy)
+      tx_rows   — purchases DISCLOSED in [filed_date - 6, filed_date] (scoring window)
+      all_prior — purchases disclosed or transacted before it         (history)
+
+    Windowing on filed_date mirrors live ingest. Windowing on transaction_date,
+    as this did, silently dropped every trade reported more than a week late.
     """
     window_start = filed_date - timedelta(days=SCORING_WINDOW_DAYS - 1)
     tx_rows, all_prior = [], []
     for tx in all_ticker_txs:
+        fd = tx.get("filed_date")
         td = tx.get("transaction_date")
-        if td is None:
+        if fd is None or td is None:
             continue
+        if isinstance(fd, str):
+            try:
+                fd = date.fromisoformat(fd[:10])
+            except ValueError:
+                continue
         if isinstance(td, str):
             try:
                 td = date.fromisoformat(td[:10])
             except ValueError:
                 continue
-        if window_start <= td <= filed_date:
+        if window_start <= fd <= filed_date:
             tx_rows.append(tx)
-        elif td < window_start:
+        elif fd < window_start:
             all_prior.append(tx)
     return tx_rows, all_prior
 
@@ -157,10 +169,31 @@ def _get_window_txs(all_ticker_txs: list[dict], filed_date: date) -> tuple[list,
 # rows newest-first, which is what cluster_from_transactions expects.
 
 
+def _disclosed_by(all_ticker_txs: list[dict], as_of: date) -> list[dict]:
+    """
+    Rows whose filing had already landed by as_of. Cluster detection previously
+    saw every row for the ticker and filtered only on transaction_date, so a
+    purchase inside the 14-day window but filed afterwards could form a cluster
+    before it was public.
+    """
+    out = []
+    for tx in all_ticker_txs:
+        fd = tx.get("filed_date")
+        if isinstance(fd, str):
+            try:
+                fd = date.fromisoformat(fd[:10])
+            except ValueError:
+                continue
+        if fd is not None and fd <= as_of:
+            out.append(tx)
+    return out
+
+
 def _score_ticker_txs(
     ticker: str,
     tx_rows: list[dict],
     all_prior: list[dict],
+    history_start: date | None = None,
 ) -> tuple[int, dict, list, list]:
     """
     Score all eligible transactions.
@@ -187,7 +220,8 @@ def _score_ticker_txs(
             p for p in all_prior if p.get("insider_name") == owner["name"]
         ]
 
-        result = score_transaction(tx_row, owner, company, mdata, prior_for_insider)
+        result = score_transaction(tx_row, owner, company, mdata, prior_for_insider,
+                                   history_start=history_start)
         if result and result.get("eligible"):
             scored_txs.append({"owner": owner, "transaction": tx_row, "score_result": result})
             participant_scores.append(result["score"])
@@ -234,19 +268,28 @@ def main():
     work_items = _get_work_items(start, end)
     log(f"{len(work_items)} (ticker, filed_date) pairs with eligible P transactions")
 
+    history_start = get_history_start()
+    log(f"History floor for first-purchase checks: {history_start or 'unknown'}")
+
     if not work_items:
         log("Nothing to process. Run bootstrap.py first to load transaction data.")
         return
 
+    # Skipping already-scored work needs the ticker's signal dates, not
+    # filed_date + 1. That key dates from when signal_date really was
+    # filed_date + 1, so the lookup always missed and every run rescored
+    # everything. Compare against the set of dates present for the ticker.
     if not args.force:
-        existing = _get_existing_signal_keys(
-            start + timedelta(days=1), end + timedelta(days=1)
-        )
+        existing = _get_existing_signal_keys(start - timedelta(days=400), end)
         if existing:
+            dates_by_ticker: dict[str, set] = defaultdict(set)
+            for tk, sd in existing:
+                dates_by_ticker[tk].add(sd)
             before = len(work_items)
             work_items = [
                 (fd, tk) for fd, tk in work_items
-                if (tk, fd + timedelta(days=1)) not in existing
+                if not any(abs((sd - fd).days) <= SCORING_WINDOW_DAYS
+                           for sd in dates_by_ticker.get(tk, ()))
             ]
             log(f"Skipping {before - len(work_items)} already-scored → {len(work_items)} remaining")
 
@@ -290,14 +333,14 @@ def main():
         signal_date = tx_rows[0].get("transaction_date") or (filed_date + timedelta(days=1))
 
         aggregate_score, breakdown_combined, scored_txs, participant_scores = _score_ticker_txs(
-            ticker, tx_rows, all_prior
+            ticker, tx_rows, all_prior, history_start
         )
 
         if not scored_txs:
             n_ineligible += 1
             continue
 
-        cluster_info  = cluster_from_transactions(all_ticker_txs, filed_date)
+        cluster_info  = cluster_from_transactions(_disclosed_by(all_ticker_txs, filed_date), filed_date)
         is_cluster    = cluster_info.get("is_cluster", False)
         tight_cluster = cluster_info.get("tight_cluster", False)
         cluster_n     = cluster_info.get("insider_count", 0)

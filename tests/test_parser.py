@@ -96,3 +96,38 @@ def test_parse_form4_10b51_footnote_detected():
     xml = MINIMAL_FORM4.replace("</ownershipDocument>", "<footnote>Sale under a Rule 10b5-1 plan</footnote></ownershipDocument>")
     parsed = parse_form4(xml, {})
     assert parsed["transactions"][0]["is_10b51"] is True
+
+
+def test_aff10b5one_flag_marks_every_transaction():
+    """<aff10b5One> is filing-wide; when set the whole filing is plan activity."""
+    xml = MINIMAL_FORM4.replace("<nonDerivativeTable>", "<aff10b5One>1</aff10b5One><nonDerivativeTable>")
+    assert parse_form4(xml, {})["transactions"][0]["is_10b51"] is True
+
+    clear = MINIMAL_FORM4.replace("<nonDerivativeTable>", "<aff10b5One>0</aff10b5One><nonDerivativeTable>")
+    assert parse_form4(clear, {})["transactions"][0]["is_10b51"] is False
+
+
+def test_10b51_footnote_does_not_leak_across_transactions():
+    """
+    A filing may pair a 10b5-1 plan sale with an ordinary open-market buy. Only
+    the transaction that references the plan footnote is disqualified. Scanning
+    the whole document, as this used to, threw away the buy as well.
+    """
+    plan_sale = """
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-05-12</value></transactionDate>
+      <transactionCoding><transactionCode>S</transactionCode><footnoteId id="F1"/></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>100</value></transactionShares>
+        <transactionPricePerShare><value>20</value></transactionPricePerShare>
+      </transactionAmounts>
+    </nonDerivativeTransaction>"""
+    xml = MINIMAL_FORM4.replace(
+        "<nonDerivativeTable>", "<aff10b5One>0</aff10b5One><nonDerivativeTable>" + plan_sale
+    ).replace(
+        "</ownershipDocument>",
+        '<footnotes><footnote id="F1">Effected pursuant to a Rule 10b5-1 trading plan.</footnote></footnotes></ownershipDocument>',
+    )
+    txs = {t["transaction_code"]: t for t in parse_form4(xml, {})["transactions"]}
+    assert txs["S"]["is_10b51"] is True
+    assert txs["P"]["is_10b51"] is False

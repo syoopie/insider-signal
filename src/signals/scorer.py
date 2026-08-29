@@ -21,10 +21,17 @@ Cluster qualification note:
   no single insider cleared 50. The collective action is the signal.
 
 Score factor mutual exclusivity (timing factors):
-  Three mutually exclusive purchase-history factors — exactly one fires per signal:
-  - sequenced_buying_30d    (+10): prior buy within 30 days (rapid sequence)
-  - prior_purchase_31_365d  (+15): prior buy in 31-364 days (sustained conviction)
-  - first_purchase_12mo     (-10): no prior buy in 365 days — first-time buyer penalty
+  Four mutually exclusive purchase-history factors — exactly one fires per signal:
+  - sequenced_buying_30d        (+10): prior buy within 30 days (rapid sequence)
+  - prior_purchase_31_365d      (+15): prior buy in 31-364 days (sustained conviction)
+  - first_purchase_12mo         (-10): no prior buy in 365 days, and the database
+                                       covers that whole year so the absence is real
+  - first_purchase_unverifiable   (0): no prior buy, but the database does not reach
+                                       back a full year before the trade
+
+Scores are a pure function of stored data. Nothing here reads a live price, so
+the live ingest path and the historical backfill always agree on a given
+transaction. Do not add a factor that only one of them can compute.
 """
 
 from datetime import date, timedelta
@@ -75,9 +82,16 @@ def score_transaction(
     company: dict,
     market_data: dict,
     prior_purchases: list,  # previous P transactions by same insider (any date)
+    history_start: Optional[date] = None,
 ) -> Optional[dict]:
     """
     Score a single transaction. Returns None if ineligible (not a P, is 10b5-1, etc.).
+
+    history_start is the earliest transaction date the database can see. Without
+    it, "no prior purchase in 365 days" is indistinguishable from "the database
+    does not go back 365 days", and every trade in the first year of coverage
+    collects the first_purchase_12mo penalty. Pass it and the penalty is withheld
+    when the lookback window is not fully observable.
 
     Returns:
         {
@@ -213,22 +227,23 @@ def score_transaction(
         # Sustained conviction: prior buy 31-364 days ago (+2.4%/60d).
         breakdown["prior_purchase_31_365d"] = 15
         score += 15
+    elif history_start is not None and cutoff_365d < history_start:
+        # The year before this trade is outside what the database stores, so the
+        # absence of a prior purchase is not evidence of one. Charging the
+        # penalty here made it fire on 87% of pre-2025-04 signals against 32%
+        # after, which is a property of the ingest start date, not the insider.
+        breakdown["first_purchase_unverifiable"] = 0
     else:
         # First-time buyer in 12mo: -4.2%/-1.7% lift (n=174/156, round 4). Strengthen penalty.
         breakdown["first_purchase_12mo"] = -10
         score += -10
 
-    # --- Near 52-week low (tiered) ---
-    price = float(transaction.get("price_per_share") or 0) or None
-    low_52wk = market_data.get("price_52wk_low")
-    if price and low_52wk and low_52wk > 0:
-        pct_above_low = (price - low_52wk) / low_52wk * 100
-        if pct_above_low <= 5:
-            breakdown["near_52wk_low_5pct"] = 12
-            score += 12
-        elif pct_above_low <= 10:
-            breakdown["near_52wk_low_10pct"] = 7
-            score += 7
+    # The 52-week-low factor was removed. It could only ever fire in the live
+    # path, because the historical backfill has no price history to compare
+    # against, so the same purchase scored up to 12 points higher depending on
+    # which entry point happened to see it. It was also comparing the purchase
+    # price against *today's* 52-week low rather than the low as of the trade.
+    # Reinstating it means storing the low as of the transaction date at ingest.
 
     return {
         "score": min(score, 100),

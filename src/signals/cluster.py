@@ -173,9 +173,10 @@ def detect_clusters_for_ticker(ticker: str, as_of_date: date) -> dict:
 
 def get_tickers_with_recent_purchases(since_date: date) -> List[str]:
     """
-    Returns all tickers that have at least one open-market purchase (P)
-    with a transaction_date >= since_date. Used to know which tickers
-    to run the cluster detector on.
+    Tickers with at least one open-market purchase *disclosed* since since_date.
+
+    Keyed off filed_date rather than transaction_date so a Form 4 reporting an
+    older trade still puts its ticker in the scoring queue on the day it lands.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -187,7 +188,7 @@ def get_tickers_with_recent_purchases(since_date: date) -> List[str]:
                 JOIN companies c ON c.cik = f.cik
                 WHERE t.transaction_code = 'P'
                   AND t.is_10b51 = FALSE
-                  AND t.transaction_date >= %s
+                  AND f.filed_date >= %s
                   AND c.ticker IS NOT NULL
                   AND c.ticker NOT IN ('NONE', 'NA', 'N/A', 'NULL', '')
                 """,

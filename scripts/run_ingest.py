@@ -30,7 +30,7 @@ from src.db.connection import apply_schema, get_conn
 from src.ingest.edgar import fetch_form4_index
 from src.db.store import (
     write_filing,
-    update_company_market_data, get_last_filed_date,
+    update_company_market_data, get_last_filed_date, get_history_start,
     save_signal, mark_signal_alerted, prune_old_data,
 )
 from src.market.prices import get_market_data
@@ -161,9 +161,15 @@ def main():
     _phase("SIGNAL SCORING")
     t0 = time.time()
 
+    # Window on filed_date, not transaction_date. A Form 4 may disclose a trade
+    # made months earlier; keying off the trade date meant those filings were
+    # stored and then never scored by anything. 4.8% of purchases were landing
+    # in that hole, 178 of them direct and over $25k.
     recent_date = today - timedelta(days=7)
+    history_start = get_history_start()
     tickers_to_score = get_tickers_with_recent_purchases(recent_date)
-    _log(f"Tickers with purchases in past 7 days: {len(tickers_to_score)}")
+    _log(f"Tickers with purchases filed in past 7 days: {len(tickers_to_score)}")
+    _log(f"History floor for first-purchase checks: {history_start or 'unknown'}")
 
     n_buy = n_cluster = n_watch = 0
     n_low = n_no_eligible = 0
@@ -183,7 +189,7 @@ def main():
                         JOIN companies c ON c.cik = f.cik
                         WHERE c.ticker = %s
                           AND t.transaction_code = 'P'
-                          AND t.transaction_date >= %s
+                          AND f.filed_date >= %s
                         ORDER BY t.insider_name, t.transaction_date, t.transaction_code,
                                  f.filed_date DESC
                     ) deduped
@@ -230,7 +236,8 @@ def main():
             prior_for_insider = [p for p in all_prior if p.get("insider_name") == owner["name"]]
             company = {"cap_tier": tx_row.get("cap_tier") or (mdata.get("cap_tier") if mdata else None)}
 
-            result = score_transaction(tx_row, owner, company, mdata, prior_for_insider)
+            result = score_transaction(tx_row, owner, company, mdata, prior_for_insider,
+                                       history_start=history_start)
             if result and result.get("eligible"):
                 scored_txs.append({"owner": owner, "transaction": tx_row, "score_result": result})
                 if result["score"] > aggregate_score:
@@ -322,7 +329,10 @@ def main():
             _log(f"  {ticker:<6}  signal saved (id={signal_id})"
                  + (" [already alerted]" if already_alerted else ""))
 
-        if signal_type == "CLUSTER_BUY":
+        # BUY alerts as well as CLUSTER_BUY. Only CLUSTER_BUY ever notified,
+        # despite both the stack table and the alerting docs promising both, so
+        # every BUY the pipeline has ever produced went unannounced.
+        if signal_type in ("CLUSTER_BUY", "BUY"):
             if signal_id != 0 and not already_alerted:
                 sent = send_signal(evidence)
                 _log(f"  {ticker:<6}  Telegram alert {'SENT' if sent else 'FAILED'}")
@@ -330,9 +340,10 @@ def main():
                     mark_signal_alerted(signal_id)
             elif already_alerted:
                 _log(f"  {ticker:<6}  Telegram alert SKIPPED (already sent)")
-            n_cluster += 1
-        elif signal_type == "BUY":
-            n_buy += 1
+            if signal_type == "CLUSTER_BUY":
+                n_cluster += 1
+            else:
+                n_buy += 1
         else:
             n_watch += 1
 
