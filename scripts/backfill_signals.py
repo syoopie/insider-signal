@@ -54,13 +54,12 @@ from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.db.connection import get_conn
 from src.db.purchases import purchase_rollup
 from src.db.store import batch_save_signals, get_history_start
+from src.signals.batch import SCORING_WINDOW_DAYS, score_window, window_start_for
 from src.signals.cluster import cluster_from_transactions
-from src.signals.scorer import score_transaction, classify_signal, cluster_size_bonus, filing_lag_bonus
+from src.signals.scorer import classify_signal, cluster_size_bonus, filing_lag_bonus
 from src.signals.formatter import build_evidence
 
 setup_log_tee("backfill")
-
-SCORING_WINDOW_DAYS = 7   # mirror run_ingest: score P transactions from last N days
 
 
 # ── Bulk data loaders ─────────────────────────────────────────────────────────
@@ -147,7 +146,7 @@ def _get_window_txs(all_ticker_txs: list[dict], filed_date: date) -> tuple[list,
     Windowing on filed_date mirrors live ingest. Windowing on transaction_date,
     as this did, silently dropped every trade reported more than a week late.
     """
-    window_start = filed_date - timedelta(days=SCORING_WINDOW_DAYS - 1)
+    window_start = window_start_for(filed_date)
     tx_rows, all_prior = [], []
     for tx in all_ticker_txs:
         fd = tx.get("filed_date")
@@ -198,47 +197,8 @@ def _disclosed_by(all_ticker_txs: list[dict], as_of: date) -> list[dict]:
     return out
 
 
-def _score_ticker_txs(
-    ticker: str,
-    tx_rows: list[dict],
-    all_prior: list[dict],
-    history_start: date | None = None,
-) -> tuple[int, dict, list, list]:
-    """
-    Score all eligible transactions.
-    Returns (aggregate_score, breakdown, scored_txs, participant_scores).
-    aggregate_score: max individual score (used for BUY threshold).
-    participant_scores: all individual eligible scores (used for cluster avg).
-    """
-    scored_txs = []
-    aggregate_score = 0
-    breakdown_combined = {}
-    participant_scores = []
-
-    for tx_row in tx_rows:
-        cap_tier = tx_row.get("cap_tier") or "unknown"
-        owner = {
-            "name":          tx_row.get("insider_name"),
-            "role_raw":      tx_row.get("insider_role"),
-            "role_category": tx_row.get("role_category"),
-        }
-        company = {"cap_tier": cap_tier}
-        mdata   = {"cap_tier": cap_tier}   # no live 52wk low for historical backfill
-
-        prior_for_insider = [
-            p for p in all_prior if p.get("insider_name") == owner["name"]
-        ]
-
-        result = score_transaction(tx_row, owner, company, mdata, prior_for_insider,
-                                   history_start=history_start)
-        if result and result.get("eligible"):
-            scored_txs.append({"owner": owner, "transaction": tx_row, "score_result": result})
-            participant_scores.append(result["score"])
-            if result["score"] > aggregate_score:
-                aggregate_score = result["score"]
-                breakdown_combined = result["breakdown"]
-
-    return aggregate_score, breakdown_combined, scored_txs, participant_scores
+# Per-purchase scoring lives in src/signals/batch.py so the research dataset
+# builder scores exactly the way this does. See that module for why.
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -347,9 +307,11 @@ def main():
         # Date of the latest purchase in the window (tx_rows sorted DESC by transaction_date)
         signal_date = tx_rows[0].get("transaction_date") or (filed_date + timedelta(days=1))
 
-        aggregate_score, breakdown_combined, scored_txs, participant_scores = _score_ticker_txs(
-            ticker, tx_rows, all_prior, history_start
-        )
+        window = score_window(tx_rows, all_prior, history_start)
+        aggregate_score = window.aggregate_score
+        breakdown_combined = window.breakdown
+        scored_txs = window.scored_txs
+        participant_scores = window.participant_scores
 
         if not scored_txs:
             n_ineligible += 1
