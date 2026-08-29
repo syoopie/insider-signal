@@ -46,6 +46,7 @@ from psycopg2.extras import RealDictCursor
 
 from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.db.connection import get_conn
+from src.db.purchases import purchase_rollup
 from src.db.store import batch_save_signals, get_history_start
 from src.signals.cluster import cluster_from_transactions
 from src.signals.scorer import score_transaction, classify_signal, cluster_size_bonus, filing_lag_bonus
@@ -87,27 +88,14 @@ def _bulk_load_transactions(tickers: list[str]) -> dict[str, list[dict]]:
     """
     if not tickers:
         return {}
+    sql = f"""
+        SELECT * FROM ({purchase_rollup('AND c.ticker = ANY(%s)')}) rolled
+        WHERE is_10b51 IS NOT TRUE
+        ORDER BY ticker, transaction_date DESC
+    """
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT * FROM (
-                    SELECT DISTINCT ON (c.ticker, t.insider_name, t.transaction_date, t.transaction_code)
-                        t.*, f.filed_date, c.ticker, c.cik, c.cap_tier,
-                        c.name AS company_name
-                    FROM transactions t
-                    JOIN form4_filings f ON f.id = t.filing_id
-                    JOIN companies c ON c.cik = f.cik
-                    WHERE t.transaction_code = 'P'
-                      AND c.ticker = ANY(%s)
-                    ORDER BY c.ticker, t.insider_name, t.transaction_date, t.transaction_code,
-                             f.filed_date DESC
-                ) deduped
-                WHERE is_10b51 = FALSE
-                ORDER BY ticker, transaction_date DESC
-                """,
-                (tickers,),
-            )
+            cur.execute(sql, (tickers,))
             rows = [dict(r) for r in cur.fetchall()]
 
     by_ticker: dict[str, list[dict]] = defaultdict(list)

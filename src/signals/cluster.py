@@ -27,6 +27,7 @@ from typing import List
 from psycopg2.extras import RealDictCursor
 
 from src.db.connection import get_conn
+from src.db.purchases import purchase_rollup
 
 CLUSTER_WINDOW_DAYS = 14
 CLUSTER_MIN_INSIDERS = 3
@@ -139,33 +140,25 @@ def detect_clusters_for_ticker(ticker: str, as_of_date: date) -> dict:
     """
     window_start = as_of_date - timedelta(days=CLUSTER_WINDOW_DAYS)
 
+    # The $25k floor is applied to the rolled-up day total, not to individual
+    # broker fills, so an insider who bought $40k across three tranches still
+    # counts toward the cluster.
+    sql = f"""
+        SELECT DISTINCT ON (insider_name)
+            insider_name, role_category, transaction_date,
+            total_value, price_per_share, shares, is_direct
+        FROM ({purchase_rollup('''
+              AND c.ticker = %s
+              AND t.transaction_date BETWEEN %s AND %s
+              AND t.is_direct = TRUE
+        ''')}) rolled
+        WHERE is_10b51 IS NOT TRUE
+          AND COALESCE(total_value, 0) >= %s
+        ORDER BY insider_name, transaction_date DESC
+    """
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT ON (insider_name)
-                    insider_name, role_category, transaction_date,
-                    total_value, price_per_share, shares, is_direct
-                FROM (
-                    SELECT DISTINCT ON (t.insider_name, t.transaction_date, t.transaction_code)
-                        t.insider_name, t.role_category, t.transaction_date,
-                        t.total_value, t.price_per_share, t.shares, t.is_10b51, t.is_direct
-                    FROM transactions t
-                    JOIN form4_filings f ON f.id = t.filing_id
-                    JOIN companies c ON c.cik = f.cik
-                    WHERE c.ticker = %s
-                      AND t.transaction_code = 'P'
-                      AND t.transaction_date BETWEEN %s AND %s
-                      AND t.is_direct = TRUE
-                      AND COALESCE(t.total_value, 0) >= %s
-                    ORDER BY t.insider_name, t.transaction_date, t.transaction_code,
-                             f.filed_date DESC
-                ) deduped
-                WHERE is_10b51 = FALSE
-                ORDER BY insider_name, transaction_date DESC
-                """,
-                (ticker.upper(), window_start, as_of_date, CLUSTER_MIN_VALUE),
-            )
+            cur.execute(sql, (ticker.upper(), window_start, as_of_date, CLUSTER_MIN_VALUE))
             rows = [dict(r) for r in cur.fetchall()]
 
     return cluster_from_transactions(rows, as_of_date)
