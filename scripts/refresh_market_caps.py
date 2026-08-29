@@ -26,7 +26,7 @@ import requests
 
 from src.ingest.common import setup_log_tee, log, phase
 from src.db.connection import get_conn
-from src.market.prices import get_cap_tier, sanitize_market_cap
+from src.market.prices import MIN_PLAUSIBLE_MARKET_CAP, get_cap_tier, sanitize_market_cap
 
 setup_log_tee("refresh_market_caps")
 
@@ -125,11 +125,35 @@ def _fetch_price(ticker: str) -> float | None:
 _EDGAR_FALLBACK_SLEEP = 0.35   # ~3 req/sec for per-company EDGAR calls
 
 
+def _resanitize_stored_caps() -> int:
+    """
+    Clear market caps that sanitize_market_cap would reject today.
+
+    The guard runs when a cap is written, so rows stored before it existed keep
+    their bad values forever: FOX at $58, MBUU at $298, 14 companies tiered
+    'small' and drawing the +15 small-cap bonus on a failed lookup. Doing this
+    on every refresh means the rule applies to the whole table, not just to
+    whatever the current run happens to touch.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE companies SET market_cap = NULL, cap_tier = 'unknown', updated_at = now() "
+                "WHERE market_cap IS NOT NULL AND market_cap < %s",
+                (MIN_PLAUSIBLE_MARKET_CAP,),
+            )
+            return cur.rowcount
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--force", action="store_true",
                         help="Re-fetch even tickers that already have market_cap set")
     args = parser.parse_args()
+
+    phase("Re-sanitizing stored market caps")
+    cleared = _resanitize_stored_caps()
+    log(f"  Cleared {cleared} implausible cap(s) → unknown")
 
     phase("Loading shares outstanding from EDGAR frames")
     shares_by_cik = _fetch_shares_outstanding()
