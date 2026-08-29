@@ -28,6 +28,9 @@ pnpm install
 pnpm dev            # http://localhost:3000
 ```
 
+`scripts/dev/start.sh` (or `start.ps1` / `start.bat` on Windows) does the install,
+`.env.local` seeding, `pnpm dev`, and browser-open in one step.
+
 `.env.local` is gitignored. The only variable the app needs is `DATABASE_URL`
 (the same Neon connection string the Python side uses). `NEXT_PUBLIC_SITE_URL`
 is optional and only affects Open Graph metadata.
