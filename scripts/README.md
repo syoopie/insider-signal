@@ -9,7 +9,7 @@ GitHub Actions secret in CI).
 | Script | When | What it does |
 | --- | --- | --- |
 | `run_ingest.py` | `daily_ingest.yml`, weekdays 11:00 UTC | Fetch new Form 4s since the last run, score them, write signals, send alerts. |
-| `run_backtest.py` | `weekly_backtest.yml`, Sundays 12:00 UTC | Re-evaluate historical BUY / CLUSTER_BUY signals against realised prices. `LOOKBACK_DAYS = 730`. |
+| `run_backtest.py` | `weekly_backtest.yml`, Sundays 12:00 UTC | Re-evaluate historical BUY / CLUSTER_BUY signals against realised prices. `LOOKBACK_DAYS = 730`. Pass `--label <name>` to store a research run without overwriting the dashboard's rows. |
 
 ## Operational (run by hand when needed)
 
@@ -21,6 +21,7 @@ GitHub Actions secret in CI).
 | `update_tickers.py` | Quarterly — refreshes the S&P 500 + Russell 2000 universe in `companies`. |
 | `backfill_sic.py` | Once after the first ingest, then rarely — fills `companies.sic_code` / `sic_description` for `/sectors`. |
 | `purge_debt_transactions.py` | Rarely — removes Table I rows reporting notes rather than stock, which store a principal amount in both the share and price fields. The parser now skips these; this clears rows written before that. `--dry-run`. |
+| `apply_schema.py` | After editing `src/db/schema.sql`. Every statement there is idempotent, so this adds what is missing and touches nothing else. `--dry-run`. |
 
 ## Analysis
 

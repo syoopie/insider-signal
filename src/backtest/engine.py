@@ -430,25 +430,40 @@ def run_backtest(threshold: int = BUY_SCORE, lookback_days: int = 730) -> List[D
     return results
 
 
-def save_backtest_results(results: List[Dict], threshold: int) -> None:
+SCHEDULED_LABEL = "scheduled"
+
+
+def save_backtest_results(results: List[Dict], threshold: int,
+                          label: str = SCHEDULED_LABEL) -> None:
+    """
+    Store one row per horizon, replacing only rows with the same label.
+
+    The delete used to key on (run_date, threshold) alone, which kept the weekly
+    run idempotent but meant any second run that day silently destroyed the
+    first. That is fatal for before/after work: measuring a scoring change
+    against yesterday's baseline overwrites the baseline as it goes. Labelling
+    an experiment keeps both rows and leaves 'scheduled' — the only label the
+    dashboard reads — untouched.
+    """
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Replace any existing rows for today + this threshold so re-runs don't accumulate duplicates.
             cur.execute(
-                "DELETE FROM backtest_runs WHERE run_date = NOW()::DATE AND threshold = %s",
-                (threshold,),
+                "DELETE FROM backtest_runs "
+                "WHERE run_date = NOW()::DATE AND threshold = %s AND run_label = %s",
+                (threshold, label),
             )
             for r in results:
                 cur.execute(
                     """
                     INSERT INTO backtest_runs
-                        (run_date, threshold, horizon_days, n_trades,
+                        (run_date, threshold, run_label, horizon_days, n_trades,
                          hit_rate, avg_return, median_return, p25_return, p75_return,
                          sharpe, iwm_avg_return, metrics)
-                    VALUES (NOW()::DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (NOW()::DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         threshold,
+                        label,
                         r["horizon_days"],
                         r["n_trades"],
                         r["hit_rate"],
@@ -461,7 +476,7 @@ def save_backtest_results(results: List[Dict], threshold: int) -> None:
                         json.dumps(r.get("metrics", {})),
                     ),
                 )
-    log(f"Saved {len(results)} horizon result(s) to backtest_runs.")
+    log(f"Saved {len(results)} horizon result(s) to backtest_runs under label '{label}'.")
 
 
 # Column order for both signal queries below. `id` is carried through into the

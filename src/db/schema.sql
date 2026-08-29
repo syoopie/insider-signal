@@ -93,3 +93,10 @@ ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS median_return  NUMERIC;
 ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS p25_return     NUMERIC;
 ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS p75_return     NUMERIC;
 ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS iwm_avg_return NUMERIC;
+-- Which run this row belongs to. save_backtest_results() replaces rows sharing
+-- (run_date, threshold, run_label), so the scheduled weekly run stays idempotent
+-- while a labelled experiment gets its own rows instead of destroying the
+-- baseline it is meant to be compared against. The dashboard reads 'scheduled'
+-- only. Backfilled to 'scheduled' because every pre-existing row is one.
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS run_label TEXT NOT NULL DEFAULT 'scheduled';
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_label ON backtest_runs (run_label, run_date DESC);

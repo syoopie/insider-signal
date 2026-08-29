@@ -162,7 +162,8 @@ scripts/run_backtest.py
     src/backtest/engine.py
         run_backtest(threshold=65,          ← queries signals, fetches historical prices from YF,
                      lookback_days=730)       computes excess returns vs SPY/IWM
-        save_backtest_results(results)      ← upserts backtest_runs (deletes today's rows first)
+        save_backtest_results(results)      ← upserts backtest_runs (replaces today's rows
+                                              for this run_label only)
     ↓
 web/ (Next.js on Vercel)                    ← reads all tables, no writes; read-only
 ```
@@ -353,6 +354,8 @@ purpose: "when did the insider buy" is the useful axis for triage.
 ```
 id             SERIAL PRIMARY KEY
 run_date       DATE            — date the backtest script ran (NOT the signal dates evaluated)
+run_label      TEXT            — 'scheduled' for the weekly job; anything else is a research
+                                 run. Only 'scheduled' rows reach the dashboard.
 threshold      INT             — score threshold used (always 65)
 horizon_days   INT             — hold horizon: 30, 60, 90, or 180
 n_trades       INT             — number of signals evaluated for this horizon
@@ -389,8 +392,16 @@ created_at     TIMESTAMPTZ
 `detail` is the per-signal return list — the dashboard avg-return chart is built from
 `exec_date` in this field, NOT from `run_date`. This gives the full 730-day coverage.
 
-**`save_backtest_results()` behavior**: deletes all rows where `run_date = TODAY AND threshold = 65`
-before inserting. Safe to re-run on the same day. Historical runs accumulate indefinitely.
+**`save_backtest_results()` behavior**: deletes all rows where
+`run_date = TODAY AND threshold = 65 AND run_label = <label>` before inserting. Safe to
+re-run on the same day. Historical runs accumulate indefinitely.
+
+**`run_label` exists so a second run on the same day cannot destroy the first.** The delete
+used to key on `(run_date, threshold)` alone, which kept the weekly job idempotent but meant
+a research re-run silently overwrote the baseline it was supposed to be compared against.
+`scripts/run_backtest.py --label <name>` writes its own rows. **The dashboard and the
+freshness bar read `run_label = 'scheduled'` only**, so anything that queries `backtest_runs`
+for display must filter on it or an experiment will leak onto the site.
 
 ---
 
@@ -576,9 +587,10 @@ that prove someone is routine would be deleted before the check runs.
 6. Computes rolling 90-day hit rate time series (every 14 days)
 7. Stores everything in `metrics` JSONB including full `detail` list
 
-### `save_backtest_results(results, threshold)`
-- Deletes `WHERE run_date = NOW()::DATE AND threshold = %s` before inserting
-- Safe to re-run; does NOT delete historical runs from prior weeks
+### `save_backtest_results(results, threshold, label="scheduled")`
+- Deletes `WHERE run_date = NOW()::DATE AND threshold = %s AND run_label = %s` before inserting
+- Safe to re-run; does NOT delete historical runs from prior weeks, and does not touch
+  rows written under a different label
 
 ### Market Price Fetching (`src/market/prices.py`)
 - `get_price_change_pct(ticker, start_date, end_date)` → uses Yahoo Finance chart API
@@ -663,7 +675,10 @@ git push
 ### To re-run the backtest locally:
 ```bash
 uv run python scripts/run_backtest.py
-# Safe to re-run — deletes today's rows before inserting
+# Safe to re-run — replaces today's 'scheduled' rows before inserting
+
+uv run python scripts/run_backtest.py --label adjclose-check
+# Same evaluation, stored separately. Does not touch the dashboard's rows.
 ```
 
 ### To trigger a backtest immediately (without waiting for Sunday):

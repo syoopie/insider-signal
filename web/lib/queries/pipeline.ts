@@ -42,7 +42,10 @@ export const getPipelineStatus = unstable_cache(
           (SELECT MAX(fetched_at)::text FROM form4_filings)          AS last_fetched,
           (SELECT MAX(filed_date)::text FROM form4_filings)          AS last_filed,
           (SELECT MIN(filed_date)::text FROM form4_filings)          AS coverage_start,
-          (SELECT MAX(run_date)::text   FROM backtest_runs)          AS last_backtest,
+          -- 'scheduled' only: a labelled research run must not make the
+          -- pipeline look fresher than the weekly job actually left it.
+          (SELECT MAX(run_date)::text   FROM backtest_runs
+             WHERE run_label = 'scheduled')                           AS last_backtest,
           (SELECT MAX(signal_date)::text FROM signals)               AS latest_signal
       `),
       queryOne<{

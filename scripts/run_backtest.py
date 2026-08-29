@@ -7,11 +7,12 @@ and stores results in backtest_runs for dashboard display.
 Nothing to run until signals are at least 33 days old (30d horizon + 3d lag).
 """
 
+import argparse
 import sys
 from datetime import date, datetime
 
 from src.ingest.common import setup_log_tee, log, phase
-from src.backtest.engine import run_backtest, save_backtest_results
+from src.backtest.engine import SCHEDULED_LABEL, run_backtest, save_backtest_results
 from src.alerts.telegram import send_error
 from src.signals.constants import BUY_SCORE
 
@@ -22,13 +23,22 @@ LOOKBACK_DAYS = 730
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Evaluate stored signals against realised prices.")
+    parser.add_argument(
+        "--label", default=SCHEDULED_LABEL,
+        help="Name this run. Rows replace only rows sharing the label, and the "
+             f"dashboard reads '{SCHEDULED_LABEL}' only. Pass anything else to "
+             "compare a change without overwriting the baseline.",
+    )
+    args = parser.parse_args()
+
     print(f"=== Weekly Backtest — {date.today()} (UTC {datetime.utcnow().strftime('%H:%M:%S')}) ===")
 
     results = run_backtest(threshold=THRESHOLD, lookback_days=LOOKBACK_DAYS)
 
     phase("WRAP UP")
     if results:
-        save_backtest_results(results, threshold=THRESHOLD)
+        save_backtest_results(results, threshold=THRESHOLD, label=args.label)
     else:
         log("No results to save.")
 

@@ -10,11 +10,13 @@ and prints:
 
 Run locally with DATABASE_URL in env or .env file.
 """
+import argparse
 import json
 from collections import defaultdict
 from datetime import date as dt
 from statistics import mean, stdev
 
+from src.backtest.engine import SCHEDULED_LABEL
 from src.db.connection import get_conn
 
 ALL_FACTORS = [
@@ -169,22 +171,29 @@ def analyze_horizon(horizon: int, detail: list, signals_by_id: dict):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Factor-return correlation report (read-only).")
+    parser.add_argument("--label", default=SCHEDULED_LABEL,
+                        help="Which backtest run to analyse. Defaults to the scheduled one.")
+    args = parser.parse_args()
+
     print("=== Factor-Return Correlation Analysis ===")
-    print("Loading latest backtest run...\n")
+    print(f"Loading latest '{args.label}' backtest run...\n")
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT horizon_days, metrics
                 FROM backtest_runs
-                WHERE run_date = (SELECT MAX(run_date) FROM backtest_runs)
+                WHERE run_label = %s
+                  AND run_date = (SELECT MAX(run_date) FROM backtest_runs WHERE run_label = %s)
                   AND horizon_days IN (60, 90, 30, 180)
                 ORDER BY horizon_days
-            """)
+            """, (args.label, args.label))
             rows = cur.fetchall()
 
     if not rows:
-        print("No backtest data found. Run 'python3 scripts/run_backtest.py' first.")
+        print(f"No backtest data found under label '{args.label}'.")
+        print("Run 'python3 scripts/run_backtest.py' first.")
         return
 
     # Join on signal_id. Detail rows written before that field existed cannot be

@@ -111,7 +111,8 @@ export const getBacktest = unstable_cache(
         horizon_days, n_trades, hit_rate, avg_return, median_return,
         p25_return, p75_return, sharpe, iwm_avg_return, metrics
       FROM backtest_runs
-      WHERE run_date = (SELECT MAX(run_date) FROM backtest_runs)
+      WHERE run_label = 'scheduled'
+        AND run_date = (SELECT MAX(run_date) FROM backtest_runs WHERE run_label = 'scheduled')
       ORDER BY horizon_days, threshold DESC
     `);
 
