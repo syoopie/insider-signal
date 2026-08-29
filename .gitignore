@@ -12,6 +12,9 @@ __pycache__/
 venv/
 dist/
 build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Data files (large, regenerated)
 data/*.parquet

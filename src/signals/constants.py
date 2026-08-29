@@ -3,8 +3,8 @@ Signal-classification thresholds — the score cutoffs that turn a number into a
 BUY / WATCH / CLUSTER_BUY label.
 
 Changing any value here invalidates every signal already in the database. The
-golden rule applies: rerun `scripts/ops/backfill_signals.py --days 730 --force`
-then `scripts/pipeline/run_backtest.py`.
+golden rule applies: rerun `scripts/backfill_signals.py --days 730 --force`
+then `scripts/run_backtest.py`.
 
 Cluster *detection* parameters (window length, minimum insiders, minimum value)
 live in `cluster.py` — they define what a cluster is, not how a score maps to a
