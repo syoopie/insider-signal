@@ -27,10 +27,23 @@ GitHub Actions secret in CI).
 
 | Script | Purpose |
 | --- | --- |
-| `analyze_factors.py` | Factor-return correlation report from the latest backtest run. Read-only. `--label` selects which run. |
-| `build_price_panel.py` | Once, then when the window needs widening — fetches daily adjusted prices for every ticker with a purchase, plus benchmarks, into `data/prices/panel.parquet`. ~12 min, resumable, idempotent. `--coverage` reports without fetching. |
-| `build_research_dataset.py` | After any panel rebuild — joins the purchase rollup to the panel and writes one labelled row per insider purchase-day. Seconds, no network. |
-| `verify_price_panel.py` | After any panel rebuild — proves the panel reproduces the network-measured backtest. Exits non-zero if it does not. |
+| `analyze_factors.py` | Legacy univariate lift report from the latest backtest run. Superseded by `estimate_factors.py`; kept because the dashboard's factor commentary still quotes it. `--label` selects which run. |
+
+## Scoring research
+
+Run these in order. The whole chain takes about 12 minutes the first time and
+seconds after that, because only the first step touches the network. See
+`docs/scoring-improvement-plan.md` for what they are for and what they found.
+
+| Script | Purpose |
+| --- | --- |
+| `build_price_panel.py` | Fetch daily adjusted prices for every ticker with a purchase, plus benchmarks, into `data/prices/panel.parquet`. ~12 min, resumable, idempotent. `--coverage` reports without fetching. |
+| `verify_price_panel.py` | Prove the panel reproduces the network-measured backtest. Exits non-zero if it does not. Run after any panel rebuild. |
+| `build_research_dataset.py` | Join the purchase rollup to the panel and write one labelled, scored row per insider purchase-day, including the LOW class the signals table discards. |
+| `verify_scoring_parity.py` | Prove the research dataset scores purchases the way the pipeline does. Exits non-zero below 99% agreement. |
+| `evaluate_model.py` | Run the evaluation protocol: time-ordered splits, purge and embargo, decile ranking, and the four baselines. `--split test` is a one-time look. |
+| `estimate_factors.py` | Which candidate factors predict, multivariate, clustered on ticker, FDR-corrected. Replaces univariate lift. |
+| `fit_models.py` | Fit the candidate models, drop features that drift across the split boundary, select on validation. `--report-test` for the single pre-registered test evaluation. |
 | `audit_data.py` | 60+ data-quality checks across every table, plus the `src/db/purchases.py` rollup invariants. Prints `<-- LOOK` on anything non-zero. Read-only; run it after any pipeline change. |
 
 ## Local development

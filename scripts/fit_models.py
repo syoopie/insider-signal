@@ -273,9 +273,35 @@ def main():
     if args.report_test:
         phase("TEST SPLIT - looked at once")
         k_test = max(20, int(len(test) * SELECTION_RATE))
-        _report(_score_column(test, model, "_m"), "_m", f"{tag} on test",
-                args.horizon, k_test)
-        _report(test, "score", "current score on test", args.horizon, k_test)
+        for name, stat in evaluate_baselines(test, k_test, args.horizon).items():
+            log(stat.line(name))
+        log("")
+        test_res = _report(_score_column(test, model, "_m"), "_m", f"{tag} on test",
+                           args.horizon, k_test)
+        current_test = _report(test, "score", "current score on test",
+                               args.horizon, k_test)
+
+        phase("DOES IT REPLICATE?")
+        bars = {
+            "beats every baseline": test_res["mean"] > max(
+                s.mean for s in evaluate_baselines(test, k_test, args.horizon).values()
+                if s.mean is not None),
+            "ranks on the mean": (test_res["mean_spread"] or 0) > 0,
+            "ranks on the median": (test_res["median_spread"] or 0) > 0,
+            "beats chance": (test_res["random_percentile"] or 0) >= 95,
+            "clusters to t >= 2": (test_res["t"] or 0) >= 2.0,
+            "beats the current score": test_res["mean"] > current_test["mean"],
+        }
+        for name, passed in bars.items():
+            log(f"  {name:<28} {'yes' if passed else 'NO'}")
+        if all(bars.values()):
+            log("\n  Replicates on every pre-registered bar. Ship it.")
+        else:
+            failed = [n for n, p in bars.items() if not p]
+            log(f"\n  Fails {len(failed)} of {len(bars)} bars: {', '.join(failed)}.")
+            log("  The validation advantage did not survive. Do not ship this model.")
+            log("  A null result is the result, and reporting it is the point of "
+                "pre-registering.")
 
 
 if __name__ == "__main__":

@@ -514,16 +514,113 @@ Each phase ends in a falsifiable check. Do not start the next until the current 
 |---|---|---|
 | 1 | Adjusted closes (2.4); `signal_id` in backtest detail; purge stale signals | Backtest re-runs; measured delta from dividend adjustment reported per horizon. **Done 2026-08-29: +0.02 / +0.13 / +0.28 / +0.62pp at 30/60/90/180d** |
 | 2 | Price panel + `build_research_dataset.py` | ~~≥9,000~~ ≥7,500 labelled purchases at 90d; existing backtest reproduced within 0.5pp. **Done 2026-08-30: 7,576 labelled, 0.003pp** |
-| 3 | `scored_purchases` table; backfill writes LOW | Row count ≈ 9,477; every stored signal reconciles to its purchase rows |
-| 4 | Evaluation protocol as a committed script | Reproduces today's headline numbers on the test split; all four baselines computed |
-| 5 | Tier 1 features + multivariate estimation on train/validation | Ranked factor table with clustered SEs and BH-adjusted p-values |
-| 6 | `price_context` columns + Tier 2 features | Live and backfill paths produce identical values for the same transaction |
-| 7 | Fit A / B / C; select on validation | Chosen model beats all four baselines on validation at 60d and 90d |
-| 8 | Single test-set evaluation | Pre-registered. Report whatever it says, including a null result |
-| 9 | Ship: new weights, rank-based threshold, `/how-it-works` update, full backfill + backtest | Golden rule; `audit_data.py` clean |
+| 3 | Score the negative class | ~~`scored_purchases` table~~ **Done 2026-08-30: no new table. The backfill's scoring loop moved to `src/signals/batch.py` and the research builder calls it, so there is one definition and no second writer. 9,336 scored; parity with the pipeline 99.08%** |
+| 4 | Evaluation protocol as a committed script | **Done 2026-08-30: splits 2,925 / 1,536 / 762 with purge and embargo; all four baselines computed** |
+| 5 | Tier 1 features + multivariate estimation on train/validation | **Done 2026-08-30: 6 of 38 candidates survive FDR 5%, two of them the same finding at r=+0.92** |
+| 6 | Tier 2 features | **Done 2026-08-30 in the research dataset. The `price_context` columns on `transactions` were NOT added, because no model shipped that reads them. Add them only alongside a model that does** |
+| 7 | Fit A / B / C; select on validation | **Done 2026-08-30: B selected at +23.83% against the current score's +5.13%. C not fitted, sample too small. A stability guard was added mid-phase; see 7a** |
+| 8 | Single test-set evaluation | **Done 2026-08-30: fails 1 of 6 pre-registered bars, ranks on the median. Null result** |
+| 9 | Ship | **Nothing shipped that changes a score. Five corrections and the whole apparatus landed. See 7a** |
 
 Phases 1–4 change no scores and can land incrementally without invalidating the database.
 Phase 6 onward triggers the golden rule.
+
+## 7a. Outcomes, 2026-08-30
+
+All nine phases ran. **No scoring change shipped, and that is the finding.**
+
+### What the negative class showed (Phase 3)
+
+Scoring every purchase instead of only the ones the model selects turned 331
+priced signals into 8,306 labelled ones at 90 days. On that sample the score's
+deciles are flat and non-monotone: the bottom decile (scores −30 to 0) returns
++3.90% mean and +1.25% median excess, the top decile (46–61) returns about +5%
+mean and a *negative* median. Deciles 5 and 6 beat deciles 7, 8 and 9. Section
+2.1 argued from the weight table that the score was a four-factor conjunction
+rather than a ranking. This measures it.
+
+### What the factor estimates showed (Phase 5)
+
+Multivariate, clustered on ticker, Benjamini-Hochberg across 38 candidates, on
+the training split (n=3,655 over 819 tickers):
+
+| feature | beta per sd | verdict |
+|---|---|---|
+| net insider demand (`demand_buy_ratio`) | +6.08pp | survives FDR 5% |
+| `demand_net_dollars` | −6.09pp | same finding, r = +0.92 with the above |
+| `tx_pct_above_52wk_low` | +5.83pp | survives |
+| `tx_ret_21d` | −5.52pp | survives, short-term reversal |
+| `f_cap_small` | −4.75pp | survives, **opposite sign to its +15 weight** |
+| `f_role_director` (+16) | −0.31pp | indistinguishable from zero |
+| `f_holdings_increase_5pct` (+15) | +0.61pp | indistinguishable from zero |
+| `f_prior_purchase_31_365d` (+15) | −0.22pp | indistinguishable from zero |
+
+Three of the four load-bearing factors have no measurable effect and the fourth
+has the wrong sign, on the split where the model should look its best.
+
+### The stability guard the plan did not anticipate (Phase 7)
+
+The first fit returned +32% mean excess against a +10% baseline, on weights of
++20.9 and +19.2 for timing factors. That was not a model, it was a clock.
+`f_first_purchase_unverifiable` fires on **62.2% of training entries and 2.4% of
+validation ones**; `f_first_purchase_12mo` **never fires in training and fires on
+45.9% of validation**. Both rates are functions of how far back the database
+reaches on a given date. CLAUDE.md already records the same failure in the
+original factor, firing on 87% of pre-2025-04 signals against 32% after.
+
+`protocol.stable_features` now drops any candidate whose mean moves more than
+half a training standard deviation across a split boundary. Five go: both
+first-purchase factors, `tx_ret_63d`, `track_n_prior` and `filing_lag_days`.
+**This guard belongs in the plan permanently.** Any feature derived from what the
+database can see drifts as coverage accumulates, and no amount of correct
+cross-validation saves a model fitted on one coverage regime and deployed into
+another.
+
+### The pre-registered test evaluation (Phase 8)
+
+Model B, ridge logistic at alpha=100 on the 33 stable candidates, selected on
+validation where it returned +23.83% mean at top 153 against the current score's
++5.13%. On the test split, entries 2026-04-03 to 2026-06-01, top 76 of 762:
+
+| | mean | median | hit | t | decile spread mean / median |
+|---|---|---|---|---|---|
+| Model B | +16.62% | +9.38% | 73.7% | +3.40 | +4.49pp / **−0.59pp** |
+| current score | +12.83% | +9.71% | 75.0% | +3.77 | +4.24pp / +2.68pp |
+| all eligible | +8.26% | +6.24% | 65.0% | +5.12 | — |
+| small-cap only | +10.40% | +8.31% | 69.6% | +4.25 | — |
+| random, 76 | +15.78% | +12.89% | 78.9% | +5.29 | — |
+
+Six pre-registered bars, five passed. It fails **ranks on the median**, which is
+the one the whole exercise exists to fix. It also loses to the current score on
+median and hit rate, and a random selection of 76 beat both models on median and
+hit rate. The validation advantage did not survive.
+
+**Verdict: do not ship.** The correct action on this evidence is to change
+nothing about the scoring model.
+
+### Why the answer is "not yet" rather than "never"
+
+The obstacle is sample size and coverage, not method. The stable candidate set is
+33 features against 3,655 training rows clustered into 819 tickers and 11 months,
+inside a single market regime, with the drift guard removing exactly the features
+a longer history would make usable. Every part of the apparatus is committed and
+re-runnable in seconds; what it needs is more data.
+
+Re-run `build_price_panel.py`, `build_research_dataset.py`, `estimate_factors.py`
+and `fit_models.py` when the database holds roughly twice the history. The plan's
+own recommendation stands: prefer the simplest model that works, and treat a null
+result as publishable.
+
+### What did ship
+
+Nothing that changes a score. What landed is the apparatus and five corrections:
+
+- returns measured on dividend-adjusted closes (Phase 1)
+- `run_label` on `backtest_runs`, so a re-run cannot destroy its own baseline
+- a local price panel proven equivalent to the network path to 0.003pp
+- the negative class scored, with `verify_scoring_parity.py` holding the research
+  path and the pipeline to 99% agreement
+- `_clean_ticker` refusing tickers no price API can resolve
 
 ## 8. Risks
 

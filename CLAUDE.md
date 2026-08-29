@@ -408,12 +408,27 @@ for display must filter on it or an experiment will leak onto the site.
 ## Scoring Logic
 
 **Before changing any weight in this section, read
-[`docs/scoring-improvement-plan.md`](docs/scoring-improvement-plan.md).** The weights below
-were set by univariate lift measured on a sample the model itself selected, with no holdout.
-The score also has a *theoretical maximum of 61* against a BUY threshold of 60, so it is a
-four-factor conjunction rather than a ranking, and any weight change of more than a point
-relocates a large block of signals at once. The plan covers what to fix first and why adding
-factors to the current apparatus will not help.
+[`docs/scoring-improvement-plan.md`](docs/scoring-improvement-plan.md), especially section 7a.**
+The weights below were set by univariate lift measured on a sample the model itself selected,
+with no holdout. The score has a *theoretical maximum of 61* against a BUY threshold of 60,
+so it is a four-factor conjunction rather than a ranking.
+
+A full replacement attempt ran on 2026-08-30 and **produced a null result**. Measured on
+8,306 labelled purchases at 90d rather than the 331 the backtest prices:
+
+- The score does not rank. Its deciles are flat and non-monotone, and the bottom decile has
+  the *highest* median excess return.
+- Of the four load-bearing factors, `role_director`, `holdings_increase_5pct` and
+  `prior_purchase_31_365d` are statistically indistinguishable from zero, and `cap_small`
+  has the opposite sign to its +15 weight.
+- The best challenger beat the current score on validation and then failed the ranking bar
+  on the pre-registered test split. It was not shipped.
+
+**Do not change a weight without re-running the harness.** `scripts/build_price_panel.py`,
+`build_research_dataset.py`, `estimate_factors.py`, `fit_models.py`. It runs in seconds now.
+And do not trust any factor derived from what the database can see: `stable_features` exists
+because `first_purchase_12mo` never fires in the training window and fires on 46% of the
+validation one, purely because of when ingest started.
 
 ### Hard Disqualifiers (checked in order, early-exit with score=0)
 
