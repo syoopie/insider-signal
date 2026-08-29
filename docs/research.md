@@ -55,7 +55,7 @@ Journal of Finance, 67(3), 1009–1043.
 
 **Finding:** When 3 or more insiders from the same company buy independently within a short window, the resulting signal generates approximately 2× the alpha of a single insider buy.
 
-**Applied as:** Cluster detection (3+ insiders, 14-day rolling window) → CLUSTER_BUY classification. Cluster flag triggers alerts at a lower score threshold (≥ 50) than a single buy (≥ 65).
+**Applied as:** Cluster detection (3+ insiders, 14-day rolling window) → CLUSTER_BUY classification. A cluster qualifies on its mean participant score (≥ 22) rather than the BUY threshold (60), so it alerts on weaker individual scores. See `classify_signal()` for the exact rule.
 
 ---
 
@@ -97,7 +97,9 @@ To avoid biased results, the backtest engine applies several controls:
 
 - **No look-ahead:** Entry is keyed off the filing date, never the transaction date. Transactions can occur weeks before the filing, so entering on the transaction date would assume knowledge before public disclosure. Note that the stored `signal_date` *is* the transaction date — it is a display axis, and the backtest deliberately ignores it in favour of `evidence.filed_date`.
 - **Execution lag:** Entry price is fetched at filing date + 1 + 3 calendar days (realistic fill lag for a retail investor seeing the alert).
-- **Delisted stocks:** When yfinance returns no data for a ticker, it is treated as a −50% loss (survivorship bias correction). Using last available price would overstate returns.
-- **No parameter tuning:** The score threshold (65) and cluster window (14 days) come from the literature, not from optimising on backtest results.
+- **Delisted stocks:** A symbol with no prices for the window is treated as a −50% loss (survivorship bias correction). Using the last available price would overstate returns. A *failed request* is not the same thing and is not charged −50%; it drops the signal from the sample and is counted in `metrics.risk.n_no_spy_data`. Every analysis in the engine applies this through one function, `_excess_return`. Until 2026-08-29 the cluster 50–64 breakdown skipped missing prices while the headline numbers charged −50%, which made that bucket the only one with survivorship bias left in it.
+- **Completed exits only:** Eligibility is screened on `signal_date` but entry is derived from `filed_date`, so a late filing could pass the cutoff with its exit still in the future and be measured over a window shorter than the horizon claims. Those signals are excluded and counted in `metrics.risk.n_exit_in_future`.
+- **No parameter tuning:** The cluster window (14 days) comes from the literature, not from optimising on backtest results. The BUY threshold has been recalibrated against backtest output (65 → 60), so it is *not* an out-of-sample parameter and should not be described as one.
+- **Known contamination:** score weights were tuned on factor-lift analysis run before the `first_purchase_12mo` cold-start bias was fixed. That penalty fired on 87% of signals in the first year of coverage against 32% afterwards, so it was partly measuring dataset age. The weights want re-deriving from a post-2026-08-29 run.
 
 Horizons evaluated: 30, 60, 90, 180 days.

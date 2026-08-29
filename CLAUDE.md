@@ -117,7 +117,7 @@ dashboard and Telegram alerts. Runs at zero cost indefinitely.
 | Scheduler | GitHub Actions | Daily ingest weekdays 11am UTC; weekly backtest Sundays 12pm UTC |
 | Database | Neon PostgreSQL (free tier) | 0.5 GB limit; direct URL for Actions, HTTP driver for the web app |
 | Dashboard | Next.js 16 on Vercel | `web/`; Root Directory must be `web`. Read-only |
-| Alerts | Telegram Bot API | BUY and CLUSTER_BUY signals only |
+| Alerts | Telegram Bot API | BUY and CLUSTER_BUY only (BUY alerts were silently never sent until 2026-08-29) |
 | Data | SEC EDGAR (free, public) | 10 req/sec hard limit; we use 8 for ingest, 3 for bootstrap |
 
 **All credentials live in GitHub Actions Secrets and Vercel environment variables — never in code.**
@@ -272,6 +272,26 @@ is_routine       BOOLEAN/NULL    — pre-computed at ingest; NULL = legacy row (
 Only `transaction_code = 'P'` (open-market purchase) is ever scored for signals.
 Non-P transactions are stored but ignored by scorer, backfill, and backtest.
 
+**Never read `transactions` directly for scoring — use `src/db/purchases.py`.**
+One row is one broker fill, not one decision: a single $3.75M purchase in the
+stored data arrived as ~40 rows at ~40 prices. Separately, a 4/A amendment
+restates transactions under a new accession number, so the same purchase can
+exist twice. `purchase_rollup()` picks the newest filing per (issuer, insider,
+date, code, ownership form) and totals that filing's rows, giving a
+value-weighted `price_per_share`. All three call sites (`run_ingest.py`,
+`cluster.detect_clusters_for_ticker`, `backfill_signals._bulk_load_transactions`)
+go through it so they cannot drift. The old `DISTINCT ON (insider_name,
+transaction_date, transaction_code)` kept one arbitrary fill and hid $4.1B of
+purchase value, 33% of the total. Direct and indirect stay separate rows —
+different holdings, not tranches of one order.
+
+**Scoring windows key off `filed_date`, not `transaction_date`.** A Form 4 may
+disclose a trade made months earlier; windowing on the trade date meant such
+filings were stored and then never scored by anything. 4.8% of purchases landed
+in that hole, 178 of them direct and over $25k. `filed_date` is also what the
+backtest already keys `exec_date` off, so this is the point-in-time consistent
+choice. `signal_date` remains the purchase date (see "Signal dating").
+
 ### `signals`
 ```
 id              SERIAL PRIMARY KEY
@@ -341,7 +361,8 @@ avg_return     NUMERIC         — mean excess return vs SPY (%)
 median_return  NUMERIC         — median excess return (more robust than mean)
 p25_return     NUMERIC         — 25th percentile (downside floor)
 p75_return     NUMERIC         — 75th percentile (upside)
-sharpe         NUMERIC         — annualized Sharpe on excess returns
+sharpe         NUMERIC         — information ratio vs SPY, annualized on calendar days
+                                  (name is legacy; there is no risk-free leg)
 iwm_avg_return NUMERIC         — avg excess return vs IWM for small-cap signals only
 metrics        JSONB           — full stratified breakdown (see below)
 created_at     TIMESTAMPTZ
@@ -405,13 +426,30 @@ before inserting. Safe to re-run on the same day. Historical runs accumulate ind
 | `holdings_increase_5pct` | **+15** | ≥5% holdings increase — +9.2%/60d, +9.3%/90d; raised from +10 |
 | `prior_purchase_31_365d` | +15 | Prior buy 31-364d ago (sustained conviction) — +2.4%/60d |
 | `sequenced_buying_30d` | +10 | Prior buy within 30 days (rapid sequence) |
-| `first_purchase_12mo` | **−10** | No prior buy in 365d — -4.2%/60d; penalty strengthened in round 5 |
-| `near_52wk_low_5pct` | +12 | Price within 5% of 52-week low (only fires in daily ingest, not backfill) |
-| `near_52wk_low_10pct` | +7 | Price within 10% of 52-week low (same caveat) |
+| `first_purchase_12mo` | **−10** | No prior buy in 365d, **and** the DB covers that whole year |
+| `first_purchase_unverifiable` | 0 | No prior buy, but the DB starts less than 365d before the trade |
 
-**Timing factors are mutually exclusive** — exactly one of `sequenced_buying_30d`, `prior_purchase_31_365d`, or `first_purchase_12mo` fires per signal.
+**Timing factors are mutually exclusive** — exactly one of `sequenced_buying_30d`,
+`prior_purchase_31_365d`, `first_purchase_12mo`, or `first_purchase_unverifiable`
+fires per signal.
 
-`first_purchase_12mo` and `sequenced_buying_30d` are mutually exclusive by definition.
+**Scores are a pure function of stored data.** Nothing in `score_transaction`
+reads a live price, so daily ingest and `backfill_signals.py` always agree on a
+given transaction. The 52-week-low factors (+12 / +7) were removed for exactly
+this reason: they could only fire in the live path, which has a Yahoo quote, so
+the same purchase scored up to 12 points apart depending on which entry point
+saw it, and every `--force` backfill silently reclassified live signals. They
+also compared the purchase price against *today's* 52-week low rather than the
+low as of the trade. Reinstating them means storing the low as of the
+transaction date at ingest. **Do not add a factor only one path can compute.**
+
+**`first_purchase_12mo` needs a full year of history to mean anything.**
+`score_transaction` takes `history_start` (= `MIN(filed_date)`, via
+`store.get_history_start()`). Before this guard the penalty fired on 87% of
+signals dated before 2025-04-03 against 32% after, which is a fact about the
+ingest start date, not about insiders. It also contaminated the factor-lift
+analysis that set the weights in this table, so the round 4/5 numbers below
+should be re-derived from a backtest run after 2026-08-29.
 
 ### Signal Classification (`classify_signal()`)
 
@@ -476,7 +514,21 @@ in sync. `test_cluster.py` covers every filter above.
 ### Form 4 Parser (`src/ingest/parser.py`)
 - Only Table I (non-derivative) transactions are parsed; Table II (derivatives/options) is ignored
 - `classify_role(raw_title)` uses regex patterns on the raw title string — order matters (CFO checked before Officer)
-- 10b5-1 detection uses the `isSubjectToRule10b51` checkbox in the XML
+- 10b5-1 detection reads `<aff10b5One>`, the filing-wide checkbox the SEC added
+  when it amended Rule 10b5-1 (effective Feb 2023), then narrows to the
+  individual transaction via that transaction's own `<footnoteId>` references.
+  There is no `isSubjectToRule10b51` element; earlier docs claimed one. The
+  parser previously read `transactionFormType` (whose value is "4") and
+  `transactionTimeliness` (a code like "E"), so both checks were dead, and the
+  only working mechanism was a substring scan of the whole document — which
+  disqualified an open-market buy that merely shared a filing with a plan sale.
+- Table I can carry **debt**. A filer reporting notes puts the principal amount
+  in both `transactionShares` and `transactionPricePerShare`, so shares × price
+  is meaningless. Those filings use `<valueOwnedFollowingTransaction>` instead
+  of `<sharesOwnedFollowingTransaction>`; the parser skips them on that basis.
+- Only the **first** `<reportingOwner>` is recorded. Joint Form 4s report one
+  decision under several names, so collapsing them is what cluster counting
+  wants, but the stored `insider_name` is whichever owner EDGAR listed first.
 
 ### Store Layer (`src/db/store.py`)
 - `write_filing(cur, filing_meta, parsed, ticker)` — must be called with an open cursor (not its own connection); the caller manages the transaction
@@ -507,7 +559,10 @@ that prove someone is routine would be deleted before the check runs.
    - Fetches `ticker_return = get_price_change_pct(ticker, exec_date, exit_date)`
    - Fetches `spy_return = get_price_change_pct("SPY", exec_date, exit_date)`
    - `excess_return = ticker_return - spy_return`
-   - Delisted stocks (yfinance returns None) → `ticker_return = -50.0` (survivorship bias correction)
+   - A symbol with **no prices** for the window → `ticker_return = -50.0` (delisting; survivorship bias correction)
+   - A **failed request** → signal dropped from the sample, counted in `metrics.risk.n_no_spy_data`. `prices.get_price_change` distinguishes the two; the old `None` return conflated them, so a network blip was scored as a total loss
+   - Exit date in the future → excluded, counted in `metrics.risk.n_exit_in_future`
+   - All of the above via `_excess_return`, shared by the headline and cluster 50–64 analyses
 4. Computes stratified metrics: by score band, cap tier, signal type
 5. Computes IWM benchmark separately for small-cap signals
 6. Computes rolling 90-day hit rate time series (every 14 days)
