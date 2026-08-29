@@ -39,6 +39,11 @@ def _throttle():
     _last_call = time.time()
 
 
+def throttle_yf():
+    """The Yahoo rate limiter, shared. One limiter per process, not one per module."""
+    _throttle()
+
+
 # EDGAR's CommonStockSharesOutstanding sometimes yields a share count that is
 # orders of magnitude too low — a single share class, or a value the filer scaled
 # in its own units. That produced caps like Planet Fitness at $5,036. Nothing in

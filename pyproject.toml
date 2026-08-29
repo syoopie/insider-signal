@@ -19,6 +19,9 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "ruff>=0.6",
+    # Scoring research only: the local price panel is parquet. The pipeline never
+    # reads it, and CI installs with --no-dev, so Actions stays lean.
+    "pyarrow>=17",
 ]
 
 [build-system]

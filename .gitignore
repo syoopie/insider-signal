@@ -19,6 +19,7 @@ build/
 # Data files (large, regenerated)
 data/*.parquet
 data/*.csv
+data/prices/
 
 # Run logs
 logs/
