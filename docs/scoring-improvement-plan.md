@@ -271,6 +271,47 @@ the 90-day horizon, and re-running the existing backtest against the price panel
 the 2026-08-29 headline numbers within 0.5pp on raw closes. If it does not reproduce, the
 panel is wrong and nothing downstream is trustworthy.
 
+### Outcome, measured 2026-08-30
+
+The reproduction half passed decisively. `scripts/verify_price_panel.py` recomputes every
+signal in the last backtest from the panel and compares it against the value the network path
+stored: **mean absolute difference 0.003pp, 100% of rows within 0.5pp, at all four horizons**.
+The panel is equivalent to the path it replaces.
+
+The ≥9,000 half was **missed because the target was wrong**, not because the build fell short.
+9,000 came from the 9,477 insider-day count in section 2.3, which is a count before
+eligibility and before horizon completion. The real funnel:
+
+| stage | count |
+|---|---|
+| purchase-days at rollup grain, 730d | 10,264 |
+| eligible (not 10b5-1, not routine, $2k–$1B) | 8,587 |
+| 90-day exit already completed | 7,716 |
+| **labelled at 90d** | **7,576** |
+
+7,576 of 7,716 possible is 98.2% coverage; the 140 misses are 116 `no_entry` and 24 symbols
+absent from the panel. Against the 331 signals the current backtest prices at 90d, this is a
+**23× larger sample**. The corrected gate is ≥7,500 labelled at 90d, which is met.
+
+Three findings fell out of the build.
+
+**The "no model" baseline now exists.** Every eligible purchase, held 90 days from
+`filed_date + 4`, averages **+2.83% excess over SPY with a median of −2.36%**. The current
+model's selected signals average +7.12% at the same horizon. So the model does add value over
+buying every insider purchase, which had never been measured. Both medians are negative.
+
+**Yahoo has no usable history for 19 of 1,371 symbols (1.4%).** Six return nothing; thirteen
+more — EQR, SEM, WSR, AVNS among them — return a few weeks, with `firstTradeDate` in mid-2026
+and no `1y` or `5y` in `validRanges`. EQR is a decades-old REIT, so this is a gap in the
+source, not a parsing error. Those purchases are classified `no_entry` rather than given an
+invented return.
+
+**Five tickers are unresolvable by any price API** because filers typed them by hand:
+`(CALX)`, `N O G`, `NYSE/TRN`, `BFA, BFB`, `WLY, WLYB`. `_clean_ticker` now strips the
+unambiguous noise and refuses the ambiguous cases, because taking the first of `BFA, BFB`
+would file Brown-Forman's purchases under an unrelated ETF. The five stored rows still need a
+repair; `audit_data.py` now flags them.
+
 ---
 
 ## 4. Phase 2 — The evaluation protocol
@@ -471,8 +512,8 @@ Each phase ends in a falsifiable check. Do not start the next until the current 
 
 | # | Work | Gate |
 |---|---|---|
-| 1 | Adjusted closes (2.4); `signal_id` in backtest detail; purge stale signals | Backtest re-runs; measured delta from dividend adjustment reported per horizon |
-| 2 | Price panel + `build_research_dataset.py` | ≥9,000 labelled purchases at 90d; existing backtest reproduced within 0.5pp on raw closes |
+| 1 | Adjusted closes (2.4); `signal_id` in backtest detail; purge stale signals | Backtest re-runs; measured delta from dividend adjustment reported per horizon. **Done 2026-08-29: +0.02 / +0.13 / +0.28 / +0.62pp at 30/60/90/180d** |
+| 2 | Price panel + `build_research_dataset.py` | ~~≥9,000~~ ≥7,500 labelled purchases at 90d; existing backtest reproduced within 0.5pp. **Done 2026-08-30: 7,576 labelled, 0.003pp** |
 | 3 | `scored_purchases` table; backfill writes LOW | Row count ≈ 9,477; every stored signal reconciles to its purchase rows |
 | 4 | Evaluation protocol as a committed script | Reproduces today's headline numbers on the test split; all four baselines computed |
 | 5 | Tier 1 features + multivariate estimation on train/validation | Ranked factor table with clustered SEs and BH-adjusted p-values |

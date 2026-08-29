@@ -27,7 +27,10 @@ GitHub Actions secret in CI).
 
 | Script | Purpose |
 | --- | --- |
-| `analyze_factors.py` | Factor-return correlation report from the latest backtest run. Read-only. |
+| `analyze_factors.py` | Factor-return correlation report from the latest backtest run. Read-only. `--label` selects which run. |
+| `build_price_panel.py` | Once, then when the window needs widening — fetches daily adjusted prices for every ticker with a purchase, plus benchmarks, into `data/prices/panel.parquet`. ~12 min, resumable, idempotent. `--coverage` reports without fetching. |
+| `build_research_dataset.py` | After any panel rebuild — joins the purchase rollup to the panel and writes one labelled row per insider purchase-day. Seconds, no network. |
+| `verify_price_panel.py` | After any panel rebuild — proves the panel reproduces the network-measured backtest. Exits non-zero if it does not. |
 | `audit_data.py` | 60+ data-quality checks across every table, plus the `src/db/purchases.py` rollup invariants. Prints `<-- LOOK` on anything non-zero. Read-only; run it after any pipeline change. |
 
 ## Local development

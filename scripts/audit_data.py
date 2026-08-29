@@ -17,6 +17,13 @@ CHECKS = [
     ("companies: total rows", "SELECT count(*) v FROM companies"),
     ("companies: NULL ticker", "SELECT count(*) v FROM companies WHERE ticker IS NULL OR ticker=''"),
     ("companies: NULL name", "SELECT count(*) v FROM companies WHERE name IS NULL OR name=''"),
+    # Filers type the issuer ticker by hand and EDGAR accepts it. '(CALX)',
+    # 'N O G', 'NYSE/TRN' and 'BFA, BFB' are all stored. Each means the company
+    # has no market cap, no price context, and unlabelable purchases.
+    # _clean_ticker now rejects these at ingest; existing rows need a repair.
+    ("companies: ticker not resolvable by any price API",
+     "SELECT count(*) v FROM companies WHERE ticker IS NOT NULL AND ticker <> '' "
+     "AND ticker !~ '^[A-Z0-9][A-Z0-9.\\-]{0,5}$'"),
     ("companies: duplicate tickers (distinct tickers w/ >1 CIK)",
      "SELECT count(*) v FROM (SELECT ticker FROM companies WHERE ticker IS NOT NULL GROUP BY ticker HAVING count(*)>1) t"),
     ("companies: cap_tier NULL", "SELECT count(*) v FROM companies WHERE cap_tier IS NULL"),
