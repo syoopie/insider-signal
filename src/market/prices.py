@@ -9,11 +9,12 @@ Two endpoints, both free, no API key, no crumb:
 Results cached per ticker for the lifetime of the process (one ingest run).
 """
 
+import calendar
 import time
 import logging
 import requests
 from datetime import date, timedelta
-from typing import Optional
+from typing import NamedTuple, Optional
 
 logging.getLogger("urllib3").setLevel(logging.CRITICAL)
 
@@ -181,32 +182,76 @@ def get_price_on_date(ticker: str, target_date: date) -> Optional[float]:
         return None
 
 
-def get_price_change_pct(ticker: str, start_date: date, end_date: date) -> Optional[float]:
-    """Percentage price change between start_date and end_date, or None."""
+class PriceChange(NamedTuple):
+    """
+    pct is the return; status says why it is missing when it is.
+
+    "no_data" means the symbol genuinely has no prices for the window, which is
+    what a delisting looks like. "error" means the request failed. The backtest
+    must treat these differently: a delisting is a real -50% outcome, a failed
+    request is a sample the run could not measure. Collapsing both to None let a
+    transient network blip be recorded as a total loss.
+    """
+    pct: Optional[float]
+    status: str  # "ok" | "no_data" | "error"
+
+
+def _utc_ts(d: date) -> int:
+    """Midnight UTC. time.mktime uses the local zone, which made backtest entry
+    prices depend on the machine's timezone."""
+    return calendar.timegm(d.timetuple())
+
+
+def get_price_change(ticker: str, start_date: date, end_date: date) -> PriceChange:
+    """Percentage change between the first close on/after start_date and the last on/before end_date."""
     try:
-        start_ts = int(time.mktime(start_date.timetuple()))
-        end_ts   = int(time.mktime((end_date + timedelta(days=7)).timetuple()))
         _throttle()
         resp = requests.get(
             f"{_YF_CHART_URL}/{ticker}",
-            params={"interval": "1d", "period1": start_ts, "period2": end_ts},
+            params={
+                "interval": "1d",
+                "period1": _utc_ts(start_date),
+                "period2": _utc_ts(end_date + timedelta(days=7)),
+            },
             headers=_YF_HEADERS,
             timeout=8,
         )
-        result = resp.json().get("chart", {}).get("result", [{}])[0]
-        timestamps = result.get("timestamp", [])
-        closes     = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
-        pairs = [(ts, c) for ts, c in zip(timestamps, closes) if c is not None]
-        if len(pairs) < 2:
-            return None
-        price_start = pairs[0][1]
-        cutoff = time.mktime(end_date.timetuple())
-        valid = [c for ts, c in pairs if ts <= cutoff]
-        if not valid:
-            return None
-        return (valid[-1] - price_start) / price_start * 100 if price_start else None
-    except Exception:
-        return None
+    except requests.RequestException:
+        return PriceChange(None, "error")
+
+    if resp.status_code == 404:
+        return PriceChange(None, "no_data")
+    if resp.status_code != 200:
+        return PriceChange(None, "error")
+    try:
+        chart = resp.json().get("chart") or {}
+    except ValueError:
+        return PriceChange(None, "error")
+    if chart.get("error"):
+        return PriceChange(None, "no_data")
+    results = chart.get("result") or []
+    if not results:
+        return PriceChange(None, "no_data")
+
+    result     = results[0] or {}
+    timestamps = result.get("timestamp") or []
+    quotes     = result.get("indicators", {}).get("quote") or [{}]
+    closes     = (quotes[0] or {}).get("close") or []
+    pairs = [(ts, c) for ts, c in zip(timestamps, closes) if c is not None]
+    if len(pairs) < 2:
+        return PriceChange(None, "no_data")
+
+    price_start = pairs[0][1]
+    cutoff = _utc_ts(end_date) + 86_400
+    valid = [c for ts, c in pairs if ts <= cutoff]
+    if not valid or not price_start:
+        return PriceChange(None, "no_data")
+    return PriceChange((valid[-1] - price_start) / price_start * 100, "ok")
+
+
+def get_price_change_pct(ticker: str, start_date: date, end_date: date) -> Optional[float]:
+    """Percentage price change between start_date and end_date, or None."""
+    return get_price_change(ticker, start_date, end_date).pct
 
 
 def is_near_52wk_low(current_price: Optional[float], low_52wk: Optional[float], threshold_pct: float = 10.0) -> bool:

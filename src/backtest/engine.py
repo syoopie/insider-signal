@@ -2,10 +2,15 @@
 Backtest engine: validates signal quality on historical data.
 
 Methodology (bias-controlled):
-  - Signal date = filing date + 1 day (point-in-time, no look-ahead)
-  - Execution date = signal date + 3 calendar days (realistic fill lag)
+  - Entry is keyed off evidence.filed_date, never the stored signal_date, which
+    is the purchase date and can precede public disclosure
+  - Execution date = filed_date + 1 + 3 calendar days (realistic fill lag)
   - Benchmark: SPY return over same window
-  - Delisted stocks: yfinance returns empty / last price → treated as -50% loss
+  - A symbol with no prices for the window is a delisting and scores -50%. A
+    failed request is not: it drops the signal from the sample and is counted in
+    risk.n_no_spy_data. Every analysis here shares that rule via _excess_return
+  - Signals whose exit date has not arrived are excluded, counted in
+    risk.n_exit_in_future, rather than measured over a short window
   - Parameters (threshold = BUY_SCORE, cluster_window = 14d) set from literature, not tuned
 
 Enhanced metrics (stored in backtest_runs.metrics JSONB):
@@ -29,7 +34,7 @@ from datetime import date, timedelta
 from typing import List, Dict, Optional
 
 from src.db.connection import get_conn
-from src.market.prices import get_price_change_pct
+from src.market.prices import get_price_change
 from src.ingest.common import log, phase, fmt_elapsed
 from src.signals.constants import BUY_SCORE
 
@@ -38,6 +43,42 @@ HORIZONS = [30, 60, 90, 180]
 SPY_TICKER = "SPY"
 IWM_TICKER = "IWM"  # Russell 2000 — correct benchmark for small-cap signals
 EXEC_LAG_DAYS = 3   # realistic fill lag after signal date
+DELISTED_RETURN = -50.0  # survivorship-bias correction for a symbol with no prices
+
+_price_cache: dict = {}
+
+
+def _cached_change(ticker: str, start: date, end: date):
+    """
+    Memoised price lookup.
+
+    The benchmark legs dominate the request count: SPY was refetched once per
+    signal per horizon, ~1,440 calls where 4 would do. Every extra call is also
+    another chance for a transient failure to drop a signal from the sample.
+    """
+    key = (ticker, start, end)
+    if key not in _price_cache:
+        _price_cache[key] = get_price_change(ticker, start, end)
+    return _price_cache[key]
+
+
+def _excess_return(ticker: str, exec_date: date, exit_date: date):
+    """
+    (excess, ticker_return, spy_return) or None when the sample is unmeasurable.
+
+    One rule for every analysis in this module. The cluster 50-64 breakdown used
+    to skip a signal whose price was missing while the headline numbers charged
+    the same signal -50%, which quietly made that bucket look like the best
+    performer in the system.
+    """
+    spy = _cached_change(SPY_TICKER, exec_date, exit_date)
+    if spy.status != "ok":
+        return None
+    tkr = _cached_change(ticker, exec_date, exit_date)
+    if tkr.status == "error":
+        return None
+    ticker_ret = DELISTED_RETURN if tkr.status == "no_data" else tkr.pct
+    return ticker_ret - spy.pct, ticker_ret, spy.pct
 
 
 # ── Metric helpers ──────────────────────────────────────────────────────────
@@ -187,6 +228,11 @@ def run_backtest(threshold: int = BUY_SCORE, lookback_days: int = 730) -> List[D
         returns = []
         iwm_returns_small = []  # IWM-excess returns for small-cap signals only
         n_no_spy = 0
+        # exec_date is derived from filed_date, but eligibility is checked on
+        # signal_date (the purchase date), so a late filing can pass the cutoff
+        # with its exit still in the future. Those used to be scored anyway, over
+        # a shorter window than the horizon claims.
+        n_incomplete = 0
 
         for sig in eligible:
             sig_date  = _parse_date(sig["signal_date"])
@@ -197,17 +243,16 @@ def run_backtest(threshold: int = BUY_SCORE, lookback_days: int = 730) -> List[D
             exit_date = exec_date + timedelta(days=horizon)
             ticker    = sig["ticker"]
 
-            ticker_ret = get_price_change_pct(ticker, exec_date, exit_date)
-            spy_ret    = get_price_change_pct(SPY_TICKER, exec_date, exit_date)
-
-            if spy_ret is None:
-                n_no_spy += 1
-                log(f"    {ticker:<6}  SPY unavailable {exec_date}→{exit_date} — skipped")
+            if exit_date > today:
+                n_incomplete += 1
                 continue
-            if ticker_ret is None:
-                ticker_ret = -50.0  # delisted → survivorship bias correction
 
-            excess = ticker_ret - spy_ret
+            measured = _excess_return(ticker, exec_date, exit_date)
+            if measured is None:
+                n_no_spy += 1
+                log(f"    {ticker:<6}  price data unavailable {exec_date}→{exit_date} — skipped")
+                continue
+            excess, ticker_ret, spy_ret = measured
             icon = "✓" if excess > 0 else "✗"
             cap = sig.get("cap_tier") or "?"
             log(f"    {icon} {ticker:<6}  {sig['signal_type']:<12}  score={sig['score']:>3}"
@@ -228,9 +273,9 @@ def run_backtest(threshold: int = BUY_SCORE, lookback_days: int = 730) -> List[D
 
             # IWM benchmark for small-cap signals
             if sig.get("cap_tier") == "small":
-                iwm_ret = get_price_change_pct(IWM_TICKER, exec_date, exit_date)
-                if iwm_ret is not None:
-                    iwm_returns_small.append(ticker_ret - iwm_ret)
+                iwm = _cached_change(IWM_TICKER, exec_date, exit_date)
+                if iwm.status == "ok":
+                    iwm_returns_small.append(ticker_ret - iwm.pct)
 
         if not returns:
             log("  No valid returns — skipping horizon.")
@@ -244,8 +289,12 @@ def run_backtest(threshold: int = BUY_SCORE, lookback_days: int = 730) -> List[D
         p25_ret     = _percentile(excess_vals, 25)
         p75_ret     = _percentile(excess_vals, 75)
 
+        # Information ratio against SPY, not a Sharpe ratio: these are excess
+        # returns over a benchmark with no risk-free leg. Annualised on calendar
+        # days because `horizon` is calendar days; scaling by 252 treated a
+        # 30-day hold as if it were 30 trading days and understated the result.
         stdev = statistics.stdev(excess_vals) if len(excess_vals) > 1 else None
-        sharpe = (avg_return / stdev) * (252 / horizon) ** 0.5 if stdev and stdev > 0 else None
+        sharpe = (avg_return / stdev) * (365 / horizon) ** 0.5 if stdev and stdev > 0 else None
 
         elapsed_h = time.time() - t0
         log(f"  ── {horizon}d summary ({fmt_elapsed(elapsed_h)}) ──")
@@ -294,11 +343,13 @@ def run_backtest(threshold: int = BUY_SCORE, lookback_days: int = 730) -> List[D
             exec_date = (fd + timedelta(days=1 + EXEC_LAG_DAYS)) if fd else (sig_date + timedelta(days=EXEC_LAG_DAYS))
             exit_date = exec_date + timedelta(days=horizon)
             ticker    = sig["ticker"]
-            ticker_ret = get_price_change_pct(ticker, exec_date, exit_date)
-            spy_ret    = get_price_change_pct(SPY_TICKER, exec_date, exit_date)
-            if spy_ret is None or ticker_ret is None:
+            if exit_date > today:
                 continue
-            excess = round(ticker_ret - spy_ret, 2)
+            measured = _excess_return(ticker, exec_date, exit_date)
+            if measured is None:
+                continue
+            excess_raw, ticker_ret, spy_ret = measured
+            excess = round(excess_raw, 2)
             icon = "✓" if excess > 0 else "✗"
             log(f"    {icon} {ticker:<6}  CLUSTER_WEAK  score={sig['score']:>3}"
                 f"  tkr={ticker_ret:>+6.1f}%  spy={spy_ret:>+6.1f}%  excess={excess:>+6.1f}%")
@@ -337,6 +388,7 @@ def run_backtest(threshold: int = BUY_SCORE, lookback_days: int = 730) -> List[D
                 "max_consecutive_losses": max_consec_losses,
                 "worst_outcome": round(min(excess_vals), 2),
                 "n_no_spy_data": n_no_spy,
+                "n_exit_in_future": n_incomplete,
             },
             "iwm_small_cap": {
                 "n": len(iwm_returns_small),
@@ -419,7 +471,10 @@ def _get_historical_signals(since: date, threshold: int) -> List[Dict]:
                        s.cluster_flag, c.cap_tier,
                        s.evidence->>'filed_date' AS filed_date
                 FROM signals s
-                LEFT JOIN companies c ON c.ticker = s.ticker
+                LEFT JOIN LATERAL (
+                    SELECT cap_tier FROM companies
+                    WHERE ticker = s.ticker ORDER BY updated_at DESC NULLS LAST LIMIT 1
+                ) c ON TRUE
                 WHERE s.signal_date >= %s
                   AND (s.score >= %s OR s.cluster_flag = TRUE)
                   AND s.signal_type IN ('BUY', 'CLUSTER_BUY')
@@ -444,7 +499,10 @@ def _get_cluster_weak_signals(since: date, threshold: int = BUY_SCORE) -> List[D
                        s.cluster_flag, c.cap_tier,
                        s.evidence->>'filed_date' AS filed_date
                 FROM signals s
-                LEFT JOIN companies c ON c.ticker = s.ticker
+                LEFT JOIN LATERAL (
+                    SELECT cap_tier FROM companies
+                    WHERE ticker = s.ticker ORDER BY updated_at DESC NULLS LAST LIMIT 1
+                ) c ON TRUE
                 WHERE s.signal_date >= %s
                   AND s.signal_type = 'CLUSTER_BUY'
                   AND s.score < %s
