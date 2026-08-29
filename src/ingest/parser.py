@@ -169,6 +169,19 @@ def parse_form4(xml_content: str, filing_metadata: dict) -> dict:
         tx_code = _text(tx_el, ".//transactionCoding/transactionCode") or _text(tx_el, "transactionCode")
         is_10b51 = _tx_is_10b51(tx_el, footnotes, doc_10b51)
 
+        # Table I can carry debt as well as stock. A filer reporting notes puts
+        # the principal amount in BOTH transactionShares and
+        # transactionPricePerShare, so shares x price is nonsense: MetLife's
+        # $10M of KYN senior notes multiplied out to $100 trillion. Such a
+        # filing reports holdings as valueOwnedFollowingTransaction instead of
+        # sharesOwnedFollowingTransaction, and that element choice is the SEC's
+        # own signal that the figure is a dollar amount, not a share count.
+        post_el = tx_el.find(".//postTransactionAmounts")
+        if (post_el is not None
+                and post_el.find("valueOwnedFollowingTransaction") is not None
+                and post_el.find("sharesOwnedFollowingTransaction") is None):
+            continue
+
         shares_el = tx_el.find(".//transactionAmounts/transactionShares/value")
         price_el = tx_el.find(".//transactionAmounts/transactionPricePerShare/value")
         shares_after_el = tx_el.find(".//postTransactionAmounts/sharesOwnedFollowingTransaction/value")

@@ -40,7 +40,6 @@ const MOCK_BREAKDOWN = {
   cap_small: 15,
   holdings_increase_5pct: 15,
   sequenced_buying_30d: 10,
-  near_52wk_low_10pct: 7,
   role_ceo: -5,
   indirect_purchase: -15,
 };

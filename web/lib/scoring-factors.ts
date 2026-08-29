@@ -14,7 +14,7 @@ export type ScoringFactor = {
   reason: string;
   /** The empirical basis, short. */
   research?: string;
-  group: "role" | "size" | "conviction" | "timing" | "price" | "penalty";
+  group: "role" | "size" | "conviction" | "timing" | "penalty";
 };
 
 export const SCORING_FACTORS: Record<string, ScoringFactor> = {
@@ -123,17 +123,13 @@ export const SCORING_FACTORS: Record<string, ScoringFactor> = {
     research: "−4.2% at 60 days in backtest.",
     group: "penalty",
   },
-  near_52wk_low_5pct: {
-    label: "Within 5% of 52-week low",
-    points: 12,
-    reason: "Buying into weakness signals real conviction. +12.",
-    group: "price",
-  },
-  near_52wk_low_10pct: {
-    label: "Within 10% of 52-week low",
-    points: 7,
-    reason: "Buying near the lows. +7.",
-    group: "price",
+  first_purchase_unverifiable: {
+    label: "Purchase history not observable",
+    points: 0,
+    reason:
+      "No prior buy on record, but the database does not reach back a full year " +
+      "before this trade, so the absence is not evidence. No penalty applied.",
+    group: "timing",
   },
 };
 

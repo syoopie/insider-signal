@@ -3,6 +3,7 @@ DB persistence layer for Form 4 filings and transactions.
 All inserts are idempotent — safe to re-run on the same data.
 """
 
+import calendar
 import json
 import decimal
 from datetime import date, datetime, timedelta
@@ -106,7 +107,9 @@ def _compute_is_routine(cur, insider_name: str, cik: str, tx_date) -> Optional[b
                 continue  # no data for this year — skip (no false positives)
             determined_years += 1
             year_start = _date(yr, tx_month, 1)
-            year_end   = _date(yr, tx_month, 28)
+            # Last day of the month. Hardcoding 28 skipped purchases on the
+            # 29th-31st, undercounting routine traders in 11 months of 12.
+            year_end   = _date(yr, tx_month, calendar.monthrange(yr, tx_month)[1])
             cur.execute(
                 """
                 SELECT 1 FROM transactions t

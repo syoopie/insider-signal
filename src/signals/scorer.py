@@ -34,6 +34,7 @@ the live ingest path and the historical backfill always agree on a given
 transaction. Do not add a factor that only one of them can compute.
 """
 
+import calendar
 from datetime import date, timedelta
 from typing import Optional
 
@@ -153,7 +154,7 @@ def score_transaction(
             if oldest_available is None or oldest_available > date(yr, 12, 31):
                 continue
             year_start = date(yr, tx_month, 1)
-            year_end   = date(yr, tx_month, 28)
+            year_end   = date(yr, tx_month, calendar.monthrange(yr, tx_month)[1])
             if any(year_start <= (_parse_date(p.get("transaction_date")) or date.min) <= year_end
                    for p in prior_purchases):
                 routine_years += 1

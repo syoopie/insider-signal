@@ -19,14 +19,17 @@ import { cn } from "@/lib/utils";
 
 const ROLES = ["director", "cfo", "coo", "officer", "chairman", "ceo", "other"] as const;
 const CAPS = ["small", "mid", "large", "unknown"] as const;
-const TIMING = ["prior_purchase_31_365d", "sequenced_buying_30d", "first_purchase_12mo"] as const;
-const PRICE = ["none", "near_52wk_low_5pct", "near_52wk_low_10pct"] as const;
+const TIMING = [
+  "prior_purchase_31_365d",
+  "sequenced_buying_30d",
+  "first_purchase_12mo",
+  "first_purchase_unverifiable",
+] as const;
 
 export function ScoringExplainer() {
   const [role, setRole] = useState<(typeof ROLES)[number]>("director");
   const [cap, setCap] = useState<(typeof CAPS)[number]>("small");
   const [timing, setTiming] = useState<(typeof TIMING)[number]>("prior_purchase_31_365d");
-  const [price, setPrice] = useState<(typeof PRICE)[number]>("none");
   const [holdings, setHoldings] = useState(true);
   const [indirect, setIndirect] = useState(false);
   const [isCluster, setIsCluster] = useState(false);
@@ -34,7 +37,6 @@ export function ScoringExplainer() {
 
   const { score, breakdown, type } = useMemo(() => {
     const keys = [`role_${role}`, `cap_${cap}`, timing];
-    if (price !== "none") keys.push(price);
     if (holdings) keys.push("holdings_increase_5pct");
     if (indirect) keys.push("indirect_purchase");
 
@@ -54,7 +56,7 @@ export function ScoringExplainer() {
         capTier: cap,
       }),
     };
-  }, [role, cap, timing, price, holdings, indirect, isCluster, tight]);
+  }, [role, cap, timing, holdings, indirect, isCluster, tight]);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -89,17 +91,6 @@ export function ScoringExplainer() {
           {TIMING.map((t) => (
             <FilterChip key={t} selected={timing === t} onClick={() => setTiming(t)}>
               {factorMeta(t).label}
-            </FilterChip>
-          ))}
-        </FilterGroup>
-
-        <FilterGroup label="Price context">
-          <FilterChip selected={price === "none"} onClick={() => setPrice("none")}>
-            Not near the low
-          </FilterChip>
-          {PRICE.filter((p) => p !== "none").map((p) => (
-            <FilterChip key={p} selected={price === p} onClick={() => setPrice(p)}>
-              {factorMeta(p).label}
             </FilterChip>
           ))}
         </FilterGroup>

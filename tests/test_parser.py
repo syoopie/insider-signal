@@ -88,6 +88,26 @@ def test_parse_form4_happy_path():
     assert tx["is_direct"] is True
 
 
+def test_debt_reported_on_table_one_is_skipped():
+    """
+    Notes are reported with the principal amount in both transactionShares and
+    transactionPricePerShare, so shares x price is meaningless. MetLife's $10M
+    of KYN senior notes was stored as a $100 trillion purchase. Such filings
+    report valueOwnedFollowingTransaction instead of shares, which is the tell.
+    """
+    notes = MINIMAL_FORM4.replace(
+        "<transactionShares><value>2000</value></transactionShares>",
+        "<transactionShares><value>10000000</value></transactionShares>",
+    ).replace(
+        "<transactionPricePerShare><value>12.50</value></transactionPricePerShare>",
+        "<transactionPricePerShare><value>10000000</value></transactionPricePerShare>",
+    ).replace(
+        "<sharesOwnedFollowingTransaction><value>5000</value></sharesOwnedFollowingTransaction>",
+        "<valueOwnedFollowingTransaction><value>10000000</value></valueOwnedFollowingTransaction>",
+    )
+    assert parse_form4(notes, {})["transactions"] == []
+
+
 def test_parse_form4_malformed_returns_empty():
     assert parse_form4("<not-xml", {}) == {}
 

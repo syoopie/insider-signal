@@ -62,11 +62,29 @@ def main():
     cik_to_ticker = load_cik_map(req_per_sec=INGEST_RATE)
 
     # Date range: from last stored to today, capped at 7 days back.
+    #
+    # The cap exists because EDGAR's search API reports at most 10,000 hits for a
+    # query and returns them newest-first, so a window wide enough to exceed that
+    # silently loses its oldest days. A 7-day window peaks near 5,600.
+    #
+    # The cap also means an outage longer than the window is permanent data loss:
+    # nothing else ever revisits those days. Say so loudly rather than skipping
+    # them in silence, because the fix is a manual bootstrap over the gap.
     last_date = get_last_filed_date()
     earliest_allowed = today - timedelta(days=7)
     start_date = max(last_date, earliest_allowed) if last_date else earliest_allowed
     _log(f"Last stored filing date: {last_date or 'none'}")
     _log(f"Fetch window: {start_date} → {today} ({(today - start_date).days} days)")
+
+    if last_date and last_date < earliest_allowed:
+        gap_days = (earliest_allowed - last_date).days
+        msg = (f"Ingest gap: last stored filing is {last_date}, but the fetch window "
+               f"only reaches back to {earliest_allowed}. {gap_days} day(s) will never "
+               f"be ingested by the daily job.\n\n"
+               f"Backfill them with:\n"
+               f"  python scripts/bootstrap.py --start {last_date} --end {earliest_allowed}")
+        _log(f"WARNING: {msg}")
+        send_error(msg, context="daily ingest — coverage gap")
 
     # ── FILING INGEST ─────────────────────────────────────────────────────────
     _phase("FILING INGEST")
@@ -112,6 +130,18 @@ def main():
 
         _log(f"  {filings_seen} in index, {len(pending)} submitted for XML fetch "
              f"({n_skipped_universe} not-in-universe, {n_duplicate} pre-filtered)")
+
+        # EDGAR's search API caps a query at 10,000 hits, newest first, so at the
+        # ceiling the oldest days of the window are silently absent. bootstrap.py
+        # already warns on this; the daily job never did.
+        if filings_seen >= 10_000:
+            send_error(
+                f"Index returned {filings_seen} hits for {start_date} → {today}, at or "
+                f"above EDGAR's 10,000 result cap. The oldest days in that window were "
+                f"truncated. Re-ingest them with a narrower bootstrap range.",
+                context="daily ingest — EDGAR result cap",
+            )
+            _log("  WARNING: hit EDGAR's 10,000 result cap — oldest filings truncated")
 
         for future in as_completed(pending):
             fm, tk = pending[future]
