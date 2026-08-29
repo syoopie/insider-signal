@@ -95,8 +95,8 @@ The recency-of-low component (when was the low set) is not currently implemented
 
 To avoid biased results, the backtest engine applies several controls:
 
-- **No look-ahead:** Signal date = filing date + 1 calendar day (never transaction date). Transactions can occur weeks before the filing; using the transaction date would assume knowledge before public disclosure.
-- **Execution lag:** Entry price is fetched at signal date + 3 calendar days (realistic fill lag for a retail investor seeing the alert).
+- **No look-ahead:** Entry is keyed off the filing date, never the transaction date. Transactions can occur weeks before the filing, so entering on the transaction date would assume knowledge before public disclosure. Note that the stored `signal_date` *is* the transaction date — it is a display axis, and the backtest deliberately ignores it in favour of `evidence.filed_date`.
+- **Execution lag:** Entry price is fetched at filing date + 1 + 3 calendar days (realistic fill lag for a retail investor seeing the alert).
 - **Delisted stocks:** When yfinance returns no data for a ticker, it is treated as a −50% loss (survivorship bias correction). Using last available price would overstate returns.
 - **No parameter tuning:** The score threshold (65) and cluster window (14 days) come from the literature, not from optimising on backtest results.
 

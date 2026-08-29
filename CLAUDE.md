@@ -246,8 +246,9 @@ updated_at  TIMESTAMPTZ
 id               SERIAL PRIMARY KEY
 accession_number TEXT UNIQUE     — EDGAR accession number (e.g. 0001234567-24-000123)
 cik              TEXT → companies.cik
-filed_date       DATE            — date EDGAR received the filing (used for signal_date = filed_date+1)
-period_date      DATE            — date the transaction occurred (NOT used for signal_date)
+filed_date       DATE            — date EDGAR received the filing; copied into evidence.filed_date,
+                                   which is what the backtest keys exec_date off
+period_date      DATE            — date the transaction occurred
 fetched_at       TIMESTAMPTZ
 ```
 
@@ -275,7 +276,9 @@ Non-P transactions are stored but ignored by scorer, backfill, and backtest.
 ```
 id              SERIAL PRIMARY KEY
 ticker          TEXT
-signal_date     DATE            — filed_date + 1 day (NOT transaction_date — avoids look-ahead bias)
+signal_date     DATE            — the purchase date (tx_rows[0].transaction_date), NOT filed_date+1.
+                                  Look-ahead is avoided in the backtest, not here: exec_date is
+                                  derived from evidence.filed_date. See "Signal dating" below.
 score           INT             — 0–100
 signal_type     TEXT            — 'BUY' (≥60), 'WATCH' (45–59 or a weak cluster), 'CLUSTER_BUY', 'LOW'
 cluster_flag    BOOLEAN         — TRUE if ≥3 direct insiders bought in 14d window
@@ -286,6 +289,21 @@ created_at      TIMESTAMPTZ
 
 UNIQUE: (ticker, signal_date)   — one signal row per ticker per day
 ```
+
+**Signal dating — read this before touching dates anywhere.**
+
+`signal_date` is the **purchase date**, set from `tx_rows[0]["transaction_date"]`
+in both `run_ingest.py` and `backfill_signals.py`. It is *not* `filed_date + 1`.
+Roughly 80% of stored signals therefore have `signal_date != filed_date + 1`, and
+about half sit *before* their filing date, because a Form 4 is filed up to two
+business days after the trade (sometimes far later).
+
+That is not look-ahead bias, because nothing trades on `signal_date`.
+`engine.py` derives `exec_date` from `evidence.filed_date + 1 + EXEC_LAG_DAYS`
+and only falls back to `signal_date` when `filed_date` is absent — which no
+stored row currently is. **If you ever make the backtest key off `signal_date`,
+you introduce look-ahead bias.** The dashboard groups by `signal_date` on
+purpose: "when did the insider buy" is the useful axis for triage.
 
 **`evidence` JSONB structure** (key fields referenced in dashboard):
 ```json
