@@ -18,7 +18,14 @@ export const metadata: Metadata = {
   },
   description:
     "Research-backed buy signals from SEC Form 4 insider purchase disclosures. Ingested daily, scored, backtested, and shown in full.",
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://insider-signal.vercel.app"),
+  // insider-signal.vercel.app belongs to an unrelated project, so it must never
+  // be the fallback. Vercel injects the real production domain at build time.
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_SITE_URL ??
+      (process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+        : "http://localhost:3000"),
+  ),
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
