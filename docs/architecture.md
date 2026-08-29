@@ -110,7 +110,8 @@ insider-signal/
 │   └── research.md                 # Academic references
 ├── data/
 │   └── tickers.txt                 # Tracked ticker universe (~3,500)
-└── requirements-ingest.txt         # Python pipeline deps (GitHub Actions + local)
+├── pyproject.toml                  # Python package + pipeline deps (managed by uv)
+└── uv.lock                         # Pinned dependency lockfile
 ```
 
 ---

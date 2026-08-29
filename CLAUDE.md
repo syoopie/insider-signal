@@ -55,8 +55,8 @@ git push
 
 **The golden rule — any change to scorer.py or cluster.py must be followed by:**
 ```bash
-python3 scripts/backfill_signals.py --days 730 --force  # ~8 min
-python3 scripts/run_backtest.py                         # ~30 min
+uv run python scripts/backfill_signals.py --days 730 --force  # ~8 min
+uv run python scripts/run_backtest.py                         # ~30 min
 git add src/signals/ scripts/backfill_signals.py
 git commit -m "..."
 git push
@@ -541,9 +541,9 @@ Cap tier boundaries:
 
 ### After any scoring or cluster logic change:
 ```bash
-python3 scripts/backfill_signals.py --days 730 --force
+uv run python scripts/backfill_signals.py --days 730 --force
 # Takes ~8 minutes. Rescores all 2 years of P transactions, rebuilds signals table.
-python3 scripts/run_backtest.py
+uv run python scripts/run_backtest.py
 # Takes ~30 minutes. Re-evaluates signal quality against historical prices.
 git add src/signals/ scripts/backfill_signals.py scripts/run_backtest.py
 git commit -m "..."
@@ -552,7 +552,7 @@ git push
 
 ### To fill a historical gap:
 ```bash
-python3 scripts/bootstrap.py --start YYYY-MM-DD --end YYYY-MM-DD --force
+uv run python scripts/bootstrap.py --start YYYY-MM-DD --end YYYY-MM-DD --force
 # --force re-fetches XML for filings already stored (fixes corrupted/missing data)
 git add .  # bootstrap updates last_run.txt
 git commit -m "Bootstrap gap fill YYYY-MM-DD to YYYY-MM-DD"
@@ -561,7 +561,7 @@ git push
 
 ### To refresh market caps:
 ```bash
-python3 scripts/refresh_market_caps.py
+uv run python scripts/refresh_market_caps.py
 # ~30 min; --force re-fetches populated rows too
 git commit -m "Refresh market caps" last_run.txt  # if it touches last_run.txt
 git push
@@ -569,7 +569,7 @@ git push
 
 ### To re-run the backtest locally:
 ```bash
-python3 scripts/run_backtest.py
+uv run python scripts/run_backtest.py
 # Safe to re-run — deletes today's rows before inserting
 ```
 
@@ -648,7 +648,7 @@ Worst: LGF (Lions Gate) — insiders averaging down, −63.1% at 180d. No filter
 **Cluster signal missing or wrong signal type:**
 - `cluster.py` and `backfill_signals.py` must have identical eligibility filters. Drift = stale clusters in DB.
 - Verify the cluster filters: direct-only, ≥$25K, no identical-block, no same-price-offering.
-- Re-run: `python3 scripts/backfill_signals.py --days 730 --force`
+- Re-run: `uv run python scripts/backfill_signals.py --days 730 --force`
 
 **Backtest chart shows only a short date range:**
 - The chart uses `exec_date` from `detail` in the latest `backtest_runs.metrics`. The date range = LOOKBACK_DAYS (730 days). If it's short, a prior run used a smaller value.

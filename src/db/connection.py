@@ -1,11 +1,14 @@
 import os
+
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 
+from src.config import database_url
+
 
 def get_connection_string(pooled: bool = False) -> str:
-    url = os.environ["DATABASE_URL"]
+    url = database_url()
     if pooled and "-pooler" not in url:
         # Insert -pooler into the hostname for multi-connection contexts.
         # Unused by the current callers: the ingest jobs want the direct string and

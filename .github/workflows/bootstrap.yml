@@ -40,14 +40,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.11'
-          cache: pip
+          enable-cache: true
 
       - name: Install dependencies
-        run: pip install -r requirements-ingest.txt
+        run: uv sync --no-dev
 
       - name: Run bootstrap
         env:
@@ -57,13 +56,13 @@ jobs:
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             ARGS="$ARGS --force"
           fi
-          echo "Running: python scripts/bootstrap.py $ARGS"
-          python scripts/bootstrap.py $ARGS
+          echo "Running: bootstrap.py $ARGS"
+          uv run python scripts/bootstrap.py $ARGS
 
       - name: Backfill signals
         if: ${{ github.event.inputs.backfill_signals == 'true' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          echo "Running: python scripts/backfill_signals.py --days ${{ github.event.inputs.days }} --force"
-          python scripts/backfill_signals.py --days ${{ github.event.inputs.days }} --force
+          echo "Running: backfill_signals.py --days ${{ github.event.inputs.days }} --force"
+          uv run python scripts/backfill_signals.py --days ${{ github.event.inputs.days }} --force

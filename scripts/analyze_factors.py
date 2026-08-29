@@ -11,24 +11,10 @@ and prints:
 Run locally with DATABASE_URL in env or .env file.
 """
 import json
-import os
-import sys
 from collections import defaultdict
-from datetime import date as dt, timedelta
+from datetime import date as dt
 from statistics import mean, stdev
 
-# Load .env if present
-env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
-if os.path.exists(env_path):
-    with open(env_path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                v = v.strip().strip('"').strip("'")
-                os.environ.setdefault(k.strip(), v)
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.db.connection import get_conn
 
 ALL_FACTORS = [
@@ -138,7 +124,7 @@ def analyze_horizon(horizon: int, detail: list, ticker_signals: dict):
 
     # ── Score monotonicity ──────────────────────────────────────────────────
     print(f"\n{'─'*70}")
-    print(f"  SCORE MONOTONICITY  (does score predict return?)")
+    print("  SCORE MONOTONICITY  (does score predict return?)")
     print(f"{'─'*70}")
     bands = [(0,35),(35,45),(45,50),(50,55),(55,60),(60,65),(65,70),(70,75),(75,80),(80,90),(90,101)]
     for lo, hi in bands:
@@ -151,7 +137,7 @@ def analyze_horizon(horizon: int, detail: list, ticker_signals: dict):
 
     # ── Factor lift table ───────────────────────────────────────────────────
     print(f"\n{'─'*70}")
-    print(f"  FACTOR LIFT: with vs without (current weight → observed lift)")
+    print("  FACTOR LIFT: with vs without (current weight → observed lift)")
     print(f"  {'Factor':<28} {'Weight':>6}  {'With':>16}  {'Without':>16}  {'Lift':>8}")
     print(f"{'─'*70}")
 
@@ -176,7 +162,7 @@ def analyze_horizon(horizon: int, detail: list, ticker_signals: dict):
 
     # ── Cap tier breakdown ──────────────────────────────────────────────────
     print(f"\n{'─'*70}")
-    print(f"  CAP TIER BREAKDOWN")
+    print("  CAP TIER BREAKDOWN")
     print(f"{'─'*70}")
     for cap in ["small", "mid", "large", "unknown"]:
         rets = cap_returns.get(cap, [])
@@ -185,7 +171,7 @@ def analyze_horizon(horizon: int, detail: list, ticker_signals: dict):
 
     # ── Signal type breakdown ───────────────────────────────────────────────
     print(f"\n{'─'*70}")
-    print(f"  SIGNAL TYPE BREAKDOWN")
+    print("  SIGNAL TYPE BREAKDOWN")
     print(f"{'─'*70}")
     for t in ["BUY", "CLUSTER_BUY"]:
         rets = type_returns.get(t, [])
@@ -262,8 +248,8 @@ def main():
     # ── Cross-horizon summary + weight recommendations ──────────────────────
     if len(all_lifts) == 2:
         print(f"\n{'='*70}")
-        print(f"  WEIGHT RECOMMENDATIONS  (based on 60d + 90d avg lift)")
-        print(f"  Current weights → Suggested weights")
+        print("  WEIGHT RECOMMENDATIONS  (based on 60d + 90d avg lift)")
+        print("  Current weights → Suggested weights")
         print(f"{'='*70}")
 
         lift_60 = {f: lift for f, _, _, _, _, _, lift in all_lifts[60]}
@@ -292,7 +278,7 @@ def main():
             l90_s = f"{l90:+.1f}%" if l90 is not None else "  —  "
             print(f"  {factor:<28} wt={cur_wt:>+3}  60d={l60_s}  90d={l90_s}  → {suggestion}")
 
-    print(f"\nDone.\n")
+    print("\nDone.\n")
 
 
 if __name__ == "__main__":

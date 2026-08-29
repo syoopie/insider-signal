@@ -19,12 +19,8 @@ Usage:
 
 from __future__ import annotations
 
-import sys
-import os
 import argparse
 import time
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import requests
 

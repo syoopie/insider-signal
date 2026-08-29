@@ -34,13 +34,10 @@ Usage:
 from __future__ import annotations
 
 import sys
-import os
 import argparse
 import time
 from collections import defaultdict
 from datetime import date, timedelta
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from psycopg2.extras import RealDictCursor
 
@@ -493,13 +490,13 @@ def main():
     else:
         log(f"  Signals written: {n_saved}")
         if n_saved:
-            log(f"  Dashboard and backtest now reflect this history.")
+            log("  Dashboard and backtest now reflect this history.")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
+    except Exception:
         import traceback
         print(f"FATAL ERROR:\n{traceback.format_exc()}")
         sys.exit(1)

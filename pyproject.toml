@@ -1,0 +1,54 @@
+[project]
+name = "insider-signal"
+version = "0.1.0"
+description = "Scores SEC Form 4 insider purchases into buy signals; daily ingest + weekly backtest"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "psycopg2-binary>=2.9",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+    "tenacity>=8.2",
+    # update_tickers.py only: pandas.read_html scrapes the S&P 500 / Russell
+    # constituent tables, and read_html needs a parser (lxml).
+    "pandas>=2.0,<3",
+    "lxml>=5.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+# `src` is a real installed package after `uv sync`, so no path juggling is
+# needed for it. `scripts` is added so tests can import the operational
+# entrypoints (run_ingest, backfill_signals) directly without executing them.
+pythonpath = ["scripts"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Pyflakes only for now (real problems: unused names, undefined names, bad
+# f-strings). The wider style ruleset is a separate cleanup.
+select = ["F", "E9"]
+
+[tool.ruff.lint.per-file-ignores]
+# common.py deliberately re-exports the EDGAR error types and helpers that the
+# entrypoint scripts import from here rather than reaching into each module.
+"src/ingest/common.py" = ["F401"]
+# parser.py: `date` import and `plan_val` binding are load-bearing for
+# in-progress work; left as-is until that lands.
+"src/ingest/parser.py" = ["F401", "F841"]

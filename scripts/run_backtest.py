@@ -8,10 +8,7 @@ Nothing to run until signals are at least 33 days old (30d horizon + 3d lag).
 """
 
 import sys
-import os
 from datetime import date, datetime
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.ingest.common import setup_log_tee, log, phase
 from src.backtest.engine import run_backtest, save_backtest_results

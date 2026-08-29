@@ -6,7 +6,7 @@ Everything runs automatically after this one-time setup. Total time: ~10 minutes
 
 ## Prerequisites
 
-- Python 3.9+ installed locally (for the bootstrap step)
+- [uv](https://docs.astral.sh/uv/) installed locally (for the bootstrap step; it manages Python and dependencies)
 - A free GitHub account
 - A Telegram account (phone or web)
 
@@ -153,22 +153,23 @@ The daily ingest only fetches new filings (since the last run). On first run the
 | **730** | ~3–5 hours | Full 2-year backtest history visible in the dashboard. |
 
 ```bash
-# Install dependencies (run once)
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-ingest.txt
+# Install dependencies (run once). uv creates and manages the .venv.
+uv sync
+
+# Put the Neon connection string where the pipeline can find it
+echo 'DATABASE_URL=your-direct-connection-string' > .env
 
 # Fetch the S&P 500 + Russell 2000 ticker universe
-python3 scripts/update_tickers.py
+uv run python scripts/update_tickers.py
 
 # Dry run first — verifies everything works, no database writes
-DATABASE_URL="your-direct-connection-string" python3 scripts/bootstrap.py --dry-run --days 14
+uv run python scripts/bootstrap.py --dry-run --days 14
 
 # Minimum bootstrap (~5 min)
-DATABASE_URL="your-direct-connection-string" python3 scripts/bootstrap.py --days 14
+uv run python scripts/bootstrap.py --days 14
 
 # Full 2-year backfill in background (~3–5 hours)
-DATABASE_URL="your-direct-connection-string" nohup python3 -u scripts/bootstrap.py --days 730 > bootstrap.log 2>&1 &
+nohup uv run python -u scripts/bootstrap.py --days 730 > bootstrap.log 2>&1 &
 tail -f bootstrap.log
 ```
 
@@ -183,7 +184,7 @@ tail -f bootstrap.log
 The system tracks S&P 500 + Russell 2000 (~3,500 tickers). Index membership changes quarterly.
 
 ```bash
-python3 scripts/update_tickers.py
+uv run python scripts/update_tickers.py
 ```
 
 Run this quarterly, or whenever you notice a recently added company isn't appearing. You can also manually add tickers to `data/tickers.txt` to track companies outside these indexes.
@@ -196,4 +197,4 @@ Run this quarterly, or whenever you notice a recently added company isn't appear
 2. **Telegram** — you'll receive a daily summary message even on days with no signals. If the ingest crashes, you get an immediate error message.
 3. **Dashboard** — load your Vercel URL. The signals list populates within a day of the first successful ingest run, and the freshness bar at the top says when the pipeline last ran.
 4. **Backtest** — the backtest workflow runs every Sunday. It needs signals at least 33 days old to produce results (30-day horizon + 3-day execution lag). Results appear on `/backtest` after the first Sunday with old enough data.
-5. **Sectors** — `/sectors` needs industry codes, which no other job writes. Run `python3 scripts/backfill_sic.py` once after the first ingest; it is safe to re-run and only fills gaps.
+5. **Sectors** — `/sectors` needs industry codes, which no other job writes. Run `uv run python scripts/backfill_sic.py` once after the first ingest; it is safe to re-run and only fills gaps.
