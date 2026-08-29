@@ -19,8 +19,10 @@ from src.research.protocol import (
     decile_spread,
     decile_table,
     evaluable,
+    feature_drift,
     split_bounds,
     split_frames,
+    stable_features,
     summarise,
 )
 
@@ -150,3 +152,46 @@ def test_a_reversed_ranking_has_a_negative_decile_spread():
 
 def test_too_few_rows_produce_no_decile_table_rather_than_a_noisy_one():
     assert decile_table(_frame([date(2026, 1, 1)] * 20), "score").empty
+
+
+# ── feature stability ────────────────────────────────────────────────────────
+
+def test_a_feature_that_only_fires_in_one_split_is_dropped():
+    """
+    first_purchase_12mo never fired in training and fired on 46% of validation,
+    because it depends on how far back the database reaches, not on the insider.
+    A model fitted on that is reading a clock.
+    """
+    train = pd.DataFrame({"a": [0.0] * 100, "b": np.linspace(0, 1, 100)})
+    valid = pd.DataFrame({"a": [1.0] * 100, "b": np.linspace(0, 1, 100)})
+    keep, dropped = stable_features(train, valid, ["a", "b"])
+    assert "a" not in keep
+    assert "b" in keep
+
+
+def test_a_stable_feature_survives():
+    rng = np.random.default_rng(0)
+    train = pd.DataFrame({"a": rng.normal(size=500)})
+    valid = pd.DataFrame({"a": rng.normal(size=500)})
+    keep, _ = stable_features(train, valid, ["a"])
+    assert keep == ["a"]
+
+
+def test_drift_is_measured_in_training_standard_deviations():
+    train = pd.DataFrame({"a": [0.0, 2.0] * 50})       # mean 1, sd ~1
+    valid = pd.DataFrame({"a": [3.0] * 100})           # mean 3
+    drift = feature_drift(train, valid, ["a"])
+    assert drift.iloc[0]["drift_sd"] == pytest.approx(2.0, abs=0.05)
+
+
+def test_a_feature_constant_in_training_is_dropped_not_exempted():
+    """The fit saw a constant, so it can carry no information about the column."""
+    train = pd.DataFrame({"a": [1.0] * 50})
+    valid = pd.DataFrame({"a": [5.0] * 50})
+    assert feature_drift(train, valid, ["a"]).iloc[0]["drift_sd"] == float("inf")
+    assert stable_features(train, valid, ["a"])[0] == []
+
+
+def test_drift_on_no_shared_columns_returns_an_empty_table_not_a_crash():
+    assert feature_drift(pd.DataFrame({"a": [1.0]}), pd.DataFrame({"b": [1.0]}),
+                         ["a", "b"]).empty

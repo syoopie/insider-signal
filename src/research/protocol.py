@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -195,6 +195,63 @@ def summarise(frame: pd.DataFrame, horizon: int = PRIMARY_HORIZON) -> Stat:
         hit_rate=float((values > 0).mean() * 100),
         se_clustered=_cluster_se(values.to_numpy(), aligned["ticker"].to_numpy()),
     )
+
+
+# A feature whose average shifts by more than this many training standard
+# deviations between splits is not measuring the same thing in both.
+MAX_DRIFT_SD = 0.5
+
+
+def feature_drift(train: pd.DataFrame, other: pd.DataFrame,
+                  columns: Sequence[str]) -> pd.DataFrame:
+    """
+    Standardised shift in each feature's average between two splits.
+
+    Some features here are functions of how much history the database held at
+    the time, not of insider behaviour. `first_purchase_unverifiable` fires
+    whenever the year before a trade predates ingest, so it was true for 62% of
+    training entries and 2% of validation ones. `prior_purchase_31_365d` moves
+    the other way as coverage accumulates, 16% to 33%.
+
+    A model fitted on one coverage regime and applied to another is reading a
+    clock. This is the same failure that made `first_purchase_12mo` fire on 87%
+    of pre-2025-04 signals against 32% after, which CLAUDE.md already records as
+    a fact about the ingest start date rather than about insiders.
+    """
+    rows = []
+    for name in columns:
+        if name not in train.columns or name not in other.columns:
+            continue
+        a = pd.to_numeric(train[name], errors="coerce")
+        b = pd.to_numeric(other[name], errors="coerce")
+        sd = a.std()
+        # No variance in training is the worst case, not an exempt one: the fit
+        # saw a constant and can carry no information about the column, while
+        # the split being scored has it varying. Report it as infinite drift so
+        # it is dropped rather than silently kept.
+        drift = float("inf") if (not np.isfinite(sd) or sd <= 1e-12) \
+            else float(abs(b.mean() - a.mean()) / sd)
+        rows.append({
+            "feature": name,
+            "train_mean": float(a.mean()),
+            "other_mean": float(b.mean()),
+            "drift_sd": drift,
+        })
+    if not rows:
+        return pd.DataFrame(columns=["feature", "train_mean", "other_mean", "drift_sd"])
+    return pd.DataFrame(rows).sort_values("drift_sd", ascending=False)
+
+
+def stable_features(train: pd.DataFrame, other: pd.DataFrame,
+                    columns: Sequence[str],
+                    max_drift: float = MAX_DRIFT_SD) -> tuple[list[str], pd.DataFrame]:
+    """The features that mean the same thing in both splits, and the ones that do not."""
+    drift = feature_drift(train, other, columns)
+    if drift.empty:
+        return list(columns), drift
+    dropped = drift[drift["drift_sd"] > max_drift]
+    keep = [c for c in columns if c not in set(dropped["feature"])]
+    return keep, dropped
 
 
 def top_k_by(frame: pd.DataFrame, column: str, k: int) -> pd.DataFrame:
