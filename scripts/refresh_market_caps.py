@@ -26,7 +26,7 @@ import requests
 
 from src.ingest.common import setup_log_tee, log, phase
 from src.db.connection import get_conn
-from src.market.prices import get_cap_tier
+from src.market.prices import get_cap_tier, sanitize_market_cap
 
 setup_log_tee("refresh_market_caps")
 
@@ -192,7 +192,7 @@ def main():
                         f"no_shares={no_shares}  no_price={no_price}  elapsed={elapsed:.0f}s")
                 continue
 
-            mc = int(shares * price)
+            mc = sanitize_market_cap(int(shares * price))
             cap_tier = get_cap_tier(mc)
             cur.execute(
                 "UPDATE companies SET market_cap = %s, cap_tier = %s WHERE cik = %s",

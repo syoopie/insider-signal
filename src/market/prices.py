@@ -38,7 +38,23 @@ def _throttle():
     _last_call = time.time()
 
 
+# EDGAR's CommonStockSharesOutstanding sometimes yields a share count that is
+# orders of magnitude too low — a single share class, or a value the filer scaled
+# in its own units. That produced caps like Planet Fitness at $5,036. Nothing in
+# an S&P 500 + Russell 2000 universe is worth under $10M, so a cap below this is
+# a failed lookup, not a micro-cap, and must not earn the small-cap bonus.
+MIN_PLAUSIBLE_MARKET_CAP = 10_000_000
+
+
+def sanitize_market_cap(market_cap: Optional[int]) -> Optional[int]:
+    """None for an implausible cap, so it stores as unknown and scores at +5."""
+    if market_cap is None or market_cap < MIN_PLAUSIBLE_MARKET_CAP:
+        return None
+    return market_cap
+
+
 def get_cap_tier(market_cap: Optional[int]) -> str:
+    market_cap = sanitize_market_cap(market_cap)
     if market_cap is None:
         return "unknown"
     if market_cap < 2_000_000_000:
@@ -123,7 +139,7 @@ def get_market_data(ticker: str) -> dict:
             return {}
 
         shares = _get_shares_outstanding(ticker)
-        market_cap = int(shares * current) if shares and current else None
+        market_cap = sanitize_market_cap(int(shares * current) if shares and current else None)
 
         mdata = {
             "market_cap": market_cap,
