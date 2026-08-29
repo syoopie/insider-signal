@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
-from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
