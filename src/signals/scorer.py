@@ -101,6 +101,13 @@ def score_transaction(
     # Hard disqualifier: trivially small purchase (< $2,000).
     # Sub-threshold buys are noise — automatic DRIP/401k contributions, dividend
     # reinvestment, or negligible open-market buys with no informational content.
+    #
+    # The `or 0` also disqualifies a P with no price, which is deliberate. EDGAR
+    # lets a filer omit transactionPricePerShare and defer it to a footnote, and
+    # in practice that never means an ordinary market buy: it is a private
+    # placement, a trust-to-trust transfer, or an award miscoded as P. Treating a
+    # missing price as $0 keeps those out. Do not "fix" this by skipping the
+    # check when total_value is None.
     total_value = transaction.get("total_value") or 0
     if total_value < 2_000:
         return {"score": 0, "breakdown": {"trivial_value": "DISQUALIFIED"}, "disqualified": True, "eligible": False}

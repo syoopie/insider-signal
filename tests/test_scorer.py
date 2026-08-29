@@ -148,3 +148,14 @@ def test_classify_cluster_buy_requires_avg_and_tight_or_maxscore():
     assert classify_signal(25, True, [25, 25, 25], tight_cluster=True) == "CLUSTER_BUY"
     # avg below 22 -> WATCH regardless
     assert classify_signal(21, True, [10, 20, 21], tight_cluster=True) == "WATCH"
+
+
+def test_purchase_with_no_price_is_disqualified(make_tx):
+    """
+    EDGAR lets a filer defer transactionPricePerShare to a footnote, which
+    leaves total_value NULL. Every observed case is a private placement, a
+    trust-to-trust transfer, or an award miscoded as P — never a market buy.
+    """
+    result = score(make_tx(price_per_share=None, total_value=None))
+    assert result["disqualified"] is True
+    assert result["breakdown"] == {"trivial_value": "DISQUALIFIED"}
