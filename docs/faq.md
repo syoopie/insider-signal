@@ -49,9 +49,9 @@ Three ways:
 
 ---
 
-**Q: The dashboard takes ~30 seconds to load sometimes.**
+**Q: The dashboard is slow on the first load sometimes.**
 
-Streamlit puts apps to sleep after ~12 hours of no visitors. The keep-alive workflow pings it twice a day to reduce how often this happens, but you may still hit a cold start occasionally. Subsequent page loads are fast once it's awake.
+Vercel does not sleep, but Neon scales the database to zero after a few minutes idle. The first query after a quiet period has to wake it, which takes a few seconds. Everything after that is fast, and most pages serve from cache anyway.
 
 ---
 

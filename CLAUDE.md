@@ -5,20 +5,26 @@ Read it in full before touching any code.
 
 ---
 
-## Dashboard migration in progress (started 2026-08-29)
+## The dashboard is a Next.js app in `web/` (migrated 2026-08-29)
 
-The Streamlit dashboard (`dashboard/app.py`) is being replaced by a Next.js app in
-`web/`, hosted on Vercel. **Read `docs/web-migration.md` first** — it has the
-decisions, phase status, verified DB shapes, and how to resume each phase. Also
-`web/README.md` and `web/AGENTS.md` (Next.js 16 has breaking changes — read its
-bundled docs before editing `web/`).
+The Streamlit app is gone. `web/` is a Next.js 16 app on Vercel, read-only against
+the same Neon database.
 
+- Read **`web/AGENTS.md` before editing anything in `web/`** — Next.js 16 has
+  breaking changes and ships its own docs in `node_modules/next/dist/docs/`.
+- `web/README.md` covers local dev, env vars and deployment.
+- `docs/web-migration.md` records how the migration was done and why.
 - The Python pipeline (`src/`, `scripts/`, `.github/workflows/`, the Neon schema,
-  Telegram alerts) is **unchanged** by this migration.
-- `web/` is read-only against the same Neon DB. Queries live in `web/lib/queries/`.
-- Work is phased; this CLAUDE.md's "Dashboard Sections" and "Stack" sections still
-  describe Streamlit and get rewritten when the migration's doc-sweep phase lands.
-- The feature branch is `feat/web-vercel-migration`.
+  Telegram alerts) was **unchanged** by the migration, apart from one additive
+  addition: `companies.sic_description` and `scripts/backfill_sic.py`.
+
+**`web/lib/db.ts` imports `server-only`.** A client component that imports a
+*value* from anything under `web/lib/queries/` pulls the database client and
+every SQL string into the browser bundle. That happened twice during the
+migration; it is now a build error. Import types from query modules freely —
+`import type` is erased — but put shared runtime helpers somewhere neutral
+(`lib/confidence.ts`, `lib/transaction-codes.ts`, `lib/signal-filters.ts` all
+exist for exactly this reason).
 
 ---
 
@@ -74,13 +80,13 @@ Skipping either step leaves the DB stale and the backtest chart misleading.
 | EDGAR API client | `src/ingest/edgar.py` → `_get()`, rate-limited to 8 req/sec |
 | Form 4 XML parser | `src/ingest/parser.py` → `parse_form4()` |
 | Role classification | `src/ingest/parser.py` → `classify_role()` |
-| Dashboard charts | `dashboard/app.py` — each tab is a clearly delimited `with tab_X:` block |
-| GitHub Actions config | `.github/workflows/` — 4 workflow files |
+| Dashboard pages | `web/app/*/page.tsx`; data in `web/lib/queries/`, charts in `web/components/charts.tsx` |
+| GitHub Actions config | `.github/workflows/` — 3 workflow files |
 | Backtest lookback window | `scripts/run_backtest.py` → `LOOKBACK_DAYS = 730` |
 
 **Key thresholds (do not change without re-running full backfill + backtest):**
 - BUY: score ≥ 60
-- CLUSTER_BUY: ≥3 direct insiders, 14d window, avg score ≥22 (was 25), tight OR max_score≥30 (was 35)
+- CLUSTER_BUY: ≥3 direct insiders, 14d window, avg score ≥22 (was 25), tight OR max_score ≥30 (was 35); large-cap downgraded to WATCH by the callers
 - WATCH: score 45–59 OR weak cluster
 - Backtest lookback: 730 days
 
@@ -89,7 +95,7 @@ Skipping either step leaves the DB stale and the backtest chart misleading.
 ## What This System Does
 
 Ingests SEC Form 4 insider purchase disclosures daily, scores them with a
-research-backed model, and surfaces actionable buy signals via a Streamlit
+research-backed model, and surfaces actionable buy signals via a Next.js
 dashboard and Telegram alerts. Runs at zero cost indefinitely.
 
 **Research basis (non-negotiable — these are the foundation of every design decision):**
@@ -106,12 +112,12 @@ dashboard and Telegram alerts. Runs at zero cost indefinitely.
 | Layer | Service | Notes |
 |---|---|---|
 | Scheduler | GitHub Actions | Daily ingest weekdays 11am UTC; weekly backtest Sundays 12pm UTC |
-| Database | Neon PostgreSQL (free tier) | 0.5 GB limit; direct URL for Actions, pooled URL for Streamlit |
-| Dashboard | Streamlit Community Cloud | `dashboard/app.py`; uses pooled connection string |
+| Database | Neon PostgreSQL (free tier) | 0.5 GB limit; direct URL for Actions, HTTP driver for the web app |
+| Dashboard | Next.js 16 on Vercel | `web/`; Root Directory must be `web`. Read-only |
 | Alerts | Telegram Bot API | BUY and CLUSTER_BUY signals only |
 | Data | SEC EDGAR (free, public) | 10 req/sec hard limit; we use 8 for ingest, 3 for bootstrap |
 
-**All credentials live in GitHub Actions Secrets and Streamlit Secrets — never in code.**
+**All credentials live in GitHub Actions Secrets and Vercel environment variables — never in code.**
 The repo is public. `.env` is gitignored and local-only.
 
 ---
@@ -155,11 +161,11 @@ scripts/run_backtest.py
                      lookback_days=730)       computes excess returns vs SPY/IWM
         save_backtest_results(results)      ← upserts backtest_runs (deletes today's rows first)
     ↓
-dashboard/app.py                            ← reads all tables, no writes; Streamlit read-only
+web/ (Next.js on Vercel)                    ← reads all tables, no writes; read-only
 ```
 
-**Key constraint**: `dashboard/app.py` never writes to the database. All writes
-happen through the ingest and backtest scripts.
+**Key constraint**: `web/` never writes to the database. All writes happen
+through the ingest and backtest scripts.
 
 ---
 
@@ -193,14 +199,18 @@ scripts/
   run_ingest.py         # Daily ingest entry point (called by GitHub Actions)
   run_backtest.py       # Weekly backtest entry point. LOOKBACK_DAYS = 730
   update_tickers.py     # Refresh S&P500 + Russell2000 ticker universe in companies table
+  backfill_sic.py       # Fill companies.sic_code/sic_description from EDGAR submissions API
 
-dashboard/
-  app.py                # All 5 dashboard tabs in one file; read-only DB access
+web/                    # Next.js 16 dashboard (Vercel). See web/README.md and web/AGENTS.md.
+  app/                  # Routes: / /backtest /clusters /sectors /ticker /how-it-works
+  components/           # UI. Anything under components/ may be bundled for the browser.
+  lib/db.ts             # Neon HTTP client, read-only, `server-only`
+  lib/queries/          # One typed module per concern; JSONB parsed at this boundary
+  lib/types.ts          # zod schemas for evidence / score_breakdown / backtest metrics
 
 .github/workflows/
-  daily_ingest.yml      # Weekdays 11am UTC + workflow_dispatch
+  daily_ingest.yml      # Weekdays 11am UTC + workflow_dispatch; busts the web cache after
   weekly_backtest.yml   # Sundays 12pm UTC — refresh_market_caps then run_backtest
-  keep_alive.yml        # 2x/day pings Streamlit to prevent cold-start lag
   bootstrap.yml         # Manual only — workflow_dispatch triggers bootstrap.py
 ```
 
@@ -213,7 +223,8 @@ dashboard/
 cik         TEXT PRIMARY KEY     — zero-stripped CIK from EDGAR
 ticker      TEXT                 — exchange ticker (may be NULL for foreign filers)
 name        TEXT                 — company name from EDGAR
-sic_code    TEXT                 — SIC industry code (not currently used in scoring)
+sic_code    TEXT                 — SIC industry code; filled by scripts/backfill_sic.py, not by ingest
+sic_description TEXT             — EDGAR's readable industry label; drives /sectors
 market_cap  BIGINT               — shares_outstanding × current_price (refreshed weekly)
 cap_tier    TEXT                 — 'small' (<$2B), 'mid' ($2B–$10B), 'large' (>$10B), 'unknown'
 updated_at  TIMESTAMPTZ
@@ -255,7 +266,7 @@ id              SERIAL PRIMARY KEY
 ticker          TEXT
 signal_date     DATE            — filed_date + 1 day (NOT transaction_date — avoids look-ahead bias)
 score           INT             — 0–100
-signal_type     TEXT            — 'BUY' (≥65), 'WATCH' (45–64), 'CLUSTER_BUY', 'LOW'
+signal_type     TEXT            — 'BUY' (≥60), 'WATCH' (45–59 or a weak cluster), 'CLUSTER_BUY', 'LOW'
 cluster_flag    BOOLEAN         — TRUE if ≥3 direct insiders bought in 14d window
 score_breakdown JSONB           — {factor_name: points} e.g. {"role_cfo": 20, "cap_small": 15}
 evidence        JSONB           — full detail: insiders[], cluster{}, company context, filed_date
@@ -377,20 +388,24 @@ before inserting. Safe to re-run on the same day. Historical runs accumulate ind
 
 ```
 cluster_flag=True:
-    avg(participant_scores) >= 28 AND (tight_cluster OR max_score >= 45)
-        AND cap_tier != 'large'  → CLUSTER_BUY
-    cap_tier == 'large'          → WATCH  (0% hit rate at 90d, −16% avg excess)
-    avg >= 28 but loose + weak   → WATCH
-    avg < 28                     → WATCH  (very weak cluster — surfaced but no alert)
+    avg(participant_scores) >= 22 AND (tight_cluster OR max_score >= 30) → CLUSTER_BUY
+    otherwise                                                            → WATCH
 no cluster:
     score >= 60                  → BUY  (was 65; reduced after 2026-05-25 recalibration)
     score >= 45                  → WATCH
     score < 45                   → LOW
 ```
 
-The cluster uses **average** of all participant scores, not the max. Three directors
-each scoring 42 → avg=42 ≥ 35 qualifies. Empirical: loose clusters with max_score<50
-averaged −5% excess at 90d; tight/high-score clusters averaged +3–5%.
+**The large-cap downgrade is not in `classify_signal()`.** Both callers
+(`run_ingest.py` and `backfill_signals.py`) apply it themselves right after the
+call: `CLUSTER_BUY` + `cap_tier == 'large'` → `WATCH` (0% hit rate at 90d, −16%
+avg excess). Anything that classifies signals must do the same or it will
+disagree with the stored data.
+
+The cluster uses the **average** of all participant scores, not the max — three
+directors each scoring 31 gives avg=31, which clears 22. Empirical: loose
+clusters with weak individual scores averaged −5% excess at 90d; tight or
+high-score clusters averaged +3–5%.
 
 ---
 
@@ -497,44 +512,30 @@ Cap tier boundaries:
 
 ---
 
-## Dashboard Sections (`dashboard/app.py`)
+## Dashboard Routes (`web/`)
 
-### Tab 1 — Signals
-- Filters: lookback days (slider), min score (slider), signal types (checkboxes), cap tier (checkboxes)
-- Top Picks section: top 3 CLUSTER_BUY (or BUY) signals with conviction badges (PRIME/STRONG/CLUSTER/HIGH/BUY)
-- Conviction logic: PRIME = tight + exec cluster, STRONG = tight OR exec, CLUSTER = neither
-- Each signal expands to show: who bought (table), score breakdown (bar chart), cluster/52wk-low badges
+| Route | What it does | Query module |
+|---|---|---|
+| `/` | Signal triage. URL-backed filters (lookback, min score, type, cap tier, search, day pin), a per-day volume strip, Top Picks, and expandable signal cards carrying the whole evidence blob. "New since last visit" is per-browser localStorage. | `lib/queries/signals.ts` |
+| `/backtest` | Hit rate per horizon, excess return by signal month, distribution, stratified breakdowns, risk, cluster 50–64, rolling 90-day hit rate. | `lib/queries/backtest.ts` |
+| `/clusters` | Every 14-day window with 3+ insiders, each as a timeline. Read from `signals`, never recomputed. | `lib/queries/clusters.ts` |
+| `/sectors` | Signals grouped by SIC division. Needs `backfill_sic.py` to have run. | `lib/queries/sectors.ts` |
+| `/ticker` and `/ticker/[symbol]` | Ticker search; per-ticker transactions, purchase scatter, signal history, live quote. | `lib/queries/ticker.ts` |
+| `/how-it-works` | Pipeline diagram, disqualifiers, interactive scoring explainer, thresholds, research, limitations. | `lib/queries/pipeline.ts` |
+| `/preview` | Dev-only component gallery. | — |
 
-### Tab 2 — Positions
-- Shows signals within `HOLD_HORIZON_DAYS = 90` that haven't expired
-- Fetches live prices via `_fetch_current_price()` (Yahoo Finance, 5-min cache)
-- Return = (current − avg_insider_entry) / entry × 100 (raw, not vs SPY)
+**Conventions that matter:**
 
-### Tab 3 — Backtest
-- Hit rate metrics: one metric card per horizon, delta vs 50% baseline
-- **Avg excess return chart**: built from `detail[].exec_date` in latest run's metrics JSONB, binned by month, colored by horizon. Falls back to bar chart if no detail data yet.
-- Distribution tab: box plot (p25–p75 box, median line, min/max whiskers) per horizon
-- Score band / cap tier / signal type tabs: pivot tables with N, hit rate, avg, median
-- Risk tab: % losses >20%, max consecutive losses, worst outcome
-- Cluster 50–64 tab: separate analysis of CLUSTER_BUY signals scored below BUY threshold
-- Rolling hit rate: 90-day rolling hit rate sampled every 14 days — useful for detecting alpha decay
-
-### Tab 4 — History
-- Per-ticker transaction history (up to 100 most recent)
-- Scatter plot of open-market purchases: green = opportunistic, grey = routine
-- Signal history for the ticker at the bottom
-
-### Tab 5 — About
-- Data sources, scoring table, signal type explanations, backtest methodology, limitations, research papers
-
-**Dashboard DB connection**: `get_db()` uses `@st.cache_resource` (one connection per session).
-The pooled URL (`-pooler.neon.tech`) is auto-inserted if missing — never use the direct URL in
-Streamlit (Neon requires connection pooling for serverless deployments).
-
-`_parse_metrics(raw)` normalizes metrics JSONB from both old (list) and new (dict) formats.
-Call it before any `.get()` on metrics data.
-
----
+- Every query fn is wrapped in `unstable_cache` with a tag (`pipeline`, `signals`,
+  `backtest`) and a 15-minute revalidate. Pages set `export const revalidate`.
+- Cache keys must stay bounded. Free-text search is applied in memory, not in SQL,
+  so typing cannot explode the key space.
+- JSONB (`evidence`, `score_breakdown`, `metrics`) is parsed once by the zod
+  schemas in `lib/types.ts` at the query boundary. Components receive typed data.
+- Joins to `companies` use `LEFT JOIN LATERAL ... LIMIT 1`. `companies` is keyed
+  by CIK and ticker is not unique, so a plain join duplicates rows.
+- `POST /api/revalidate` (bearer token) busts all three tags; `daily_ingest.yml`
+  calls it after a successful run.
 
 ## Operational Scripts
 
@@ -584,13 +585,12 @@ python3 scripts/run_backtest.py
 |---|---|---|
 | `daily_ingest.yml` | Weekdays 11am UTC | Runs `run_ingest.py`; commits `last_run.txt` to keep repo active |
 | `weekly_backtest.yml` | Sundays 12pm UTC | `refresh_market_caps.py` then `run_backtest.py` |
-| `keep_alive.yml` | 2x/day | HTTP ping to Streamlit URL to prevent cold-start lag |
 | `bootstrap.yml` | Manual only | `workflow_dispatch` triggers `bootstrap.py` with configurable date range |
 
 **GitHub Actions gotchas:**
 - Workflows **disable after 60 days of no repo activity**. `run_ingest.py` commits `last_run.txt` each day to keep the repo live. If disabled, re-enable from the Actions tab on GitHub.
 - Neon **scales to zero when idle** (~5 min). First query of the day may be slow. Never rely on pg_cron — GitHub Actions is the only scheduler.
-- Streamlit **sleeps after ~12 hours of inactivity**. `keep_alive.yml` pings it 2x/day.
+- Vercel does not sleep, so there is no keep-alive workflow. Neon still scales to zero when idle, so the first query after a quiet period is slow — that is inherent and a ping would not fix it (Neon idles after ~5 minutes).
 
 ---
 
@@ -672,11 +672,11 @@ Worst: LGF (Lions Gate) — insiders averaging down, −63.1% at 180d. No filter
 
 **Neon connection timeout in Actions:**
 - Direct URL must be used (not pooled) in GitHub Actions. Check `DATABASE_URL` secret doesn't include `-pooler`.
-- Dashboard uses pooled URL — `get_db()` auto-inserts `-pooler` if missing.
+- The web app uses Neon's HTTP driver (`@neondatabase/serverless`), which needs no pooler.
 
-**Streamlit dashboard not updating:**
-- `@st.cache_data(ttl=300)` means prices cached 5 min. `@st.cache_resource` means DB connection cached for session.
-- Click the "rerun" button or clear cache via the Streamlit menu.
+**Dashboard not updating:**
+- Query results are cached 15 minutes (`unstable_cache`) and pages have their own `revalidate`. Wait it out, redeploy, or `POST /api/revalidate` with the bearer token.
+- Prices are fetched client-side per request and cached 5 minutes at the CDN; they are never stored.
 
 ---
 
@@ -684,12 +684,12 @@ Worst: LGF (Lions Gate) — insiders averaging down, −63.1% at 180d. No filter
 
 - **Never** commit `.env`, `secrets.toml`, or any credential file. The repo is public.
 - **Never** use `get_conn()` outside a `with` block — the context manager handles commit/rollback/close.
-- **Never** change the cluster threshold (14d, 3 insiders), BUY threshold (60), cluster avg (28), or cluster max_score (45) without re-running the full backfill — every signal in the DB would be stale.
+- **Never** change the cluster threshold (14d, 3 insiders), BUY threshold (60), cluster avg (22), or cluster max_score (30) without re-running the full backfill — every signal in the DB would be stale.
 - **Never** add `ORDER BY RANDOM()` or non-deterministic queries to backfill — idempotency depends on deterministic processing order.
 - **Never** call `get_market_data()` in the backfill script — it fetches live prices which don't represent historical cap tiers. Use `tx.get("cap_tier")` from the companies join instead.
-- **Never** write to the DB from `dashboard/app.py` — the dashboard is strictly read-only.
-- **Never** use the pooled Neon URL (`-pooler.neon.tech`) in GitHub Actions — only in Streamlit.
-- **Never** use the direct Neon URL in Streamlit — it exceeds Neon's serverless connection limit.
+- **Never** write to the DB from `web/` — the dashboard is strictly read-only. `lib/db.ts` exposes reads only.
+- **Never** use the pooled Neon URL (`-pooler.neon.tech`) in GitHub Actions — the direct URL is correct there.
+- **Never** import a *value* from `web/lib/queries/` into a client component. `import type` is fine; a value import drags the DB client into the browser bundle and `server-only` will fail the build.
 - **Don't** change `LOOKBACK_DAYS` in `run_backtest.py` without understanding that it affects the date range of the backtest chart (via `detail.exec_date`).
 - **Don't** add error handling for scenarios that can't happen. Trust framework guarantees.
 - **Don't** add comments explaining what code does. Only comment the non-obvious *why*.

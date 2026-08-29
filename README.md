@@ -43,19 +43,19 @@ The key is filtering. Not all insider buys carry signal — pre-arranged plans, 
 | [docs/architecture.md](docs/architecture.md) | System diagram, data flow, project structure, database schema, cost breakdown, key terms |
 | [docs/research.md](docs/research.md) | Academic references for every scoring factor, backtest methodology, factors not implemented and why |
 | [docs/faq.md](docs/faq.md) | Common questions about the system, the research, and day-to-day operation |
-| [web/README.md](web/README.md) | The Next.js dashboard (on Vercel) that is replacing the Streamlit app |
+| [web/README.md](web/README.md) | The Next.js dashboard on Vercel |
 
 ---
 
 ## Quick Start
 
-Prerequisites: Python 3.9+, free accounts at [github.com](https://github.com), [neon.tech](https://neon.tech), [share.streamlit.io](https://share.streamlit.io), and Telegram.
+Prerequisites: Python 3.9+, Node 20+, free accounts at [github.com](https://github.com), [neon.tech](https://neon.tech), [vercel.com](https://vercel.com), and Telegram.
 
 See [docs/setup.md](docs/setup.md) for the full guide. At a high level:
 
 1. Create a public GitHub repo and push this code
 2. Add three GitHub Secrets: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
-3. Deploy `dashboard/app.py` to Streamlit Community Cloud with the pooled `DATABASE_URL`
+3. Deploy `web/` to Vercel with **Root Directory = `web`** and the `DATABASE_URL` env var
 4. Run the bootstrap locally to seed historical data
 5. GitHub Actions runs the rest — daily at 6 AM ET, forever
 
@@ -67,7 +67,7 @@ See [docs/setup.md](docs/setup.md) for the full guide. At a high level:
 |---|---|---|
 | Compute + scheduler | GitHub Actions (public repo) | Free |
 | Database | Neon PostgreSQL (0.5 GB free tier) | Free |
-| Dashboard | Next.js on Vercel (`web/`) — migrating off Streamlit Community Cloud | Free |
+| Dashboard | Next.js on Vercel (`web/`) | Free |
 | Alerts | Telegram Bot API | Free |
 | Filing data | SEC EDGAR API (public) | Free |
 | Market data | Yahoo Finance via yfinance | Free |

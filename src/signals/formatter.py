@@ -64,7 +64,7 @@ def build_evidence(
 ) -> dict:
     """
     Builds the full evidence dict stored in the signals table and
-    used for both Telegram messages and the Streamlit dashboard.
+    used for both Telegram messages and the web dashboard.
     """
     # Collect research citations for factors that fired
     research_basis = []

@@ -7,7 +7,9 @@ from contextlib import contextmanager
 def get_connection_string(pooled: bool = False) -> str:
     url = os.environ["DATABASE_URL"]
     if pooled and "-pooler" not in url:
-        # Insert -pooler into the hostname for Streamlit / multi-connection contexts
+        # Insert -pooler into the hostname for multi-connection contexts.
+        # Unused by the current callers: the ingest jobs want the direct string and
+        # the web dashboard uses Neon's HTTP driver, which needs no pooler.
         url = url.replace(".neon.tech", "-pooler.neon.tech", 1)
     return url
 

@@ -1,8 +1,8 @@
 # Insider Signal — Web Dashboard
 
-Next.js (App Router) dashboard that replaces the Streamlit app in `../dashboard/`.
-Read-only: it queries the Neon database the Python pipeline writes to and never
-mutates anything.
+Next.js (App Router) dashboard for the insider-signal pipeline. Read-only: it
+queries the Neon database the Python pipeline writes to and never mutates
+anything.
 
 ## Stack
 
@@ -12,7 +12,7 @@ mutates anything.
 | Language | TypeScript |
 | Styling | Tailwind v4 + shadcn/ui (`base-nova` style, components in `components/ui/`) |
 | Charts | Recharts (via shadcn chart primitives) |
-| Tables | TanStack Table |
+| Tables | Hand-rolled `DataTable` (`components/data-table.tsx`) |
 | Database | `@neondatabase/serverless` (HTTP), typed query modules in `lib/queries/` |
 | URL state | `nuqs` |
 | Client data | SWR (on-demand price fetches only) |
