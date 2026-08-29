@@ -20,12 +20,14 @@ GitHub Actions secret in CI).
 | `refresh_market_caps.py` | Weekly before the backtest (the workflow does this); or manually after adding companies. |
 | `update_tickers.py` | Quarterly — refreshes the S&P 500 + Russell 2000 universe in `companies`. |
 | `backfill_sic.py` | Once after the first ingest, then rarely — fills `companies.sic_code` / `sic_description` for `/sectors`. |
+| `purge_debt_transactions.py` | Rarely — removes Table I rows reporting notes rather than stock, which store a principal amount in both the share and price fields. The parser now skips these; this clears rows written before that. `--dry-run`. |
 
 ## Analysis
 
 | Script | Purpose |
 | --- | --- |
 | `analyze_factors.py` | Factor-return correlation report from the latest backtest run. Read-only. |
+| `audit_data.py` | 60+ data-quality checks across every table, plus the `src/db/purchases.py` rollup invariants. Prints `<-- LOOK` on anything non-zero. Read-only; run it after any pipeline change. |
 
 ## Local development
 
