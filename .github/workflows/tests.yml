@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [main, feat/web-vercel-migration]
+    branches: [main]
   pull_request:
 
 jobs:
