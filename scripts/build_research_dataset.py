@@ -38,6 +38,14 @@ from src.db.store import get_history_start
 from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.market.features import price_context, price_on, window_return
 from src.market.panel import PANEL_PATH, load_panel
+from src.research.protocol import PRIMARY_HORIZON
+from src.research.tier1 import (
+    averaging_down,
+    cluster_intensity,
+    insider_track_record,
+    net_insider_demand,
+    value_vs_own_history,
+)
 from src.signals.batch import priors_before_window, score_purchase
 
 setup_log_tee("build_research_dataset")
@@ -71,6 +79,29 @@ def _load_purchases() -> list[dict]:
             return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def _load_sales() -> pd.DataFrame:
+    """
+    Open-market sales, for the net-demand feature.
+
+    91,296 of these are stored and the scorer has never read one, so the system
+    uses half of a buy-minus-sell result. No rollup here: only the issuer, the
+    disclosure date and the dollar amount matter, and summing raw fills is the
+    right aggregation for a firm-level balance.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT f.cik, f.filed_date, t.insider_name,
+                       COALESCE(t.total_value, 0) AS total_value
+                FROM transactions t
+                JOIN form4_filings f ON f.id = t.filing_id
+                WHERE t.transaction_code = 'S'
+                  AND t.is_10b51 IS NOT TRUE
+            """)
+            cols = [d[0] for d in cur.description]
+            return pd.DataFrame(cur.fetchall(), columns=cols)
+
+
 def _eligible(row: dict) -> bool:
     value = row.get("total_value")
     return (
@@ -97,11 +128,9 @@ def main():
         if bench not in panel:
             raise SystemExit(f"Panel is missing {bench}; excess returns cannot be computed.")
 
-    all_purchases = _load_purchases()
-    since = date.today() - timedelta(days=args.days)
-    purchases = [p for p in all_purchases if p["filed_date"] >= since]
-    log(f"Purchases: {len(all_purchases):,} insider-days stored, "
-        f"{len(purchases):,} filed in the last {args.days}d (the output window)")
+    purchases = _load_purchases()
+    all_purchases = purchases
+    log(f"Purchases: {len(purchases):,} insider-days stored")
 
     # `first_purchase_12mo` is only meaningful where the database covers the
     # whole year before the trade, so the scorer needs to know where coverage
@@ -213,6 +242,21 @@ def main():
         rows.append(row)
 
     frame = _explode_breakdown(pd.DataFrame(rows))
+
+    phase("TIER 1 FEATURES")
+    sales = _load_sales()
+    log(f"Sale rows for net-demand: {len(sales):,} across {sales['cik'].nunique():,} issuers")
+    label = f"excess_spy_{PRIMARY_HORIZON}d"
+    for name, block in (
+        ("net insider demand", net_insider_demand(sales, frame)),
+        ("insider track record", insider_track_record(frame, label)),
+        ("averaging down", averaging_down(frame)),
+        ("cluster intensity", cluster_intensity(frame)),
+        ("value vs own history", value_vs_own_history(frame)),
+    ):
+        frame = pd.concat([frame, block], axis=1)
+        log(f"  {name:<24} {len(block.columns)} columns")
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(args.out, index=False, compression="zstd")
 
@@ -272,16 +316,21 @@ def main():
 
 def _explode_breakdown(frame: pd.DataFrame) -> pd.DataFrame:
     """
-    One `f_<factor>` column per scoring factor, 0 where it did not fire.
+    One `f_<factor>` indicator column per scoring factor: 1 if it fired, else 0.
 
-    A dict column is unusable as a regressor. Flattening here means the factor
-    set is discovered from the data rather than hard-coded, so a factor added to
-    the scorer appears in the dataset without editing a list — which is how
-    analyze_factors.py's hard-coded ALL_FACTORS went stale.
+    Indicators, not the signed point values. A factor worth -10 points takes the
+    value -10 when it fires and 0 when it does not, so "higher" means "did not
+    fire" and every coefficient on a penalty reads backwards. That inverts the
+    interpretation of `indirect_purchase`, `role_ceo` and `first_purchase_12mo`
+    at once. The points are already in the scorer's weight table; what the
+    regression needs is whether the factor applied.
+
+    The factor set is discovered from the data rather than hard-coded, which is
+    how analyze_factors.py's ALL_FACTORS list went stale.
     """
     names = sorted({k for bd in frame["breakdown"] for k in bd})
     for name in names:
-        frame[f"f_{name}"] = [float(bd.get(name, 0) or 0) for bd in frame["breakdown"]]
+        frame[f"f_{name}"] = [1.0 if name in bd else 0.0 for bd in frame["breakdown"]]
     return frame.drop(columns=["breakdown"])
 
 
