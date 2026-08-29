@@ -79,24 +79,24 @@ def main() -> int:
             log("Nothing to do — every company already has a SIC code.")
             return 0
 
-        with phase(f"Fetching SIC for {len(targets)} companies"):
-            filled = 0
-            for i, (cik, ticker) in enumerate(targets, 1):
-                sic, desc = fetch_sic(cik)
-                if sic or desc:
-                    cur.execute(
-                        "UPDATE companies SET sic_code = COALESCE(%s, sic_code), "
-                        "sic_description = COALESCE(%s, sic_description), updated_at = now() "
-                        "WHERE cik = %s",
-                        (sic, desc, cik),
-                    )
-                    filled += 1
-                if i % 100 == 0:
-                    conn.commit()
-                    log(f"  {i}/{len(targets)} processed, {filled} filled")
+        phase(f"Fetching SIC for {len(targets)} companies")
+        filled = 0
+        for i, (cik, ticker) in enumerate(targets, 1):
+            sic, desc = fetch_sic(cik)
+            if sic or desc:
+                cur.execute(
+                    "UPDATE companies SET sic_code = COALESCE(%s, sic_code), "
+                    "sic_description = COALESCE(%s, sic_description), updated_at = now() "
+                    "WHERE cik = %s",
+                    (sic, desc, cik),
+                )
+                filled += 1
+            if i % 100 == 0:
+                conn.commit()
+                log(f"  {i}/{len(targets)} processed, {filled} filled")
 
-            conn.commit()
-            log(f"Done: {filled} of {len(targets)} companies now carry a SIC code.")
+        conn.commit()
+        log(f"Done: {filled} of {len(targets)} companies now carry a SIC code.")
 
     return 0
 
