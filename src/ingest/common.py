@@ -14,6 +14,15 @@ import time
 from datetime import datetime
 from typing import Optional, Set
 
+# Windows consoles default to cp1252, which cannot encode the box-drawing chars
+# in phase() or the accented company names that come back from EDGAR. Force
+# UTF-8 on the real streams before anything writes to them.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 from src.ingest.edgar import (
     fetch_cik_ticker_map, fetch_filing_xml,
     EdgarRateLimitError, EdgarBlockedError, EdgarServerError,
