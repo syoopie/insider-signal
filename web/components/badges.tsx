@@ -69,12 +69,20 @@ export function ConvictionBadge({ conviction, className }: { conviction: Convict
   return <span className={cn(base, meta.className, "uppercase tracking-wide", className)}>{meta.label}</span>;
 }
 
-/** Mirrors `_conviction()` in the Streamlit app. */
+/**
+ * Mirrors `_conviction()` in the Streamlit app, with one correction: WATCH and
+ * LOW return null.
+ *
+ * The Streamlit version was only ever called on BUY and CLUSTER_BUY, so its
+ * fall-through returned "BUY" for anything else. Called on a WATCH — a
+ * large-cap cluster downgraded precisely because it underperformed — that
+ * labels it a buy.
+ */
 export function convictionFor(
   signalType: SignalType,
   score: number,
   cluster: { tight_cluster?: boolean | null; executive_cluster?: boolean | null } | null | undefined,
-): Conviction {
+): Conviction | null {
   if (signalType === "CLUSTER_BUY") {
     const tight = !!cluster?.tight_cluster;
     const exec = !!cluster?.executive_cluster;
@@ -82,7 +90,8 @@ export function convictionFor(
     if (tight || exec) return "STRONG";
     return "CLUSTER";
   }
-  return score >= 70 ? "HIGH" : "BUY";
+  if (signalType === "BUY") return score >= 70 ? "HIGH" : "BUY";
+  return null;
 }
 
 // ── Cap tier ────────────────────────────────────────────────────────────────

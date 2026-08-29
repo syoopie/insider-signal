@@ -45,7 +45,7 @@ export function TopPicks({ signals }: { signals: Signal[] }) {
               href={`#signal-${s.id}`}
               className="group flex flex-col gap-2 rounded-xl border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-muted/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             >
-              <ConvictionBadge conviction={conviction} className="self-start" />
+              {conviction && <ConvictionBadge conviction={conviction} className="self-start" />}
 
               <div className="min-w-0">
                 <div className="font-mono text-2xl font-semibold tracking-tight">{s.ticker}</div>

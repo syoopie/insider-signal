@@ -24,7 +24,8 @@ export function SignalCard({ signal, isNew = false }: { signal: Signal; isNew?: 
 
   // For a plain BUY under 70 the conviction is literally "Buy", which the type
   // badge beside it already says. Only show it when it adds something.
-  const showConviction = signal.signalType === "CLUSTER_BUY" || conviction === "HIGH";
+  const showConviction =
+    conviction !== null && (signal.signalType === "CLUSTER_BUY" || conviction === "HIGH");
 
   const tags: string[] = [];
   if (cluster?.tight_cluster) tags.push("tight window");

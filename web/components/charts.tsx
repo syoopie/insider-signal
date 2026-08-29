@@ -145,6 +145,7 @@ export function CategoryBarChart({
   xKey = "x",
   yFormat = (v) => String(v),
   referenceY,
+  stacked = false,
   height = 240,
 }: {
   data: Record<string, number | string>[];
@@ -152,6 +153,8 @@ export function CategoryBarChart({
   xKey?: string;
   yFormat?: (v: number) => string;
   referenceY?: number;
+  /** Stack the series when they are parts of one total rather than rival measures. */
+  stacked?: boolean;
   height?: number;
 }) {
   const config = configFor(series);
@@ -175,8 +178,14 @@ export function CategoryBarChart({
         {series.length > 1 && (
           <ChartLegend content={<ChartLegendContent />} itemSorter={seriesOrder(series)} />
         )}
-        {series.map((s) => (
-          <Bar key={s.key} dataKey={s.key} fill={`var(--color-${s.key})`} radius={[4, 4, 0, 0]} />
+        {series.map((s, i) => (
+          <Bar
+            key={s.key}
+            dataKey={s.key}
+            fill={`var(--color-${s.key})`}
+            stackId={stacked ? "total" : undefined}
+            radius={stacked && i < series.length - 1 ? [0, 0, 0, 0] : [4, 4, 0, 0]}
+          />
         ))}
       </BarChart>
     </ChartContainer>
