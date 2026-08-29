@@ -110,6 +110,20 @@ CHECKS = [
           SELECT 1 FROM companies c WHERE c.ticker=s.ticker AND c.cap_tier='large')"""),
     ("signals: alerted=true but type not BUY/CLUSTER_BUY",
      "SELECT count(*) v FROM signals WHERE alerted=true AND signal_type NOT IN ('BUY','CLUSTER_BUY')"),
+    # A signal older than the last backfill window keeps whatever model scored it.
+    # These rows carry factors the current scorer cannot emit, so they are not
+    # comparable to the rest of the table and must not reach factor analysis.
+    # Clear them by widening the window: backfill_signals.py --days 900 --force.
+    ("signals: score_breakdown carries factors the current model cannot produce",
+     """SELECT count(*) v FROM signals WHERE score_breakdown ?| ARRAY[
+          'value_500k_plus','value_100k_plus','holdings_increase_30pct',
+          'holdings_increase_15pct','fast_filing_0_1d','fast_filing_2d',
+          'near_52wk_low_5pct','near_52wk_low_10pct',
+          'cluster_size_4plus','cluster_size_5plus','cluster_size_6plus']"""),
+    # Nothing in the weight table can sum above 61. A higher score is a row left
+    # behind by an earlier model, not a stronger signal.
+    ("signals: score above the current model's maximum of 61",
+     "SELECT count(*) v FROM signals WHERE score > 61"),
 
     # ---- purchase rollup invariants (src/db/purchases.py) -------------------
     # The rollup totals same-day broker fills but must not total the repeats a

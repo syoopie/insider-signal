@@ -7,7 +7,12 @@ scored 'small' — earning the +15 small-cap bonus it should never have had.
 """
 import pytest
 
-from src.market.prices import MIN_PLAUSIBLE_MARKET_CAP, get_cap_tier, sanitize_market_cap
+from src.market.prices import (
+    MIN_PLAUSIBLE_MARKET_CAP,
+    _total_return_closes,
+    get_cap_tier,
+    sanitize_market_cap,
+)
 
 
 @pytest.mark.parametrize("cap", [0, 710, 5_036, 792_234, MIN_PLAUSIBLE_MARKET_CAP - 1])
@@ -35,3 +40,19 @@ def test_missing_cap_is_unknown():
 def test_real_caps_keep_their_tier(cap, tier):
     assert sanitize_market_cap(cap) == cap
     assert get_cap_tier(cap) == tier
+
+
+def test_returns_are_measured_on_dividend_adjusted_closes():
+    """Raw closes omit dividends, and the omission does not cancel against SPY."""
+    indicators = {
+        "quote":    [{"close":    [17.25, 22.61]}],
+        "adjclose": [{"adjclose": [15.01, 20.89]}],
+    }
+    assert _total_return_closes(indicators) == [15.01, 20.89]
+
+
+def test_missing_adjclose_falls_back_to_raw_closes():
+    """A symbol with no adjclose must still be measurable, not silently dropped."""
+    assert _total_return_closes({"quote": [{"close": [10.0, 12.0]}]}) == [10.0, 12.0]
+    assert _total_return_closes({"quote": [{"close": [10.0]}], "adjclose": [{}]}) == [10.0]
+    assert _total_return_closes({}) == []

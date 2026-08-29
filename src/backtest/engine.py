@@ -260,10 +260,12 @@ def run_backtest(threshold: int = BUY_SCORE, lookback_days: int = 730) -> List[D
                 f"  excess={excess:>+6.1f}%")
 
             row = {
+                "signal_id": sig["signal_id"],
                 "ticker": ticker,
                 "signal_type": sig["signal_type"],
                 "score": sig["score"],
                 "cap_tier": sig.get("cap_tier") or "unknown",
+                "signal_date": sig_date.isoformat(),
                 "exec_date": exec_date.isoformat(),
                 "ticker_return": round(ticker_ret, 2),
                 "spy_return": round(spy_ret, 2),
@@ -462,12 +464,21 @@ def save_backtest_results(results: List[Dict], threshold: int) -> None:
     log(f"Saved {len(results)} horizon result(s) to backtest_runs.")
 
 
+# Column order for both signal queries below. `id` is carried through into the
+# per-signal `detail` rows so analysis can join on it. Without it,
+# analyze_factors.py had to guess which signal a return belonged to by searching
+# for a signal_date within 8 days of exec_date - 4, which mismatches whenever a
+# ticker has several signals in a fortnight.
+_SIGNAL_COLS = ["signal_id", "ticker", "signal_date", "score", "signal_type",
+                "cluster_flag", "cap_tier", "filed_date"]
+
+
 def _get_historical_signals(since: date, threshold: int) -> List[Dict]:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT s.ticker, s.signal_date, s.score, s.signal_type,
+                SELECT s.id, s.ticker, s.signal_date, s.score, s.signal_type,
                        s.cluster_flag, c.cap_tier,
                        s.evidence->>'filed_date' AS filed_date
                 FROM signals s
@@ -483,10 +494,7 @@ def _get_historical_signals(since: date, threshold: int) -> List[Dict]:
                 (since, threshold),
             )
             rows = cur.fetchall()
-    return [
-        dict(zip(["ticker", "signal_date", "score", "signal_type", "cluster_flag", "cap_tier", "filed_date"], r))
-        for r in rows
-    ]
+    return [dict(zip(_SIGNAL_COLS, r)) for r in rows]
 
 
 def _get_cluster_weak_signals(since: date, threshold: int = BUY_SCORE) -> List[Dict]:
@@ -495,7 +503,7 @@ def _get_cluster_weak_signals(since: date, threshold: int = BUY_SCORE) -> List[D
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT s.ticker, s.signal_date, s.score, s.signal_type,
+                SELECT s.id, s.ticker, s.signal_date, s.score, s.signal_type,
                        s.cluster_flag, c.cap_tier,
                        s.evidence->>'filed_date' AS filed_date
                 FROM signals s
@@ -511,10 +519,7 @@ def _get_cluster_weak_signals(since: date, threshold: int = BUY_SCORE) -> List[D
                 (since, threshold),
             )
             rows = cur.fetchall()
-    return [
-        dict(zip(["ticker", "signal_date", "score", "signal_type", "cluster_flag", "cap_tier", "filed_date"], r))
-        for r in rows
-    ]
+    return [dict(zip(_SIGNAL_COLS, r)) for r in rows]
 
 
 def _parse_date(val) -> Optional[date]:

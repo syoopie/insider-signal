@@ -72,13 +72,11 @@ def _fmt(avg, n):
     return f"{avg:+7.2f}%  n={n:3d}"
 
 
-def analyze_horizon(horizon: int, detail: list, ticker_signals: dict):
+def analyze_horizon(horizon: int, detail: list, signals_by_id: dict):
     print(f"\n{'='*70}")
     print(f"  HORIZON: {horizon}d   total signals in detail: {len(detail)}")
     print(f"{'='*70}")
 
-    # Match detail rows to signal score_breakdowns
-    # exec_date = signal_date + ~4 days; search ±6 days around signal_date = exec_date-4
     factor_with = defaultdict(list)   # factor present → excess returns
     factor_without = defaultdict(list) # factor absent → excess returns
     score_returns = []                 # (score, excess_return)
@@ -87,26 +85,15 @@ def analyze_horizon(horizon: int, detail: list, ticker_signals: dict):
     unmatched = 0
 
     for d in detail:
-        ticker = d.get("ticker")
-        exec_date_str = (d.get("exec_date") or "")[:10]
         excess = d.get("excess_return")
-        if not ticker or not exec_date_str or excess is None:
+        if excess is None:
             continue
 
-        exec_date = dt.fromisoformat(exec_date_str)
         cap_returns[d.get("cap_tier", "?")].append(excess)
         type_returns[d.get("signal_type", "?")].append(excess)
 
-        # Find the best-matching signal (signal_date ≈ exec_date - 4)
-        candidates = ticker_signals.get(ticker, [])
-        best, best_diff = None, 20
-        for sig in candidates:
-            sd = sig["signal_date"]
-            diff = abs((exec_date - sd).days - 4)
-            if diff < best_diff:
-                best_diff = diff
-                best = sig
-        if best is None or best_diff > 8:
+        best = signals_by_id.get(d.get("signal_id"))
+        if best is None:
             unmatched += 1
             continue
 
@@ -200,39 +187,44 @@ def main():
         print("No backtest data found. Run 'python3 scripts/run_backtest.py' first.")
         return
 
-    # Collect all tickers across all horizons to fetch signals in one shot
-    all_tickers = set()
+    # Join on signal_id. Detail rows written before that field existed cannot be
+    # matched at all, and guessing from exec_date is what this replaced — a run
+    # from an older engine has to be redone, not approximated.
+    signal_ids = set()
     horizon_details = {}
     for horizon, metrics_raw in rows:
         metrics = _parse(metrics_raw)
         detail = metrics.get("detail", [])
         horizon_details[horizon] = detail
         for d in detail:
-            if d.get("ticker"):
-                all_tickers.add(d["ticker"])
+            if d.get("signal_id") is not None:
+                signal_ids.add(d["signal_id"])
 
-    print(f"Fetching score breakdowns for {len(all_tickers)} tickers...")
+    if not signal_ids:
+        print("This backtest run predates signal_id in the detail rows.")
+        print("Re-run 'python3 scripts/run_backtest.py' before analysing factors.")
+        return
+
+    print(f"Fetching score breakdowns for {len(signal_ids)} signals...")
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT s.ticker, s.signal_date, s.score, s.score_breakdown, s.signal_type
+                SELECT s.id, s.signal_date, s.score, s.score_breakdown, s.signal_type
                 FROM signals s
-                WHERE s.ticker = ANY(%s)
-                  AND s.signal_type IN ('BUY', 'CLUSTER_BUY')
-                ORDER BY s.ticker, s.signal_date
-            """, (list(all_tickers),))
+                WHERE s.id = ANY(%s)
+            """, (list(signal_ids),))
             sig_rows = cur.fetchall()
 
-    ticker_signals = defaultdict(list)
-    for ticker, signal_date, score, breakdown_raw, sig_type in sig_rows:
+    signals_by_id = {}
+    for sig_id, signal_date, score, breakdown_raw, sig_type in sig_rows:
         sd = signal_date if isinstance(signal_date, dt) else dt.fromisoformat(str(signal_date)[:10])
-        ticker_signals[ticker].append({
+        signals_by_id[sig_id] = {
             "signal_date": sd,
             "score": score,
             "breakdown": _parse(breakdown_raw),
             "signal_type": sig_type,
-        })
+        }
 
     all_lifts = {}
     all_scores = {}
@@ -241,7 +233,7 @@ def main():
         if not detail:
             print(f"No detail data for {horizon}d horizon.")
             continue
-        lifts, score_returns = analyze_horizon(horizon, detail, ticker_signals)
+        lifts, score_returns = analyze_horizon(horizon, detail, signals_by_id)
         all_lifts[horizon] = lifts
         all_scores[horizon] = score_returns
 

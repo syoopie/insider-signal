@@ -202,6 +202,26 @@ def _utc_ts(d: date) -> int:
     return calendar.timegm(d.timetuple())
 
 
+def _total_return_closes(indicators: dict) -> list:
+    """
+    Dividend-and-split-adjusted closes, falling back to raw closes.
+
+    `quote[].close` is split-adjusted (NVDA's 10:1 reads +43.05% raw against
+    +43.06% adjusted) but not dividend-adjusted. Over 2024 that is +24.45% vs
+    +26.05% for SPY and +31.07% vs +39.19% for T. The error does not cancel in
+    `ticker - SPY`: it scales with (ticker yield - SPY yield) x horizon, so it
+    understates precisely the small-cap value names insider buying favours.
+
+    A few symbols return no adjclose array, so fall back rather than dropping
+    the observation — a missing benchmark leg discards the whole signal.
+    """
+    adjclose = (indicators.get("adjclose") or [{}])[0] or {}
+    series = adjclose.get("adjclose")
+    if series:
+        return series
+    return ((indicators.get("quote") or [{}])[0] or {}).get("close") or []
+
+
 def get_price_change(ticker: str, start_date: date, end_date: date) -> PriceChange:
     """Percentage change between the first close on/after start_date and the last on/before end_date."""
     try:
@@ -235,8 +255,7 @@ def get_price_change(ticker: str, start_date: date, end_date: date) -> PriceChan
 
     result     = results[0] or {}
     timestamps = result.get("timestamp") or []
-    quotes     = result.get("indicators", {}).get("quote") or [{}]
-    closes     = (quotes[0] or {}).get("close") or []
+    closes     = _total_return_closes(result.get("indicators") or {})
     pairs = [(ts, c) for ts, c in zip(timestamps, closes) if c is not None]
     if len(pairs) < 2:
         return PriceChange(None, "no_data")
