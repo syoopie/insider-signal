@@ -413,22 +413,43 @@ The weights below were set by univariate lift measured on a sample the model its
 with no holdout. The score has a *theoretical maximum of 61* against a BUY threshold of 60,
 so it is a four-factor conjunction rather than a ranking.
 
-A full replacement attempt ran on 2026-08-30 and **produced a null result**. Measured on
-8,306 labelled purchases at 90d rather than the 331 the backtest prices:
+A full replacement attempt ran on 2026-08-30 and produced a null result, and then the
+evaluation that produced it turned out to be the problem. **`scripts/hillclimb.py` is now
+the ruler.** Its predecessor split the history once and tested on 762 rows across three
+months, 77% of them inside a single month whose mean excess return was +10.7%, against a
+random baseline drawn once from a fixed seed. `src/research/walkforward.py` refits every
+month on holds that had already closed, judges each pick against the other purchases of its
+own month and its own volatility quintile, tests the median as well as the mean, and prices
+the model search itself by permuting labels and re-running the whole fit.
 
-- The score does not rank. Its deciles are flat and non-monotone, and the bottom decile has
-  the *highest* median excess return.
+Measured that way, over 18 months and 6,690 out-of-sample rows at 90d:
+
+- **The shipped score is a coin flip.** +0.78pp risk-matched selection alpha, t=+0.40,
+  permutation p=0.27. It does not rank: rank IC +0.016.
 - Of the four load-bearing factors, `role_director`, `holdings_increase_5pct` and
-  `prior_purchase_31_365d` are statistically indistinguishable from zero, and `cap_small`
-  has the opposite sign to its +15 weight.
-- The best challenger beat the current score on validation and then failed the ranking bar
-  on the pre-registered test split. It was not shipped.
+  `prior_purchase_31_365d` are indistinguishable from zero, and `cap_small` has the opposite
+  sign to its +15 weight.
+- **One thing does work.** How far below its 52-week high a stock sat when the insider
+  bought gives +11.13pp, t=+2.29, median +7.39pp, p<1/5000. It survives all four horizons,
+  three selectivity levels, both subperiods, one-vote-per-ticker, a survivorship patch and a
+  ticker-amputation control. See `docs/scoring-improvement-plan.md` section 7b.
+- The effect is a **threshold, not a ranking**. Within-month deciles 1 to 9 are flat with
+  negative medians; decile 10 alone returns +17.5% mean and +6.6% median. Every
+  rank-transformed linear model therefore scores zero.
+- **Insider detail degrades the price screen.** Adding the current score inside the discount
+  gate drops it to +7.62, tier-1 features drop it to +6.80, and inside the most discounted
+  third the number of cluster buyers points the wrong way at −4.53, t=−1.85.
+
+It is **not shipped**, because `tx_pct_below_52wk_high` is exactly the kind of factor only
+the live path can compute today. Shipping it means storing point-in-time price context on
+the transaction row at ingest first (Phase 1B of the plan).
 
 **Do not change a weight without re-running the harness.** `scripts/build_price_panel.py`,
-`build_research_dataset.py`, `estimate_factors.py`, `fit_models.py`. It runs in seconds now.
-And do not trust any factor derived from what the database can see: `stable_features` exists
-because `first_purchase_12mo` never fires in the training window and fires on 46% of the
-validation one, purely because of when ingest started.
+`build_research_dataset.py`, then `scripts/hillclimb.py`. Register a hypothesis in
+`src/research/candidates.py`; changing `src/research/walkforward.py` invalidates every
+number the harness has printed. And do not trust any factor derived from what the database
+can see: `stable_features` exists because `first_purchase_12mo` never fires in the training
+window and fires on 46% of the validation one, purely because of when ingest started.
 
 ### Hard Disqualifiers (checked in order, early-exit with score=0)
 

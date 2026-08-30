@@ -92,6 +92,24 @@ def tail_gate(column: str, quantile: float = 0.90,
     return fitter
 
 
+def only_where(inner: Fitter, column: str, keep: Sequence) -> Fitter:
+    """`inner`, but nothing outside `keep` can ever be picked."""
+    allowed = set(keep)
+
+    def fitter(train: pd.DataFrame, label: str) -> Optional[Scorer]:
+        scorer = inner(train, label)
+        if scorer is None:
+            return None
+
+        def score(frame: pd.DataFrame) -> np.ndarray:
+            values = np.asarray(scorer(frame), dtype="float64")
+            eligible = frame[column].isin(allowed).to_numpy() \
+                if column in frame.columns else np.ones(len(frame), dtype=bool)
+            return np.where(eligible, values, -np.inf)
+        return score
+    return fitter
+
+
 def constant() -> Fitter:
     def fitter(_train: pd.DataFrame, _label: str) -> Scorer:
         return lambda frame: np.zeros(len(frame))
@@ -122,4 +140,11 @@ CANDIDATES: dict[str, Fitter] = {
     "gate p95": tail_gate(DISCOUNT, 0.95),
     "gate p90 + insiders": tail_gate(DISCOUNT, 0.90, INSIDER_ONLY),
     "gate p90 + current score": tail_gate(DISCOUNT, 0.90, ["score"]),
+    "discount, small cap only": only_where(
+        feature_fitter(DISCOUNT), "cap_tier", ["small"]),
+    "discount, not large cap": only_where(
+        feature_fitter(DISCOUNT), "cap_tier", ["small", "mid", "unknown"]),
+    "ridge discount+trend+liquidity": ridge(
+        [DISCOUNT, "tx_ret_252d", "tx_dollar_vol_21d"], 10.0),
+    "ridge discount alone": ridge([DISCOUNT], 10.0),
 }

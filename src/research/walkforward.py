@@ -332,6 +332,68 @@ def permutation_alpha(frame: pd.DataFrame, fitter: Fitter, draws: int = 200,
     return np.array(out)
 
 
+def amputation_curve(scored: pd.DataFrame, column: str = "oos",
+                     drops: Sequence[int] = (0, 1, 3, 5, 10, 20),
+                     draws: int = 300, rate: float = 0.10,
+                     horizon: int = PRIMARY_HORIZON,
+                     seed: int = 20260830) -> pd.DataFrame:
+    """
+    What survives when the biggest-contributing tickers are removed, against a
+    null that has had the same thing done to it.
+
+    Removing the names that contributed most destroys any strategy with skewed
+    returns, including a real one, so the raw curve reads as fragility whatever
+    the truth is. Ranking purchases by distance below the 52-week high falls
+    from +11.13 to -0.10 once twenty tickers of a hundred and eighty are cut,
+    which looks fatal until random rankings are cut the same way and fall from
+    -0.07 to -2.37. The percentile against that matched null is the number that
+    means something.
+    """
+    label = label_column(horizon)
+    work = scored.copy()
+    work["month"] = month_of(work)
+
+    def curve(col: str) -> list[Optional[float]]:
+        picks = []
+        for _month, block in work.groupby("month"):
+            if len(block) < MIN_MONTH_ROWS:
+                continue
+            picks.append(block.nlargest(max(2, int(round(len(block) * rate))), col))
+        if not picks:
+            return [None] * len(drops)
+        contrib = pd.concat(picks).groupby("ticker")[label].sum() \
+            .sort_values(ascending=False)
+        out = []
+        for n in drops:
+            sub = work[~work["ticker"].isin(set(contrib.head(n).index))]
+            out.append(selection_alpha(sub, col, rate, horizon,
+                                       risk_matched=True).mean)
+        return out
+
+    real = curve(column)
+    rng = np.random.default_rng(seed)
+    null = []
+    for _ in range(draws):
+        work["_r"] = rng.random(len(work))
+        null.append(curve("_r"))
+    null = np.array([[np.nan if v is None else v for v in row] for row in null])
+
+    rows = []
+    for i, n in enumerate(drops):
+        col = null[:, i]
+        col = col[np.isfinite(col)]
+        value = real[i]
+        rows.append({
+            "dropped": n,
+            "alpha": value,
+            "null_p50": float(np.percentile(col, 50)) if col.size else None,
+            "null_p95": float(np.percentile(col, 95)) if col.size else None,
+            "percentile": float((col < value).mean() * 100)
+            if col.size and value is not None else None,
+        })
+    return pd.DataFrame(rows)
+
+
 def percentile_of(value: Optional[float], draws: np.ndarray) -> Optional[float]:
     if value is None or draws.size == 0:
         return None

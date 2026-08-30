@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from src.research.walkforward import (
+    amputation_curve,
     MIN_MONTH_ROWS,
     folds,
     percentile_of,
@@ -287,6 +288,20 @@ def test_the_permutation_null_catches_a_model_that_only_fits_noise():
     real = selection_alpha(walk_forward(panel, fitter, 90), rate=0.10,
                            risk_matched=True).mean
     assert (percentile_of(real, null) or 0) < 95
+
+
+def test_amputation_keeps_a_real_edge_high_and_drops_a_lucky_one():
+    """
+    Cutting the biggest contributors sinks a real strategy too, so the curve is
+    only readable against a null that has been cut the same way.
+    """
+    real = amputation_curve(walk_forward(_panel(), score_of("signal"), 90),
+                            drops=(0, 3, 10), draws=40)
+    assert (real["percentile"] >= 90).all()
+
+    lucky = amputation_curve(walk_forward(_panel(), score_of("noise"), 90),
+                             drops=(0, 3, 10), draws=40)
+    assert (lucky["percentile"] < 90).all()
 
 
 def test_the_median_statistic_still_sees_a_genuinely_better_pick():

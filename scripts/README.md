@@ -43,7 +43,8 @@ seconds after that, because only the first step touches the network. See
 | `verify_scoring_parity.py` | Prove the research dataset scores purchases the way the pipeline does. Exits non-zero below 99% agreement. |
 | `evaluate_model.py` | Run the evaluation protocol: time-ordered splits, purge and embargo, decile ranking, and the four baselines. `--split test` is a one-time look. |
 | `estimate_factors.py` | Which candidate factors predict, multivariate, clustered on ticker, FDR-corrected. Replaces univariate lift. |
-| `fit_models.py` | Fit the candidate models, drop features that drift across the split boundary, select on validation. `--report-test` for the single pre-registered test evaluation. |
+| `fit_models.py` | Fit the candidate models, drop features that drift across the split boundary, select on validation. `--report-test` for the single pre-registered test evaluation. Superseded by `hillclimb.py`: its fixed split tested on three months, 77% of them one month. |
+| `hillclimb.py` | **The ruler.** Walk-forward monthly refit, each pick judged against the other purchases of its own month and volatility quintile, on the mean and the median, against a properly drawn random null. Add hypotheses to `src/research/candidates.py`; changing `src/research/walkforward.py` invalidates every number it has printed. |
 | `audit_data.py` | 60+ data-quality checks across every table, plus the `src/db/purchases.py` rollup invariants. Prints `<-- LOOK` on anything non-zero. Read-only; run it after any pipeline change. |
 
 ## Local development

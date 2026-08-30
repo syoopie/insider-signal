@@ -598,20 +598,152 @@ hit rate. The validation advantage did not survive.
 **Verdict: do not ship.** The correct action on this evidence is to change
 nothing about the scoring model.
 
-### Why the answer is "not yet" rather than "never"
+### Why the answer was "not yet" rather than "never"
 
-The obstacle is sample size and coverage, not method. The stable candidate set is
+The obstacle looked like sample size and coverage. The stable candidate set is
 33 features against 3,655 training rows clustered into 819 tickers and 11 months,
 inside a single market regime, with the drift guard removing exactly the features
-a longer history would make usable. Every part of the apparatus is committed and
-re-runnable in seconds; what it needs is more data.
+a longer history would make usable.
 
-Re-run `build_price_panel.py`, `build_research_dataset.py`, `estimate_factors.py`
-and `fit_models.py` when the database holds roughly twice the history. The plan's
-own recommendation stands: prefer the simplest model that works, and treat a null
-result as publishable.
+Half of that was right and half was wrong. Section 7b is what happened when the
+evaluation itself was rebuilt on the same data.
 
-### What did ship
+## 7b. The ruler was the problem, 2026-08-30
+
+The null result above rested on a test split of 762 rows across three months,
+590 of them in a single month whose mean excess return was +10.7%. Every bar it
+applied was mostly a measurement of May 2026. Beside it sat a random baseline
+drawn once from a fixed seed, which landed at +15.78% against a distribution
+whose median is +8.2%, and that single draw was reported as the floor a
+challenger had to clear.
+
+A ruler that cannot separate a model from a lucky draw returns a null result
+whatever is put in front of it. `src/research/walkforward.py` replaces it, and
+`scripts/hillclimb.py` is the one frozen command that reads it.
+
+### What the new ruler does
+
+**Rolls the origin.** Refit every month on every hold that had already closed,
+predict that month, move on. 18 predictable months and 6,690 out-of-sample rows
+at 90d, against 762 before.
+
+**Judges inside the month.** 97.5% of the variance in excess-vs-SPY is
+within-month, but the 2.5% between months is what a pooled top-k harvests by
+accident. Tilt the picks toward months that went up and the mean rises with no
+ranking skill at all.
+
+**Charges each pick against its own risk.** Ranking purchases by prior 21-day
+realised volatility alone scored +11.9pp with t=3.13 on the first version of the
+metric. That is leverage on a rising market. Each pick is now charged against the
+mean of its own volatility quintile inside its own month.
+
+**Tests the median.** A fat right tail lifts a mean without any pick being
+reliably good, which is the gap the previous candidate died in.
+
+**Prices the search itself.** `permutation_alpha` shuffles labels within month
+and re-runs the entire walk-forward fit, so every draw pays the same price in
+model search that the real run paid.
+
+`tests/test_walkforward.py` is the sensitivity proof and runs before any number
+counts. A perfect ranking scores IC 1.0, a planted signal scores +0.2 under a
+month effect twice its size, noise stays inside ±0.1, a ranking that knows only
+which months went up scores zero, a book where volatility buys return and
+nothing else does is cut by 60%, and a lottery book scores positive on the mean
+and negative on the median.
+
+### The shape of the signal
+
+Within-month deciles of how far below its 52-week high a stock sat when the
+insider bought:
+
+| decile | discount range | mean | median | hit rate |
+|---|---|---|---|---|
+| 1 to 9 | 0% to 72% | +0.8% to +2.9% | −5.3% to −0.1% | 41% to 49% |
+| 10 | 42% to 99% | **+17.5%** | **+6.6%** | **57.7%** |
+
+Nine flat deciles with negative medians, then a jump. It is a threshold, not a
+slope, which is why every rank-transformed linear model scores zero: rank IC on
+the discount is −0.02, because there is nothing to order across the bulk.
+
+### The result
+
+Out of sample, walk-forward, top decile of each month, charged against its own
+volatility quintile inside its own month, 18 months and 6,690 rows at 90d:
+
+| ranking | alpha | t | median | vs chance |
+|---|---|---|---|---|
+| distance below 52-week high | **+11.13pp** | **+2.29** | **+7.39pp** | p < 1/5000 |
+| ridge on all price context | +9.86pp | +2.33 | +4.54pp | p < 1/300 |
+| tier-1 insider features | +1.68pp | +0.52 | −0.15pp | p = 0.10 |
+| **the shipped score** | **+0.78pp** | **+0.40** | **+0.47pp** | **p = 0.27** |
+
+The shipped score is a coin flip, now measured over eighteen months rather than
+three, under the strongest test available.
+
+The winner is one raw feature with no fitted parameters, so its permutation test
+reduces exactly to the random-selection null, which is why the p-value is
+sharper than the fitted model's.
+
+### Everything that failed to break it
+
+- **Horizon.** +2.60 at 30d, +6.54 at 60d, +9.86 at 90d, +8.99 at 180d, t from
+  1.99 to 2.33, median positive at all four.
+- **Selectivity.** t = 2.33, 2.45, 2.51 at the top 10%, 20% and 30% of a month.
+- **Subperiod.** +11.25 over the first nine months, +8.48 over the last nine.
+- **Survivorship.** All 806 rows whose price series has no exit bar are
+  unfinished holds, not delistings, and their rate runs 6.1% to 8.2% across the
+  ten discount deciles with no gradient. There is nothing in the evaluable set
+  to patch to a total loss.
+- **Look-ahead.** Price context is dated strictly before the trade; the minimum
+  bar count preceding a purchase is 1.
+- **One vote per name.** Collapsing to one row per ticker-month leaves +8.10,
+  t=+2.35, median +3.86.
+- **Ticker concentration.** Cutting the twenty biggest contributors of 182 names
+  takes it to −0.10, which looks fatal until random rankings are cut the same way
+  and fall from −0.07 to −2.37. Against that matched null the real curve holds
+  the 100th percentile through ten drops and the 97th at twenty.
+  `amputation_curve` is that control.
+
+### Everything that failed to improve it
+
+Gating at the training 80th, 90th or 95th percentile lands within noise of the
+raw feature, so the gate earns nothing. Ranking by the current score inside the
+gate drops it to +7.62 and fails t≥2. Ranking by tier-1 insider features inside
+the gate drops it to +6.80. Restricting to small caps drops it to +6.08.
+Restricting to anything but large caps drops it to +6.94. Adding trend and
+liquidity to a fitted model destroys it, +0.45 with a negative median.
+
+**Insider detail actively degrades the price screen.** Inside the most
+discounted third, the number of cluster buyers points the wrong way at −4.53,
+t=−1.85, against the CLUSTER_BUY thesis the model is built on.
+
+### What this does and does not claim
+
+It claims that among insider purchases, the ones in deeply beaten-down stocks
+outperform their month-and-risk-matched peers, out of sample, over eighteen
+months, at p below one in five thousand.
+
+It does not claim the insider matters. There is no non-insider control sample
+here, and distance below the 52-week high is a known equity effect. The finding
+is a better ranking *of insider purchases*, which is exactly the job the product
+does, and it is not evidence that insiders add to it.
+
+### What shipping it would require
+
+`tx_pct_below_52wk_high` is computed from the price panel at the transaction
+date. The live path has a Yahoo quote and the backfill path does not, which is
+the exact reason section 2 gives for deleting the old 52-week factors: the same
+purchase scored up to 12 points apart depending on which entry point saw it, and
+they compared against *today's* low rather than the low as of the trade.
+
+So the rule in CLAUDE.md stands. Do not add a factor only one path can compute.
+Shipping this means Phase 1B, the point-in-time price context stored on the
+transaction row at ingest, which was deliberately skipped when no model read it.
+A model now reads it, so it earns its place. The order is: store the context at
+ingest, backfill it for stored transactions, then add the factor, then
+`backfill_signals.py --days 730 --force`, then `run_backtest.py`.
+
+### What did ship from the first round
 
 Nothing that changes a score. What landed is the apparatus and five corrections:
 
