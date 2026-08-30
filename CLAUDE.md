@@ -90,7 +90,9 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 | Backtest lookback window | `scripts/run_backtest.py` → `LOOKBACK_DAYS = 730` |
 
 **Key thresholds (do not change without re-running full backfill + backtest):**
-- The score *is* the percentile of `transactions.pct_below_52wk_high` (`src/signals/discount.py`)
+- The score is `pct_below_52wk_high` as a percentile of the last 60 days of filings
+  (`src/signals/discount.py` + `store.get_discount_reference`); a *fixed* cutoff was
+  tried first and gave away more than half the effect
 - BUY: score ≥ 90, meaning the top decile of discount, where the whole measured effect sits
 - WATCH: score 70–89 OR a cluster that missed its bar
 - CLUSTER_BUY: ≥3 direct insiders, 14d window, avg score ≥80, tight OR max_score ≥85;
@@ -472,17 +474,35 @@ window and fires on 46% of the validation one, purely because of when ingest sta
 
 ### The Score (one factor)
 
-`score = discount_score(transactions.pct_below_52wk_high)` — the percentile of how far
-below its 52-week high the stock sat on the day the insider bought, against a fixed
-empirical CDF in `src/signals/discount.py`. 0 to 100, monotone, no other term.
+`score = discount_score(transactions.pct_below_52wk_high, reference)` — how far below
+its 52-week high the stock sat on the day the insider bought, as a **percentile among
+the purchases disclosed in the preceding 60 days**
+(`store.get_discount_reference`). 0 to 100, monotone, no other term. Below 120
+reference purchases it falls back to the fixed table in `src/signals/discount.py`.
 
-| Value | Score | Meaning |
+**The reference must be relative, and this was learned the hard way.** The first
+version ranked against a fixed two-year table, and a fixed cutoff does not select a
+fixed fraction: the market moves every stock's discount together, so it fired on 2.0%
+of one month's purchases and 23.7% of another's, reaching past the top decile into the
+nine flat ones. Measured over 18 months, top decile, risk matched:
+
+| rule | mean | median |
 |---|---|---|
-| 0% below the high | 0 | at its 52-week high |
-| 24.9% below | 50 | the median insider purchase |
-| 39.1% below | 70 | WATCH |
-| 60.1% below | 90 | BUY — the top decile, where the effect lives |
-| no 52-week high | 0 | under 200 bars of history; never alerted |
+| fixed table, `score >= 90` | +4.19pp | **−2.33pp** |
+| trailing 60d, `score >= 90` | +9.74pp | +3.01pp |
+| top 10% of the month (ceiling) | +11.10pp | +7.38pp |
+
+A 21-day window scored higher still (+11.03, median +10.97) and was **not** taken: it
+rests on ~150 reference purchases, leaves two months unscoreable, and is a lone spike
+beside a flat run from 30 to 180 days. Choosing it would be selecting on the metric.
+
+| Condition | Score |
+|---|---|
+| at its 52-week high | 0 |
+| the median recent purchase | 50 |
+| top 30% of recent purchases | 70 — WATCH |
+| top 10% of recent purchases | 90 — BUY, where the effect lives |
+| no 52-week high (under 200 bars) | 0, never alerted |
 
 **The former factor table now scores zero.** `role_*`, `cap_*`,
 `holdings_increase_5pct`, `indirect_purchase`, `sequenced_buying_30d`,
@@ -501,7 +521,9 @@ start date rather than about the insider.
 **Scores are a pure function of stored data.** Nothing in `score_transaction` reads
 a live price. `pct_below_52wk_high` is fetched once at ingest by
 `src/market/context.py` and stored on the transaction row, which is the *only* reason
-a price factor is allowed here at all. The old 52-week-low factors (+12 / +7) were
+a price factor is allowed here at all. The trailing reference is also stored data, and
+it is point-in-time: the window holds only filings dated on or before the purchase
+being scored, so a future filing can never change a past score. The old 52-week-low factors (+12 / +7) were
 deleted because they fired only in the live path, so the same purchase scored up to
 12 points apart depending on which entry point saw it, and they compared against
 *today's* low rather than the low as of the trade. **Do not add a factor only one

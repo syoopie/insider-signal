@@ -754,6 +754,42 @@ in five thousand, and the same screen without the filing has a negative median.
 **The Form 4 is the gate and the discount is the ranker.** Insider attributes do
 not rank inside the discounted set; the filing itself is most of the effect.
 
+### The cutoff had to be relative, and measuring after shipping is how that was found
+
+The first cut scored a purchase against a fixed CDF built on the whole research
+sample, and classified BUY at 90. That is not the rule the research validated.
+The research measured the **top decile of each month**; a fixed threshold on a
+distribution the whole market moves together does not select a fixed fraction.
+
+It fired on 2.0% of one month's purchases and 23.7% of another's. In the heavy
+months it reached well past the top decile into the nine flat ones, where the
+median return is negative. On identical rows and months, top decile, risk
+matched:
+
+| rule | mean | t | median | t |
+|---|---|---|---|---|
+| fixed table, `score >= 90` | +4.19pp | +1.17 | **−2.33pp** | −0.56 |
+| trailing 60d, `score >= 90` | +9.74pp | +2.35 | +3.01pp | +0.56 |
+| top 10% of the month (ceiling) | +11.10pp | +2.28 | +7.38pp | +1.33 |
+
+More than half the effect was being given away, and the median went negative.
+The `discount.py` docstring had called this "alert volume moves with the market"
+and treated it as a cost worth paying. That framing was wrong: it is not a volume
+problem, it is the selection reaching into the part of the distribution that
+carries nothing.
+
+Ranking against the purchases disclosed in the preceding 60 days recovers most of
+it and halves the spread in how much of each month gets selected, from 21.7
+points to 14.5. It stays point-in-time because the window holds only filings that
+already existed.
+
+**60 days was chosen on the mechanism, not on the number.** A 21-day window
+scored higher on both statistics, +11.03pp and a median of +10.97pp with t=+2.19,
+which is the only configuration whose *median* clears t=2. It was not taken: it
+rests on about 150 reference purchases, leaves two months unscoreable, and stands
+alone as a spike beside a flat run from 30 through 180 days. Taking the best
+number from a sweep is the failure this document exists to correct.
+
 ### It shipped, 2026-08-30
 
 `src/signals/discount.py` is the model, `src/market/context.py` fetches the input
