@@ -93,10 +93,10 @@ CHECKS = [
     ("signals: signal_type outside known set",
      "SELECT count(*) v FROM signals WHERE signal_type NOT IN ('BUY','WATCH','CLUSTER_BUY','LOW')"),
     ("signals: signal_date in the future", "SELECT count(*) v FROM signals WHERE signal_date > CURRENT_DATE"),
-    ("signals: BUY with score < 60", "SELECT count(*) v FROM signals WHERE signal_type='BUY' AND score<60"),
-    ("signals: WATCH with score < 45 and no cluster",
-     "SELECT count(*) v FROM signals WHERE signal_type='WATCH' AND score<45 AND cluster_flag=false"),
-    ("signals: LOW with score >= 45", "SELECT count(*) v FROM signals WHERE signal_type='LOW' AND score>=45"),
+    ("signals: BUY with score < 90", "SELECT count(*) v FROM signals WHERE signal_type='BUY' AND score<90"),
+    ("signals: WATCH with score < 70 and no cluster",
+     "SELECT count(*) v FROM signals WHERE signal_type='WATCH' AND score<70 AND cluster_flag=false"),
+    ("signals: LOW with score >= 70", "SELECT count(*) v FROM signals WHERE signal_type='LOW' AND score>=70"),
     ("signals: CLUSTER_BUY without cluster_flag",
      "SELECT count(*) v FROM signals WHERE signal_type='CLUSTER_BUY' AND cluster_flag=false"),
     ("signals: cluster_flag but evidence says not a cluster",
@@ -127,10 +127,38 @@ CHECKS = [
           'holdings_increase_15pct','fast_filing_0_1d','fast_filing_2d',
           'near_52wk_low_5pct','near_52wk_low_10pct',
           'cluster_size_4plus','cluster_size_5plus','cluster_size_6plus']"""),
-    # Nothing in the weight table can sum above 61. A higher score is a row left
-    # behind by an earlier model, not a stronger signal.
-    ("signals: score above the current model's maximum of 61",
-     "SELECT count(*) v FROM signals WHERE score > 61"),
+    # The score is a percentile now, so it uses the whole range and a high one is
+    # a real ranking rather than a leftover. What must not happen is a signal
+    # scored without the input the score is made of.
+    ("signals: scored above zero with no discount_rank in the breakdown",
+     """SELECT count(*) v FROM signals
+        WHERE score > 0 AND NOT (score_breakdown ? 'discount_rank')"""),
+    ("signals: discount_rank disagrees with the stored score",
+     """SELECT count(*) v FROM signals
+        WHERE score_breakdown ? 'discount_rank'
+          AND (score_breakdown->>'discount_rank')::int <> score"""),
+
+    # ---- price context, the input the whole score is made of ----------------
+    # A purchase without it scores zero and is never alerted, which is the
+    # conservative failure and a silent one. A rise here is a price-fetch
+    # problem, not a market one.
+    ("transactions: P rows with no price context",
+     """SELECT count(*) v FROM transactions t
+        JOIN form4_filings f ON f.id=t.filing_id JOIN companies c ON c.cik=f.cik
+        WHERE t.transaction_code='P' AND c.ticker IS NOT NULL
+          AND t.price_context_bars IS NULL"""),
+    ("transactions: P rows with under a year of history (unrankable)",
+     """SELECT count(*) v FROM transactions
+        WHERE transaction_code='P' AND price_context_bars IS NOT NULL
+          AND pct_below_52wk_high IS NULL"""),
+    ("transactions: pct_below_52wk_high outside 0-100",
+     """SELECT count(*) v FROM transactions
+        WHERE pct_below_52wk_high IS NOT NULL
+          AND (pct_below_52wk_high < 0 OR pct_below_52wk_high > 100)"""),
+    ("transactions: price context claims a high below the close",
+     """SELECT count(*) v FROM transactions
+        WHERE px_52wk_high IS NOT NULL AND px_close_at_tx IS NOT NULL
+          AND px_52wk_high < px_close_at_tx - 0.01"""),
 
     # ---- purchase rollup invariants (src/db/purchases.py) -------------------
     # The rollup totals same-day broker fills but must not total the repeats a
