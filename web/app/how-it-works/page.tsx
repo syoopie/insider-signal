@@ -113,7 +113,7 @@ export default function Page() {
 
         <Section
           title="Score a purchase yourself"
-          lead="The same weights the pipeline uses, wired to controls. Try to reach the BUY threshold — it takes three or four strong factors, and there is no route to it through sheer dollar value."
+          lead="One slider, because there is one input. The score is how far below its 52-week high the stock sat on the day the insider bought, as a percentile — 90 is the top decile, and that decile is where the whole measured effect lives. Role, company size and buying history are recorded and score nothing."
         >
           <ScoringExplainer />
         </Section>
@@ -145,8 +145,9 @@ export default function Page() {
                 </tr>
                 <tr>
                   <td className="px-3 py-2 font-medium">BUY</td>
-                  <td className="px-3 py-2 text-muted-foreground">
-                    A single purchase scoring {THRESHOLDS.buy} or more.
+                  <td className="px-3 py-2 text-muted-foreground text-pretty">
+                    A single purchase scoring {THRESHOLDS.buy} or more, meaning the stock was in
+                    the most discounted tenth of everything insiders bought.
                   </td>
                   <td className="px-3 py-2">Yes</td>
                 </tr>

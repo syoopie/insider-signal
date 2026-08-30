@@ -1,10 +1,20 @@
 /**
- * Metadata for every scoring factor the Python model can emit, keyed by the
- * exact key that appears in `signals.score_breakdown`.
+ * Metadata for every key the Python model can emit into `signals.score_breakdown`.
  *
- * Source of truth for the points is `src/signals/scorer.py`; this table mirrors
- * it for display (label, plain-English reason, research citation) so the UI can
- * explain any factor a signal shows. Keep in sync when scorer.py changes.
+ * One key carries the score. `discount_rank` is the percentile of how far below
+ * its 52-week high the stock sat on the day the insider bought, and it is the
+ * whole model. Everything else in this table is `descriptive`: it says something
+ * true about the filing and contributes zero points.
+ *
+ * That is not an oversight. Measured walk-forward across 18 months and 6,690
+ * out-of-sample purchases, the old additive factor table returned +0.78
+ * percentage points of selection alpha with a permutation p-value of 0.27,
+ * which is a coin flip. The discount returns +11.13pp with a median of +7.39pp,
+ * above all 5,000 random rankings. Adding the old factors back as a tiebreak
+ * was measured too, and drops the result to +7.62.
+ *
+ * Source of truth is `src/signals/discount.py` and
+ * `docs/scoring-improvement-plan.md` section 7b.
  */
 export type ScoringFactor = {
   label: string;
@@ -14,123 +24,79 @@ export type ScoringFactor = {
   reason: string;
   /** The empirical basis, short. */
   research?: string;
-  group: "role" | "size" | "conviction" | "timing" | "penalty";
+  group: "rank" | "role" | "size" | "conviction" | "timing" | "penalty" | "descriptive";
 };
 
+/** The keys that actually move the score. Everything else is context. */
+export const SCORING_KEYS = ["discount_rank"] as const;
+
+const descriptive = (label: string, reason: string): ScoringFactor => ({
+  label,
+  points: 0,
+  reason,
+  group: "descriptive",
+});
+
 export const SCORING_FACTORS: Record<string, ScoringFactor> = {
-  role_cfo: {
-    label: "CFO purchase",
-    points: 15,
-    reason: "The CFO knows the numbers before anyone. +15.",
-    research: "TipRanks: CFO buys average the highest annual return of any role (21.5%).",
-    group: "role",
+  discount_rank: {
+    label: "Discount to 52-week high",
+    points: 100,
+    reason:
+      "How far below its 52-week high the stock sat on the day the insider bought, " +
+      "as a percentile. This is the score.",
+    research:
+      "Top decile: +11.13pp above same-month, same-volatility peers, median +7.39pp, " +
+      "over 18 months out of sample. The same screen without an insider buying has a " +
+      "median of −1.30pp.",
+    group: "rank",
   },
-  role_director: {
-    label: "Director purchase",
-    points: 16,
-    reason: "Board-level view of the business. +16.",
-    research: "TipRanks: director buys average 20.7% annual return.",
-    group: "role",
-  },
-  role_coo: {
-    label: "COO purchase",
-    points: 15,
-    reason: "Operational insight into demand and margins. +15.",
-    group: "role",
-  },
-  role_officer: {
-    label: "Officer purchase",
-    points: 12,
-    reason: "Named executive officer, direct knowledge of the unit. +12.",
-    research: "+20.8% at 60 days in this system's own backtest (small sample).",
-    group: "role",
-  },
-  role_chairman: {
-    label: "Chairman purchase",
-    points: 0,
-    reason: "Neutral. Sample too small to weight either way. +0.",
-    group: "role",
-  },
-  role_ceo: {
-    label: "CEO purchase",
-    points: -5,
-    reason: "Counterintuitively the weakest role signal; often symbolic. −5.",
-    research: "−17.3% at 60 days, −13.4% at 90 days in backtest.",
-    group: "penalty",
-  },
-  role_other: {
-    label: "Other role",
-    points: 0,
-    reason: "Not a scored role. +0.",
-    group: "role",
-  },
-  cap_small: {
-    label: "Small-cap (<$2B)",
-    points: 15,
-    reason: "Where insider information asymmetry pays the most. +15.",
-    research: "Lakonishok & Lee (2001): +7.4% abnormal return at 12 months.",
-    group: "size",
-  },
-  cap_mid: {
-    label: "Mid-cap ($2B–$10B)",
-    points: 0,
-    reason: "Neutral. +0.",
-    group: "size",
-  },
-  cap_large: {
-    label: "Large-cap (>$10B)",
-    points: 0,
-    reason: "Near-zero alpha in the research. +0.",
-    group: "size",
-  },
-  cap_unknown: {
-    label: "Cap tier unknown",
-    points: 5,
-    reason: "Scored conservatively; some unknowns turn out to be large-caps. +5.",
-    group: "size",
-  },
-  holdings_increase_5pct: {
-    label: "Holdings up ≥5%",
-    points: 15,
-    reason: "A meaningful add to an existing position. +15.",
-    research: "+9.2% at 60 days, +9.3% at 90 days in backtest.",
-    group: "conviction",
-  },
-  indirect_purchase: {
-    label: "Indirect purchase",
-    points: -15,
-    reason: "Bought through an LLC, trust, or family entity. Less conviction. −15.",
-    research: "−18% at 60 days, −36% at 90 days empirically.",
-    group: "penalty",
-  },
-  prior_purchase_31_365d: {
-    label: "Prior buy 31–365 days ago",
-    points: 15,
-    reason: "Sustained conviction across quarters. +15.",
-    research: "+2.4% at 60 days in backtest.",
-    group: "timing",
-  },
-  sequenced_buying_30d: {
-    label: "Sequenced buying (≤30 days)",
-    points: 10,
-    reason: "A rapid second purchase; the thesis is still developing. +10.",
-    group: "timing",
-  },
-  first_purchase_12mo: {
-    label: "First purchase in 12 months",
-    points: -10,
-    reason: "No prior buy in a year. Weaker than a sustained pattern. −10.",
-    research: "−4.2% at 60 days in backtest.",
-    group: "penalty",
-  },
-  first_purchase_unverifiable: {
-    label: "Purchase history not observable",
+  price_context_missing: {
+    label: "No price history",
     points: 0,
     reason:
-      "No prior buy on record, but the database does not reach back a full year " +
-      "before this trade, so the absence is not evidence. No penalty applied.",
-    group: "timing",
+      "The stock has under a year of trading history, so it has no 52-week high to " +
+      "measure against. Scored zero and never alerted rather than guessed at.",
+    group: "descriptive",
   },
+
+  role_cfo: descriptive("CFO purchase", "The CFO filed this purchase."),
+  role_director: descriptive("Director purchase", "A board member filed this purchase."),
+  role_coo: descriptive("COO purchase", "The COO filed this purchase."),
+  role_officer: descriptive("Officer purchase", "A named officer filed this purchase."),
+  role_chairman: descriptive("Chairman purchase", "The chairman filed this purchase."),
+  role_ceo: descriptive("CEO purchase", "The CEO filed this purchase."),
+  role_other: descriptive("Other role", "The filer's role did not classify."),
+
+  cap_small: descriptive("Small-cap (<$2B)", "Market cap under $2B."),
+  cap_mid: descriptive("Mid-cap ($2B–$10B)", "Market cap between $2B and $10B."),
+  cap_large: descriptive("Large-cap (>$10B)", "Market cap above $10B."),
+  cap_unknown: descriptive("Cap tier unknown", "Shares outstanding could not be resolved."),
+
+  holdings_increase_5pct: descriptive(
+    "Holdings up ≥5%",
+    "The purchase added at least 5% to the position the insider already held.",
+  ),
+  indirect_purchase: descriptive(
+    "Indirect purchase",
+    "Bought through an LLC, trust, or family entity rather than a personal account.",
+  ),
+  prior_purchase_31_365d: descriptive(
+    "Prior buy 31–365 days ago",
+    "This insider also bought earlier in the year.",
+  ),
+  sequenced_buying_30d: descriptive(
+    "Sequenced buying (≤30 days)",
+    "This insider bought again within a month.",
+  ),
+  first_purchase_12mo: descriptive(
+    "First purchase in 12 months",
+    "No prior buy on record in the year before, and the database covers that year.",
+  ),
+  first_purchase_unverifiable: descriptive(
+    "Purchase history not observable",
+    "No prior buy on record, but the database does not reach back a full year before " +
+      "this trade, so the absence is not evidence.",
+  ),
 };
 
 export function factorMeta(key: string): ScoringFactor {
@@ -138,8 +104,13 @@ export function factorMeta(key: string): ScoringFactor {
     SCORING_FACTORS[key] ?? {
       label: key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
       points: 0,
-      reason: "Contributes to the score.",
-      group: "conviction",
+      reason: "Recorded on the filing.",
+      group: "descriptive",
     }
   );
+}
+
+/** Whether a breakdown key moves the score or only describes the filing. */
+export function isScoringKey(key: string): boolean {
+  return (SCORING_KEYS as readonly string[]).includes(key);
 }

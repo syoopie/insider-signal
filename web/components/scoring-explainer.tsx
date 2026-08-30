@@ -3,51 +3,35 @@
 import { useMemo, useState } from "react";
 import { SignalTypeBadge } from "@/components/badges";
 import { FilterChip, FilterGroup } from "@/components/filter-chip";
-import { SCORING_FACTORS, factorMeta } from "@/lib/scoring-factors";
+import { DEEP_DISCOUNT_PCT, DISCOUNT_EVIDENCE, discountScore } from "@/lib/discount";
+import { factorMeta } from "@/lib/scoring-factors";
 import { THRESHOLDS, classifySignal } from "@/lib/scoring-model";
 import { cn } from "@/lib/utils";
 
 /**
- * Build a purchase and watch the model score it.
+ * Move the price and watch the model score it.
  *
- * A table of weights tells you what the factors are worth; it does not tell you
- * that a CEO buying a large-cap on a first purchase scores 0 while a director
- * buying a small-cap they have been adding to scores 61. Being able to reach the
- * BUY threshold by hand is the difference between a documented model and an
- * understood one.
+ * The old version of this let you build a score out of role, company size and
+ * buying history, because that is what the model used to add up. It does not any
+ * more, and a control that changes nothing would be worse than no control. Those
+ * attributes are still here, below the score, labelled as what they are: things
+ * the filing says that the model does not rank on.
  */
 
 const ROLES = ["director", "cfo", "coo", "officer", "chairman", "ceo", "other"] as const;
 const CAPS = ["small", "mid", "large", "unknown"] as const;
-const TIMING = [
-  "prior_purchase_31_365d",
-  "sequenced_buying_30d",
-  "first_purchase_12mo",
-  "first_purchase_unverifiable",
-] as const;
 
 export function ScoringExplainer() {
+  const [discount, setDiscount] = useState(DEEP_DISCOUNT_PCT);
   const [role, setRole] = useState<(typeof ROLES)[number]>("director");
   const [cap, setCap] = useState<(typeof CAPS)[number]>("small");
-  const [timing, setTiming] = useState<(typeof TIMING)[number]>("prior_purchase_31_365d");
-  const [holdings, setHoldings] = useState(true);
-  const [indirect, setIndirect] = useState(false);
   const [isCluster, setIsCluster] = useState(false);
   const [tight, setTight] = useState(false);
 
-  const { score, breakdown, type } = useMemo(() => {
-    const keys = [`role_${role}`, `cap_${cap}`, timing];
-    if (holdings) keys.push("holdings_increase_5pct");
-    if (indirect) keys.push("indirect_purchase");
-
-    const entries = keys.map((k) => [k, SCORING_FACTORS[k]?.points ?? 0] as const);
-    // scorer.py caps the total at 100 and floors it at 0.
-    const raw = entries.reduce((sum, [, pts]) => sum + pts, 0);
-    const total = Math.max(0, Math.min(100, raw));
-
+  const { score, type } = useMemo(() => {
+    const total = discountScore(discount);
     return {
       score: total,
-      breakdown: entries.filter(([, pts]) => pts !== 0),
       type: classifySignal({
         score: total,
         isCluster,
@@ -56,12 +40,35 @@ export function ScoringExplainer() {
         capTier: cap,
       }),
     };
-  }, [role, cap, timing, holdings, indirect, isCluster, tight]);
+  }, [discount, isCluster, tight, cap]);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="space-y-5 rounded-xl border bg-card p-5">
-        <FilterGroup label="Who bought">
+        <div className="space-y-3">
+          <div className="flex items-baseline justify-between gap-3">
+            <label htmlFor="discount" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              How far below its 52-week high, on the day they bought
+            </label>
+            <span className="font-mono text-lg tabular-nums">{discount.toFixed(1)}%</span>
+          </div>
+          <input
+            id="discount"
+            type="range"
+            min={0}
+            max={99}
+            step={0.5}
+            value={discount}
+            onChange={(event) => setDiscount(Number(event.target.value))}
+            className="w-full accent-[var(--color-primary,currentColor)]"
+          />
+          <p className="text-xs text-muted-foreground text-pretty">
+            This is the model. Everything below is recorded on the signal and scores nothing,
+            because measured out of sample none of it ranked.
+          </p>
+        </div>
+
+        <FilterGroup label="Who bought (not scored)">
           {ROLES.map((r) => (
             <FilterChip
               key={r}
@@ -74,7 +81,7 @@ export function ScoringExplainer() {
           ))}
         </FilterGroup>
 
-        <FilterGroup label="Company size">
+        <FilterGroup label="Company size (not scored)">
           {CAPS.map((c) => (
             <FilterChip
               key={c}
@@ -85,23 +92,6 @@ export function ScoringExplainer() {
               {factorMeta(`cap_${c}`).label}
             </FilterChip>
           ))}
-        </FilterGroup>
-
-        <FilterGroup label="Buying history">
-          {TIMING.map((t) => (
-            <FilterChip key={t} selected={timing === t} onClick={() => setTiming(t)}>
-              {factorMeta(t).label}
-            </FilterChip>
-          ))}
-        </FilterGroup>
-
-        <FilterGroup label="Other">
-          <FilterChip selected={holdings} onClick={() => setHoldings((v) => !v)}>
-            Grew their position ≥5%
-          </FilterChip>
-          <FilterChip selected={indirect} onClick={() => setIndirect((v) => !v)}>
-            Bought through a trust or LLC
-          </FilterChip>
         </FilterGroup>
 
         <FilterGroup label="Cluster">
@@ -138,49 +128,41 @@ export function ScoringExplainer() {
           </div>
         </div>
 
-        <ol className="space-y-1 border-t pt-3 text-sm">
-          {breakdown.map(([key, pts]) => (
-            <li key={key} className="flex items-baseline justify-between gap-3">
-              <span className="truncate text-muted-foreground">{factorMeta(key).label}</span>
-              <span
-                className={cn(
-                  "font-mono tabular-nums",
-                  pts > 0 ? "text-success" : "text-destructive",
-                )}
-              >
-                {pts > 0 ? "+" : ""}
-                {pts}
-              </span>
-            </li>
-          ))}
-          {breakdown.length === 0 && (
-            <li className="text-muted-foreground">Nothing this combination scores on.</li>
-          )}
-        </ol>
+        <dl className="space-y-1 border-t pt-3 text-sm">
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="truncate text-muted-foreground">Discount to 52-week high</dt>
+            <dd className="font-mono tabular-nums">{discount.toFixed(1)}%</dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="truncate text-muted-foreground">Its percentile</dt>
+            <dd className={cn("font-mono tabular-nums", score >= THRESHOLDS.buy && "text-success")}>
+              {score}
+            </dd>
+          </div>
+        </dl>
 
         <p className="border-t pt-3 text-xs text-muted-foreground text-pretty">
-          {explain(type, score, isCluster, cap)}
+          {explain(type, score, isCluster)}
         </p>
       </div>
     </div>
   );
 }
 
-function explain(type: string, score: number, isCluster: boolean, cap: string): string {
-  if (isCluster && cap === "large") {
-    return "Large-cap clusters are downgraded to WATCH whatever they score: over 90 days they hit 0% of the time and averaged −16% against SPY.";
-  }
+function explain(type: string, score: number, isCluster: boolean): string {
+  const { alpha, median, hitRate, placeboMedian, placeboHitRate, months } = DISCOUNT_EVIDENCE;
+
   if (type === "CLUSTER_BUY") {
-    return `The cluster average clears ${THRESHOLDS.clusterAvg} and either the window is tight or one buyer scored at least ${THRESHOLDS.clusterMaxScore}. This is the strongest signal the model produces, and the only one besides BUY that triggers an alert.`;
+    return `Three or more insiders bought inside a fortnight, and the group as a whole was buying real weakness — the cluster average clears ${THRESHOLDS.clusterAvg}. Cluster size alone no longer promotes a signal, because inside the most discounted purchases the number of buyers points the wrong way.`;
   }
   if (type === "BUY") {
-    return `At or above ${THRESHOLDS.buy} a lone purchase becomes a BUY. Reaching it takes three or four strong factors — there is deliberately no cheap route via dollar value, which backtested negative and was removed.`;
+    return `At or above ${THRESHOLDS.buy} the purchase is in the top decile of discount, which is where the entire measured effect sits: +${alpha}pp above same-month, same-volatility peers, median +${median}pp, hitting ${hitRate}% of the time over ${months} months. Deciles one through nine are flat with a negative median in every one.`;
   }
   if (isCluster) {
-    return `The cluster does not qualify: the average is under ${THRESHOLDS.clusterAvg}, or the window is loose and no single buyer reached ${THRESHOLDS.clusterMaxScore}. It is surfaced as WATCH but never alerted on.`;
+    return `The cluster is detected and shown, but the group was not buying weakness — the average is under ${THRESHOLDS.clusterAvg}. Surfaced as WATCH, never alerted on.`;
   }
   if (type === "WATCH") {
-    return `Between ${THRESHOLDS.watch} and ${THRESHOLDS.buy - 1} a signal is worth seeing but not acting on. WATCH signals hit around 35% of the time against 55%+ for BUY and CLUSTER_BUY.`;
+    return `Between ${THRESHOLDS.watch} and ${THRESHOLDS.buy - 1} the stock is cheap relative to its own year but not in the decile that carries the effect. Worth seeing, not alerted on.`;
   }
-  return `Under ${THRESHOLDS.watch} the purchase is recorded but never surfaced as a signal.`;
+  return `Under ${THRESHOLDS.watch} the stock was near its 52-week high when the insider bought. A deeply discounted stock nobody bought has a median of ${placeboMedian}pp and hits ${placeboHitRate}% of the time; one near its high, bought or not, is not where the evidence points.`;
 }
