@@ -61,6 +61,11 @@ def score_purchase(tx_row: dict, prior_for_insider: list[dict],
     quote, and a factor one path can compute and the other cannot is what made
     the same purchase score twelve points apart depending on which entry point
     saw it. See the 52-week-low note in `scorer.py`.
+
+    The price context the score is built on does not arrive that way. It rides
+    on `tx_row` out of `purchase_rollup()`, having been fetched once at ingest
+    and stored on the transaction, so this path and the live one read the same
+    number rather than each measuring their own.
     """
     cap_tier = tx_row.get("cap_tier") or "unknown"
     return score_transaction(
