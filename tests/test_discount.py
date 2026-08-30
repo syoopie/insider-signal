@@ -98,10 +98,32 @@ def test_the_same_discount_scores_differently_in_different_regimes():
     assert discount_score(40.0, crash) == 0
 
 
-def test_a_thin_reference_falls_back_to_the_fixed_table():
-    thin = [10.0] * (MIN_REFERENCE - 1)
-    assert discount_score(24.87, thin) == discount_score(24.87)
-    assert discount_score(24.87, thin) == 50
+def test_a_thin_reference_leaves_the_purchase_unranked():
+    """
+    Not the fixed table. The two rules disagree, and falling back means a
+    signal's meaning depends on how busy the filing calendar was that month. The
+    four picks that came from the fallback averaged −34.07pp against the ranked
+    picks' +15.59pp.
+    """
+    assert discount_score(24.87, [10.0] * (MIN_REFERENCE - 1)) is None
+    assert discount_score(24.87, [10.0] * MIN_REFERENCE) is not None
+
+
+def test_no_reference_at_all_still_uses_the_fixed_table():
+    """For callers with no database: the tests, and the web explainer's mirror."""
+    assert discount_score(24.87) == 50
+
+
+def test_the_cutoff_means_exactly_the_top_decile():
+    """
+    Truncation, not rounding. `int(round(x)) >= 90` admits everything from 89.5,
+    which is the top 10.5% and not the decile the effect was measured on.
+    """
+    reference = [float(i) / 10 for i in range(1000)]  # 0.0 to 99.9
+    assert discount_score(89.9, reference) == 89
+    assert discount_score(90.0, reference) == 90
+    selected = sum(1 for v in reference if (discount_score(v, reference) or 0) >= 90)
+    assert selected == 100  # exactly a tenth of 1000
 
 
 def test_the_reference_keeps_the_score_monotone():

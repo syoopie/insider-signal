@@ -57,7 +57,11 @@ DEEP_DISCOUNT_PCT = KNOTS[-3][0]
 
 
 # How many recent purchases a trailing reference needs before it is trusted.
-# Below this the percentile is noise and the fixed table is the better answer.
+# Below this a purchase is left unranked rather than ranked against the fixed
+# table: the two rules disagree, and mixing them means a signal's meaning depends
+# on how busy the filing calendar happened to be. Measured on 18 months, the four
+# picks that came from the fallback averaged -34.07pp against the ranked picks'
+# +15.59pp. Unrankable is the conservative answer and it is never alerted.
 MIN_REFERENCE = 120
 
 # The trailing window the percentile is taken against, in days of filings.
@@ -114,9 +118,13 @@ def discount_score(pct_below_52wk_high: Optional[float],
 
     `reference` is the discounts of purchases disclosed in the preceding
     `REFERENCE_DAYS`, from `store.get_discount_reference`. Given enough of them
-    the score is this purchase's rank inside that window. Without them it falls
-    back to the fixed table, which is what the first day of ingest and the
-    earliest backfilled filings get.
+    the score is this purchase's rank inside that window; given too few, the
+    purchase is unrankable and this returns None rather than falling back, so a
+    quiet filing week cannot silently change what a score means.
+
+    Passing no reference at all is a different case, and gets the fixed table.
+    That is for callers with no database: the tests, and the web explainer's
+    mirror of this function.
 
     None when the context is missing. A caller must not substitute a default:
     an unrankable purchase is unrankable, and scoring it at the median would
@@ -131,9 +139,14 @@ def discount_score(pct_below_52wk_high: Optional[float],
     if value != value:  # NaN
         return None
 
-    if reference is not None and len(reference) >= MIN_REFERENCE:
+    if reference is not None:
+        if len(reference) < MIN_REFERENCE:
+            return None
         below = np.searchsorted(reference, value, side="left")
-        return int(round(below / len(reference) * 100))
+        # Truncate rather than round, so `score >= 90` means exactly "at or above
+        # the 90th percentile". Rounding admits everything from 89.5, which is
+        # the top 10.5% and not the decile the effect was measured on.
+        return min(100, int(below / len(reference) * 100))
 
     if value <= KNOTS[0][0]:
         return KNOTS[0][1]
