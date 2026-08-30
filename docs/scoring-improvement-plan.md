@@ -830,15 +830,42 @@ clean: same lookback, same prices, same market period, only the model differs.
 
 | Horizon | old avg | new avg | old median | new median | old hit | new hit | old IR | new IR |
 |---|---|---|---|---|---|---|---|---|
-| 30d | +4.48% | +4.50% | +1.10% | **+1.91%** | 55.0% | 54.6% | 0.57 | 0.61 |
-| 60d | +7.04% | +8.90% | +1.10% | **+2.03%** | 52.6% | 52.9% | 0.35 | 0.53 |
-| 90d | +7.12% | **+15.29%** | **−0.90%** | **+2.62%** | 48.3% | **52.5%** | 0.32 | 0.52 |
-| 180d | +16.57% | **+34.96%** | +0.44% | **+13.84%** | 50.6% | **57.7%** | 0.31 | 0.58 |
+| 30d | +4.48% | +4.36% | +1.10% | +1.28% | 55.0% | 53.9% | 0.57 | **0.60** |
+| 60d | +7.04% | **+9.05%** | +1.10% | +1.02% | 52.6% | 52.3% | 0.35 | **0.53** |
+| 90d | +7.12% | **+13.63%** | −0.90% | **−1.48%** | 48.3% | 48.5% | 0.32 | **0.45** |
+| 180d | +16.57% | **+30.45%** | +0.44% | **+9.05%** | 50.6% | **55.3%** | 0.31 | **0.51** |
 
-Under the old model the typical BUY alert at 90 days lost to SPY. It is now
-positive on the median at every horizon, gains 4pp of hit rate at 90d and 7pp at
-180d, and roughly doubles the information ratio from 60d out. The 30d hit rate
-fell 0.4pp, which is the only metric that moved the wrong way.
+**Mixed, and the 90d pooled median is negative under both models.** Means and
+information ratios improve at every horizon past 30d, 180d improves on every
+column, 30d is a wash, and the 90d pooled median got *worse* while the 60d median
+went flat.
+
+The pooled median is not the metric the model was selected on, and the reason is
+visible in the same output. It collapses 22 months of different market conditions
+into one number, so it answers "what did a basket bought across 2024-2026 return"
+and moves with which months the model fired in. Split the identical `detail` rows
+by month, keeping months with at least 5 signals:
+
+| Horizon | months | shipped beats old | old mean-of-medians | shipped mean-of-medians | old months positive | shipped |
+|---|---|---|---|---|---|---|
+| 30d | 16 | 11 | −0.46% | **+0.97%** | 8 | **11** |
+| 60d | 16 | 7 | +1.16% | +0.57% | 7 | 8 |
+| 90d | 15 | 6 | +0.89% | **+3.40%** | 6 | **8** |
+| 180d | 12 | 8 | −0.52% | **+10.19%** | 5 | **8** |
+
+At 90d the shipped model wins fewer months but wins them much larger, which is a
+fat-tailed improvement rather than a broad one. 60d is the one horizon where it is
+honestly no better.
+
+**A superseded run recorded +15.29%/+2.62% at 90d and +34.96%/+13.84% at 180d.**
+Those figures are not reproducible and must not be cited. They came from the
+fixed-table cutoff replaced later the same day; both runs used
+`run_label='scheduled'` on the same `run_date`, so the second delete-then-insert
+destroyed the first. The replaced rule scoring *better* on the pooled median while
+scoring +4.19/−2.33 on the pre-registered within-month ruler — against the shipped
+rule's +9.92/+5.77 — is itself the argument for not selecting on the pooled number.
+A research run should have carried `--label`; that it did not is the mistake this
+paragraph exists to record.
 
 Thresholds moved with the scale: BUY 60 to 90, WATCH 45 to 70, cluster average 22
 to 80 and max 30 to 85. CLUSTER_BUY dropped from 136 signals to 60, which is the

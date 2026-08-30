@@ -444,9 +444,24 @@ def save_backtest_results(results: List[Dict], threshold: int,
     against yesterday's baseline overwrites the baseline as it goes. Labelling
     an experiment keeps both rows and leaves 'scheduled' — the only label the
     dashboard reads — untouched.
+
+    Replacing rows is logged with what they held. Forgetting --label destroyed a
+    baseline on 2026-08-30, and the loss was only noticed because the numbers had
+    been copied into a doc. The delete is idempotent by design, so the guard that
+    is actually affordable is making it loud.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                "SELECT horizon_days, n_trades, avg_return, median_return "
+                "FROM backtest_runs "
+                "WHERE run_date = NOW()::DATE AND threshold = %s AND run_label = %s "
+                "ORDER BY horizon_days",
+                (threshold, label),
+            )
+            for horizon, n_trades, avg, median in cur.fetchall():
+                log(f"  replacing today's '{label}' {horizon}d row: n={n_trades} "
+                    f"avg={float(avg):+.2f}% median={float(median):+.2f}%")
             cur.execute(
                 "DELETE FROM backtest_runs "
                 "WHERE run_date = NOW()::DATE AND threshold = %s AND run_label = %s",
