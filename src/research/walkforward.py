@@ -185,21 +185,66 @@ def rank_ic(scored: pd.DataFrame, column: str = "oos",
                        int(frame["n"].sum()))
 
 
+# Risk buckets for the stratified benchmark. Realised volatility before the
+# purchase splits the sample into things that cannot be compared directly.
+RISK_COLUMN = "tx_vol_21d"
+RISK_BUCKETS = 5
+
+
+def risk_bucket(frame: pd.DataFrame, column: str = RISK_COLUMN,
+                buckets: int = RISK_BUCKETS) -> pd.Series:
+    """
+    Which volatility quintile each purchase sat in, inside its own month.
+
+    Bucketing within the month rather than across the sample keeps the control
+    honest when the whole market's volatility moves, which it does.
+    """
+    values = pd.to_numeric(frame.get(column), errors="coerce")
+    months = month_of(frame)
+    out = pd.Series(np.nan, index=frame.index, dtype="float64")
+    for _month, idx in months.groupby(months).groups.items():
+        block = values.loc[idx]
+        # `rank(method="first")` gives a constant column n distinct ranks, and
+        # qcut would then split it into quintiles that mean nothing and charge
+        # each pick against an arbitrary slice of row order.
+        if block.notna().sum() < buckets * 2 or block.nunique(dropna=True) < buckets:
+            out.loc[idx] = 0.0
+            continue
+        out.loc[idx] = pd.qcut(block.rank(method="first"), buckets,
+                               labels=False, duplicates="drop")
+    return out.fillna(-1.0)
+
+
 def selection_alpha(scored: pd.DataFrame, column: str = "oos",
                     rate: float = 0.10, horizon: int = PRIMARY_HORIZON,
                     min_month_rows: int = MIN_MONTH_ROWS,
-                    min_picks: int = 2) -> MonthlyStat:
+                    min_picks: int = 2, statistic: str = "mean",
+                    risk_matched: bool = False) -> MonthlyStat:
     """
-    What the top `rate` of each month returned, minus what that month returned.
+    What the top `rate` of each month returned, minus what its benchmark returned.
 
     Selecting within the month rather than across the pooled sample is the point.
     A pooled top-k can put every pick in one month and collect that month's
     weather; this cannot, because the month it picks in is the month it is
     charged against.
+
+    `risk_matched` charges each pick against its own volatility quintile inside
+    that month rather than against the month as a whole. Without it the metric
+    rewards a pure risk tilt: ranking purchases by prior 21-day volatility alone
+    scores +11.9pp with t=3.13 here, which is leverage on a rising market and not
+    a judgement about insiders. With it, the question becomes whether the model
+    picks better than the other purchases of comparable riskiness.
+
+    `statistic` of "median" answers the other half. A fat right tail lifts a mean
+    without any of the picks being reliably good, and the shipped-model postmortem
+    already turned on exactly that gap between mean and median.
     """
     label = label_column(horizon)
     work = scored[scored[column].notna() & scored[label].notna()].copy()
     work["month"] = month_of(work)
+    work["_bucket"] = risk_bucket(work) if risk_matched else 0.0
+    aggregate = (lambda s: float(s.median())) if statistic == "median" \
+        else (lambda s: float(s.mean()))
 
     rows = []
     for month, block in work.groupby("month"):
@@ -207,8 +252,10 @@ def selection_alpha(scored: pd.DataFrame, column: str = "oos",
             continue
         k = max(min_picks, int(round(len(block) * rate)))
         picks = block.nlargest(k, column)
+        reference = block.groupby("_bucket")[label].apply(aggregate)
+        expected = picks["_bucket"].map(reference).astype("float64")
         rows.append({"month": month, "n": len(picks),
-                     "value": float(picks[label].mean() - block[label].mean())})
+                     "value": aggregate(picks[label]) - aggregate(expected)})
     if not rows:
         return MonthlyStat(pd.DataFrame(columns=["month", "n", "value"]), None, 0, 0)
     frame = pd.DataFrame(rows)
@@ -219,7 +266,9 @@ def selection_alpha(scored: pd.DataFrame, column: str = "oos",
 def random_selection_alpha(scored: pd.DataFrame, draws: int = 400,
                            rate: float = 0.10, horizon: int = PRIMARY_HORIZON,
                            seed: int = 20260830,
-                           min_month_rows: int = MIN_MONTH_ROWS) -> np.ndarray:
+                           min_month_rows: int = MIN_MONTH_ROWS,
+                           statistic: str = "mean",
+                           risk_matched: bool = False) -> np.ndarray:
     """
     The same statistic under `draws` random rankings. The coin flip, drawn properly.
 
@@ -232,7 +281,8 @@ def random_selection_alpha(scored: pd.DataFrame, draws: int = 400,
     out = []
     for _ in range(draws):
         work["_r"] = rng.random(len(work))
-        stat = selection_alpha(work, "_r", rate, horizon, min_month_rows)
+        stat = selection_alpha(work, "_r", rate, horizon, min_month_rows,
+                               statistic=statistic, risk_matched=risk_matched)
         if stat.mean is not None:
             out.append(stat.mean)
     return np.array(out)

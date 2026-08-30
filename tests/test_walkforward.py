@@ -176,3 +176,92 @@ def test_selection_alpha_survives_the_selectivity_it_is_asked_for(rate):
     panel = _panel()
     stat = selection_alpha(walk_forward(panel, score_of("signal"), 90), rate=rate)
     assert stat.mean > 1.0
+
+
+# ── the risk tilt, which the first version of this metric rewarded ───────────
+
+def _risk_panel(months: int = 24, per_month: int = 80, seed: int = 3) -> pd.DataFrame:
+    """
+    A book where volatility buys return and nothing else does.
+
+    Every purchase's outcome is its own volatility times a positive market
+    factor, plus noise. There is no skill to find. A metric that scores a
+    volatility ranking as skill here would score leverage as alpha in the real
+    data, and ranking purchases by prior 21-day volatility does exactly that.
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    for m in range(months):
+        start = date(2024, 1, 1) + timedelta(days=31 * m)
+        factor = abs(rng.normal(3, 2))
+        for i in range(per_month):
+            vol = rng.lognormal(0, 0.6)
+            rows.append({
+                "exec_date": start + timedelta(days=i % 25),
+                "ticker": f"T{rng.integers(0, 200)}",
+                "tx_vol_21d": vol,
+                "skill": rng.normal(),
+                "excess_spy_90d": vol * factor + rng.normal(0, 4 * vol),
+            })
+    return pd.DataFrame(rows)
+
+
+def test_a_pure_volatility_tilt_reads_as_skill_until_risk_is_matched():
+    panel = _risk_panel()
+    scored = walk_forward(panel, score_of("tx_vol_21d"), 90)
+    naive = selection_alpha(scored, rate=0.10)
+    matched = selection_alpha(scored, rate=0.10, risk_matched=True)
+    assert naive.mean > 3.0 and naive.t_stat > 3
+    # Quintiles are non-parametric, so they leave the within-bucket spread of a
+    # lognormal volatility behind. Two thirds of a pure tilt is what the control
+    # actually removes, and claiming more than it delivers is the failure this
+    # whole exercise is about.
+    assert abs(matched.mean) < naive.mean * 0.4
+
+
+def test_risk_matching_keeps_real_skill_that_has_no_risk_tilt():
+    panel = _risk_panel()
+    panel["excess_spy_90d"] += 6.0 * panel["skill"]
+    scored = walk_forward(panel, score_of("skill"), 90)
+    assert selection_alpha(scored, rate=0.10, risk_matched=True).mean > 2.0
+
+
+def test_risk_matching_reduces_to_the_plain_month_benchmark_when_flat():
+    panel = _panel()
+    panel["tx_vol_21d"] = 1.0
+    scored = walk_forward(panel, score_of("signal"), 90)
+    plain = selection_alpha(scored, rate=0.10)
+    matched = selection_alpha(scored, rate=0.10, risk_matched=True)
+    assert matched.mean == pytest.approx(plain.mean, abs=1e-9)
+
+
+# ── the median, where the previous shipped candidate actually failed ─────────
+
+def test_a_fat_right_tail_lifts_the_mean_but_not_the_median():
+    """
+    Half the picks lose a little, a few win enormously. The mean says skill,
+    the median says the typical pick is worse than the pool.
+    """
+    rng = np.random.default_rng(11)
+    rows = []
+    for m in range(24):
+        start = date(2024, 1, 1) + timedelta(days=31 * m)
+        for i in range(80):
+            lottery = float(i < 20)
+            payoff = (rng.random() < 0.15) * rng.exponential(80) - 3.0
+            rows.append({
+                "exec_date": start + timedelta(days=i % 25),
+                "ticker": f"T{rng.integers(0, 200)}",
+                "lottery": lottery + rng.normal(0, 0.01),
+                "excess_spy_90d": payoff if lottery else rng.normal(0, 6),
+            })
+    scored = walk_forward(pd.DataFrame(rows), score_of("lottery"), 90)
+    assert selection_alpha(scored, rate=0.10, statistic="mean").mean > 0.5
+    assert selection_alpha(scored, rate=0.10, statistic="median").mean < 0
+
+
+def test_the_median_statistic_still_sees_a_genuinely_better_pick():
+    scored = walk_forward(_panel(), score_of("signal"), 90)
+    stat = selection_alpha(scored, rate=0.10, statistic="median")
+    assert stat.mean > 1.0
+    assert stat.t_stat > 3
