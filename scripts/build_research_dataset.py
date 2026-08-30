@@ -34,7 +34,7 @@ from collections import defaultdict
 from src.backtest.engine import EXEC_LAG_DAYS, HORIZONS
 from src.db.connection import get_conn
 from src.db.purchases import purchase_rollup
-from src.db.store import get_history_start
+from src.db.store import get_discount_reference, get_history_start
 from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.market.features import price_context, price_on, window_return
 from src.market.panel import PANEL_PATH, load_panel
@@ -193,7 +193,12 @@ def main():
         # backfill discards those before writing, which is why the model has
         # never been fitted against its own negative class.
         priors = priors_before_window(by_ticker[ticker], p["insider_name"], filed)
-        result = score_purchase(p, priors, history_start)
+        # The same trailing reference the backfill ranks against. Without it this
+        # falls back to the fixed table and every score here quietly disagrees
+        # with the stored signal, which is precisely what
+        # verify_scoring_parity.py exists to catch.
+        result = score_purchase(p, priors, history_start,
+                                get_discount_reference(filed))
         if result is None:
             row["score"] = None
             row["scorer_disqualified"] = None

@@ -616,12 +616,52 @@ def fill_missing_price_context(since_date, limit: int = 5000) -> tuple:
                     price_context_bars = %(price_context_bars)s
                 WHERE id = %(id)s
             """, updates, page_size=500)
+    # The reference series is built from exactly these columns, so anything
+    # cached before this write is missing today's filings.
+    clear_discount_reference_cache()
     return len(updates), ranked
 
 
 DISCOUNT_REFERENCE_DAYS = 60
 
-_discount_reference_cache: dict = {}
+_discount_series = None
+
+
+def _load_discount_series():
+    """
+    Every disclosed purchase's discount with the date it was disclosed, once.
+
+    The first version queried per scoring date, which is correct and made the
+    backfill four times slower: 500-odd round trips to a database that scales to
+    zero when idle. One query and a binary search per date does the same work,
+    and keeps the free-tier connection count where it was.
+    """
+    import numpy as np
+
+    global _discount_series
+    if _discount_series is not None:
+        return _discount_series
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT f.filed_date, t.pct_below_52wk_high
+                FROM transactions t
+                JOIN form4_filings f ON f.id = t.filing_id
+                WHERE t.transaction_code = 'P'
+                  AND t.is_10b51 = FALSE
+                  AND t.pct_below_52wk_high IS NOT NULL
+                  AND COALESCE(t.total_value, 0) >= 2000
+                ORDER BY f.filed_date
+                """
+            )
+            rows = cur.fetchall()
+
+    dates = np.array([r[0] for r in rows], dtype="datetime64[D]")
+    values = np.array([float(r[1]) for r in rows], dtype="float64")
+    _discount_series = (dates, values)
+    return _discount_series
 
 
 def get_discount_reference(as_of, days: int = DISCOUNT_REFERENCE_DAYS):
@@ -635,36 +675,22 @@ def get_discount_reference(as_of, days: int = DISCOUNT_REFERENCE_DAYS):
 
     Only filings dated on or before `as_of` are included, so the reference a
     purchase is scored against contains nothing that had not been disclosed when
-    it was scored. Cached per (as_of, days) because the backfill scores many
-    tickers against the same window.
+    it was scored. That is what makes rescoring stable: a filing that arrives
+    next year cannot change a score written today.
     """
     import numpy as np
 
-    key = (as_of, days)
-    if key in _discount_reference_cache:
-        return _discount_reference_cache[key]
+    dates, values = _load_discount_series()
+    if len(dates) == 0:
+        return np.array([])
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT t.pct_below_52wk_high
-                FROM transactions t
-                JOIN form4_filings f ON f.id = t.filing_id
-                WHERE t.transaction_code = 'P'
-                  AND t.is_10b51 = FALSE
-                  AND t.pct_below_52wk_high IS NOT NULL
-                  AND COALESCE(t.total_value, 0) >= 2000
-                  AND f.filed_date > %s::date - %s
-                  AND f.filed_date <= %s
-                """,
-                (as_of, days, as_of),
-            )
-            values = np.sort(np.array([float(r[0]) for r in cur.fetchall()]))
-
-    _discount_reference_cache[key] = values
-    return values
+    as_of = np.datetime64(as_of, "D")
+    lo = np.searchsorted(dates, as_of - np.timedelta64(days, "D"), side="right")
+    hi = np.searchsorted(dates, as_of, side="right")
+    return np.sort(values[lo:hi])
 
 
 def clear_discount_reference_cache() -> None:
-    _discount_reference_cache.clear()
+    """Drop the cached series. Call after writing new price context."""
+    global _discount_series
+    _discount_series = None
