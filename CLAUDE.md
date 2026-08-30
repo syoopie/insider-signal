@@ -751,16 +751,33 @@ uv run python scripts/run_backtest.py --label adjclose-check
 - **is_routine**: 406 routine / 10,788 opportunistic / 2,917 NULL (legacy, falls back to live calc)
 - **Coverage gap**: April 2024 start is thin (~643 filings vs 3,712+ in May 2024); October 2025 gap was filled by bootstrap re-run
 
-**Key empirical backtest findings (2026-05-20):**
-| Horizon | Avg Excess Return | Hit Rate |
-|---------|------------------|----------|
-| 30d | +2.1% | ~55% |
-| 60d | +4.0% | ~55% |
-| 90d | +2.4% | ~55% |
-| 180d | +15.9% | ~60% |
+**Backtest, old model vs new, same script one day apart (2026-08-29 / 2026-08-30).**
+Only the scoring model differs; the lookback, the price data and the market period are
+the same. `run_backtest.py` measures pooled excess return against SPY, which is a
+different question from the within-month, risk-matched metric `hillclimb.py` uses, so
+both are reported.
 
-Best bucket: CLUSTER_BUY score 50–64 at 180d → +31.2% avg, 62% hit rate.
-Worst: LGF (Lions Gate) — insiders averaging down, −63.1% at 180d. No filter implemented.
+| Horizon | old avg | new avg | old median | new median | old hit | new hit | old sharpe | new sharpe |
+|---|---|---|---|---|---|---|---|---|
+| 30d | +4.48% | +4.50% | +1.10% | **+1.91%** | 55.0% | 54.6% | 0.57 | 0.61 |
+| 60d | +7.04% | +8.90% | +1.10% | **+2.03%** | 52.6% | 52.9% | 0.35 | 0.53 |
+| 90d | +7.12% | **+15.29%** | **−0.90%** | **+2.62%** | 48.3% | **52.5%** | 0.32 | 0.52 |
+| 180d | +16.57% | **+34.96%** | +0.44% | **+13.84%** | 50.6% | **57.7%** | 0.31 | 0.58 |
+
+The medians are the line that matters. Under the old model the typical BUY alert at 90d
+*lost* to SPY, at −0.90%, and the runs before the 2026-08-29 repairs were worse still
+(−2.04%, −2.61%, −3.29%). Every horizon is now positive on the median, the hit rate
+gains 4pp at 90d and 7pp at 180d, and the information ratio roughly doubles at 60d and
+beyond. The only metric that moved the wrong way is the 30d hit rate, by 0.4pp.
+
+n differs slightly between the runs (333 vs 358 at 90d) because the two models select
+different signals, and one day of new filings sits between them.
+
+Best single outcome under the new model: AGL at +536% over 90d. Worst: RLMD, which is
+*both* the best and the worst 180d outcome (+541% and −91%) on different entry dates.
+That is the shape of the strategy. Deeply discounted stocks have fat tails in both
+directions, which is why the median and the hit rate are quoted beside every mean here
+and why `hillclimb.py` tests the median as a pre-registered bar.
 
 ---
 

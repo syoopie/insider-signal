@@ -754,7 +754,41 @@ in five thousand, and the same screen without the filing has a negative median.
 **The Form 4 is the gate and the discount is the ranker.** Insider attributes do
 not rank inside the discounted set; the filing itself is most of the effect.
 
-### What shipping it would require
+### It shipped, 2026-08-30
+
+`src/signals/discount.py` is the model, `src/market/context.py` fetches the input
+once at ingest, and four columns on `transactions` store it so the live path and
+`backfill_signals.py` read the same number. 14,327 purchase rows backfilled,
+92.7% of them rankable from the local panel; all signals rescored.
+
+Verified against the real artifact rather than by inspection. `"SHIPPED scorer"`
+is a candidate in the hillclimb registry that calls the production module, and on
+the frozen ruler it returns **+11.005, t=+2.25, median +7.413** against the
+research feature's +11.132. The 0.13 gap is the integer rounding of the
+percentile map.
+
+Then the production backtest, which asks a different question. It measures pooled
+excess return against SPY rather than within-month risk-matched selection, and the
+old model happened to run the same script one day earlier, so the comparison is
+clean: same lookback, same prices, same market period, only the model differs.
+
+| Horizon | old avg | new avg | old median | new median | old hit | new hit | old IR | new IR |
+|---|---|---|---|---|---|---|---|---|
+| 30d | +4.48% | +4.50% | +1.10% | **+1.91%** | 55.0% | 54.6% | 0.57 | 0.61 |
+| 60d | +7.04% | +8.90% | +1.10% | **+2.03%** | 52.6% | 52.9% | 0.35 | 0.53 |
+| 90d | +7.12% | **+15.29%** | **−0.90%** | **+2.62%** | 48.3% | **52.5%** | 0.32 | 0.52 |
+| 180d | +16.57% | **+34.96%** | +0.44% | **+13.84%** | 50.6% | **57.7%** | 0.31 | 0.58 |
+
+Under the old model the typical BUY alert at 90 days lost to SPY. It is now
+positive on the median at every horizon, gains 4pp of hit rate at 90d and 7pp at
+180d, and roughly doubles the information ratio from 60d out. The 30d hit rate
+fell 0.4pp, which is the only metric that moved the wrong way.
+
+Thresholds moved with the scale: BUY 60 to 90, WATCH 45 to 70, cluster average 22
+to 80 and max 30 to 85. CLUSTER_BUY dropped from 136 signals to 60, which is the
+intended effect of requiring the group to have been buying weakness.
+
+### What shipping it required
 
 `tx_pct_below_52wk_high` is computed from the price panel at the transaction
 date. The live path has a Yahoo quote and the backfill path does not, which is
@@ -762,12 +796,19 @@ the exact reason section 2 gives for deleting the old 52-week factors: the same
 purchase scored up to 12 points apart depending on which entry point saw it, and
 they compared against *today's* low rather than the low as of the trade.
 
-So the rule in CLAUDE.md stands. Do not add a factor only one path can compute.
-Shipping this means Phase 1B, the point-in-time price context stored on the
-transaction row at ingest, which was deliberately skipped when no model read it.
-A model now reads it, so it earns its place. The order is: store the context at
-ingest, backfill it for stored transactions, then add the factor, then
-`backfill_signals.py --days 730 --force`, then `run_backtest.py`.
+So the rule in CLAUDE.md stands, and the way to satisfy it is to move the fetch
+rather than to drop the factor. Phase 1B, the point-in-time price context stored
+on the transaction row at ingest, was deliberately skipped in the first round
+because no model read it. A model reads it now, so it earned its place, and it
+went in first: store the context at ingest, backfill it for stored transactions,
+then add the factor, then `backfill_signals.py --days 730 --force`, then
+`run_backtest.py`. `score_transaction` remains a pure function of stored data.
+
+The open question this leaves is the one the placebo control could not answer.
+The control universe is the 1,371 symbols in the price panel, which are stocks
+that had an insider purchase somewhere in the window, and the placebos are drawn
+at random rather than matched on size or sector. A control matched on both would
+say how much of the +5.55pp non-insider mean is industry mix.
 
 ### What did ship from the first round
 
