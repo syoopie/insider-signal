@@ -2,16 +2,18 @@
  * The scoring model, mirrored from `src/signals/discount.py` for the explainer.
  *
  * The score is a purchase's discount expressed as a percentile. In the pipeline
- * the reference is the purchases disclosed in the preceding 60 days, so the same
+ * the reference is the purchases disclosed in the preceding 30 days, so the same
  * discount scores differently in a calm market and a drawdown; that adaptation
  * is load-bearing, because a fixed cutoff selected 2% of one month's purchases
  * and 24% of another's and gave away more than half the effect.
  *
- * The explainer cannot query the database, so it uses the fixed table below,
- * which is the same fallback the pipeline uses before 120 recent purchases have
- * accumulated. It is the distribution over the 8,289 eligible, labelled
- * purchases in the research sample, at every fifth percentile. Treat the numbers
- * it produces as representative of a typical market rather than exact.
+ * The explainer cannot query the database, so it uses the fixed table below: the
+ * distribution over the 8,289 eligible, labelled purchases in the research
+ * sample, at every fifth percentile. Treat what it produces as representative of
+ * a typical market rather than exact. The pipeline reaches for this table only
+ * when a caller passes no reference at all; a purchase whose own window holds
+ * too few contemporaries is left unranked rather than scored by a different
+ * rule.
  *
  * Keep the table byte-identical to the Python.
  */
@@ -83,4 +85,12 @@ export const DISCOUNT_EVIDENCE = {
   /** The additive factor table this replaced, measured the same way. */
   previousAlpha: 0.78,
   previousP: 0.27,
+  /**
+   * What the shipped rule returns, as opposed to the idealised top-decile-of-month
+   * ranking above. Selecting on an absolute cutoff against a 30-day trailing
+   * reference reaches most of the way to it.
+   */
+  shippedAlpha: 9.92,
+  shippedMedian: 5.77,
+  shippedT: 2.24,
 } as const;

@@ -64,7 +64,7 @@ export function ScoringExplainer() {
           />
           <p className="text-xs text-muted-foreground text-pretty">
             This is the model. The score is the percentile of that discount among the
-            purchases insiders disclosed in the preceding 60 days, so the same number
+            purchases insiders disclosed in the preceding 30 days, so the same number
             means more in a calm market than in a drawdown. This slider uses a fixed
             reference drawn from two years of filings, so treat it as a typical market.
             Everything below is recorded on the signal and scores nothing, because

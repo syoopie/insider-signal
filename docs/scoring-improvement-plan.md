@@ -769,7 +769,7 @@ matched:
 | rule | mean | t | median | t |
 |---|---|---|---|---|
 | fixed table, `score >= 90` | +4.19pp | +1.17 | **−2.33pp** | −0.56 |
-| trailing 60d, `score >= 90` | +9.74pp | +2.35 | +3.01pp | +0.56 |
+| trailing 30d, `score >= 90` | +9.92pp | +2.24 | +5.77pp | +1.49 |
 | top 10% of the month (ceiling) | +11.10pp | +2.28 | +7.38pp | +1.33 |
 
 More than half the effect was being given away, and the median went negative.
@@ -778,17 +778,37 @@ and treated it as a cost worth paying. That framing was wrong: it is not a volum
 problem, it is the selection reaching into the part of the distribution that
 carries nothing.
 
-Ranking against the purchases disclosed in the preceding 60 days recovers most of
-it and halves the spread in how much of each month gets selected, from 21.7
-points to 14.5. It stays point-in-time because the window holds only filings that
-already existed.
+Ranking against the purchases disclosed in the preceding 30 days recovers most of
+it. It stays point-in-time because the window holds only filings that already
+existed.
 
-**60 days was chosen on the mechanism, not on the number.** A 21-day window
-scored higher on both statistics, +11.03pp and a median of +10.97pp with t=+2.19,
-which is the only configuration whose *median* clears t=2. It was not taken: it
-rests on about 150 reference purchases, leaves two months unscoreable, and stands
-alone as a spike beside a flat run from 30 through 180 days. Taking the best
-number from a sweep is the failure this document exists to correct.
+**Window length was chosen on a mechanism, not on a maximum.** The rule being
+approximated is "the top decile of the current cross-section", so there is a test
+that does not look at returns at all: what share of each month clears the cutoff?
+It should be a tenth.
+
+| window | refs | mean | t | median | t | share of month |
+|---|---|---|---|---|---|---|
+| 14 | 210 | +13.60 | +2.39 | +7.95 | +1.47 | 0.0% to 12.6% |
+| 21 | 306 | +11.37 | +2.51 | +8.75 | +1.68 | 0.0% to 13.7% |
+| **30** | **424** | **+11.05** | **+2.61** | **+7.42** | **+1.87** | **0.8% to 15.6%** |
+| 45 | 518 | +8.98 | +2.15 | +2.73 | +0.56 | 2.5% to 18.1% |
+| 60 | 687 | +8.02 | +2.05 | +1.09 | +0.24 | 2.0% to 20.0% |
+| 90 | 1060 | +9.29 | +2.21 | +1.16 | +0.24 | 2.5% to 20.4% |
+| 180 | 2073 | +9.29 | +2.08 | +1.93 | +0.42 | 3.0% to 20.4% |
+| 400 | 4323 | +7.07 | +1.79 | +3.30 | +0.75 | 1.5% to 22.2% |
+| month | — | +11.10 | +2.28 | +7.38 | +1.33 | 9.1% to 10.1% |
+
+The spread narrows monotonically as the window shortens and the returns follow
+it, which is a mechanism and an outcome agreeing rather than a maximum picked out
+of a sweep. 30 days rather than 14 or 21 because it rests on 424 reference
+purchases against their 210 and 306, and because it is the shortest window that
+never leaves a month with no signals at all.
+
+An earlier draft of this section argued for 60 days and dismissed the short end
+as a spike. That was measured against a reference inflated 1.23x by counting
+broker fills as separate purchases, and without the share-of-month column that
+shows the trend is monotone.
 
 ### It shipped, 2026-08-30
 

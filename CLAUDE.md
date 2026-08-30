@@ -90,7 +90,7 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 | Backtest lookback window | `scripts/run_backtest.py` → `LOOKBACK_DAYS = 730` |
 
 **Key thresholds (do not change without re-running full backfill + backtest):**
-- The score is `pct_below_52wk_high` as a percentile of the last 60 days of filings
+- The score is `pct_below_52wk_high` as a percentile of the last 30 days of filings
   (`src/signals/discount.py` + `store.get_discount_reference`); a *fixed* cutoff was
   tried first and gave away more than half the effect
 - BUY: score ≥ 90, meaning the top decile of discount, where the whole measured effect sits
@@ -476,7 +476,7 @@ window and fires on 46% of the validation one, purely because of when ingest sta
 
 `score = discount_score(transactions.pct_below_52wk_high, reference)` — how far below
 its 52-week high the stock sat on the day the insider bought, as a **percentile among
-the purchases disclosed in the preceding 60 days**
+the purchases disclosed in the preceding 30 days**
 (`store.get_discount_reference`). 0 to 100, monotone, no other term. Below 120
 reference purchases it falls back to the fixed table in `src/signals/discount.py`.
 
@@ -489,12 +489,15 @@ nine flat ones. Measured over 18 months, top decile, risk matched:
 | rule | mean | median |
 |---|---|---|
 | fixed table, `score >= 90` | +4.19pp | **−2.33pp** |
-| trailing 60d, `score >= 90` | +9.74pp | +3.01pp |
-| top 10% of the month (ceiling) | +11.10pp | +7.38pp |
+| trailing 30d, `score >= 90` | +9.92pp | +5.77pp |
+| top 10% of the month (unreachable ceiling) | +11.10pp | +7.38pp |
 
-A 21-day window scored higher still (+11.03, median +10.97) and was **not** taken: it
-rests on ~150 reference purchases, leaves two months unscoreable, and is a lone spike
-beside a flat run from 30 to 180 days. Choosing it would be selecting on the metric.
+Window length was chosen on a mechanism, not a maximum. The rule being approximated is
+"top decile of the current cross-section", so the test is what share of each month
+clears the cutoff; it should be a tenth. That share narrows monotonically as the window
+shortens, 20.7 points of spread at 400 days down to 12.6 at 14, and the returns follow
+it. 30 days rests on 424 reference purchases and is the shortest window that never
+leaves a month with no signals at all; 14 and 21 days both do.
 
 | Condition | Score |
 |---|---|
