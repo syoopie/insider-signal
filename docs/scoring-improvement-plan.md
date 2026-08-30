@@ -717,16 +717,42 @@ liquidity to a fitted model destroys it, +0.45 with a negative median.
 discounted third, the number of cluster buyers points the wrong way at −4.53,
 t=−1.85, against the CLUSTER_BUY thesis the model is built on.
 
-### What this does and does not claim
+### The placebo control: the Form 4 is doing the work
 
-It claims that among insider purchases, the ones in deeply beaten-down stocks
-outperform their month-and-risk-matched peers, out of sample, over eighteen
-months, at p below one in five thousand.
+Distance below the 52-week high is a known equity effect, so the screen had to
+be run on stocks nobody bought. `scripts/insider_control.py` takes every real
+purchase and draws placebo observations on a different ticker, the same
+transaction date, the same exec date and the same horizon. Calendar, month
+structure and holding windows are identical; the only difference is the filing.
 
-It does not claim the insider matters. There is no non-insider control sample
-here, and distance below the 52-week high is a known equity effect. The finding
-is a better ranking *of insider purchases*, which is exactly the job the product
-does, and it is not evidence that insiders add to it.
+| top decile of discount | mean | median | hit rate |
+|---|---|---|---|
+| insider purchases | +11.13pp | **+7.39pp** | **57.7%** |
+| placebo, same dates | +5.55pp | **−1.30pp** | 49.3% |
+
+Half the mean is the discount alone. **All of the median is the insider.** A
+deeply discounted stock nobody bought is a lottery ticket, its mean carried by a
+fat right tail while the typical one loses money at a 49.3% hit rate. A deeply
+discounted stock an insider bought has a positive median and wins 57.7% of the
+time.
+
+On the mean alone the honest reading would have been "mostly a value effect".
+The median says the opposite. This is what the median statistic was added for.
+
+Two limits. The placebo universe is the 1,371 symbols in the price panel, which
+are stocks that had an insider purchase somewhere in the window rather than the
+whole market, so the contrast is "no Form 4 on this date" and not "no Form 4
+ever". And placebos are drawn at random rather than matched on size or sector,
+so the calendar and the discount are controlled but the industry mix is not.
+
+### What this claims
+
+Among insider purchases, the ones in deeply beaten-down stocks outperform their
+month-and-risk-matched peers out of sample over eighteen months at p below one
+in five thousand, and the same screen without the filing has a negative median.
+
+**The Form 4 is the gate and the discount is the ranker.** Insider attributes do
+not rank inside the discounted set; the filing itself is most of the effect.
 
 ### What shipping it would require
 
