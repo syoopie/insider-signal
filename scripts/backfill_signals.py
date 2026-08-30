@@ -53,7 +53,7 @@ from psycopg2.extras import RealDictCursor
 from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.db.connection import get_conn
 from src.db.purchases import purchase_rollup
-from src.db.store import batch_save_signals, get_history_start
+from src.db.store import batch_save_signals, get_discount_reference, get_history_start
 from src.signals.batch import SCORING_WINDOW_DAYS, score_window, window_start_for
 from src.signals.cluster import cluster_from_transactions
 from src.signals.scorer import classify_signal, cluster_size_bonus, filing_lag_bonus
@@ -307,7 +307,14 @@ def main():
         # Date of the latest purchase in the window (tx_rows sorted DESC by transaction_date)
         signal_date = tx_rows[0].get("transaction_date") or (filed_date + timedelta(days=1))
 
-        window = score_window(tx_rows, all_prior, history_start)
+        # Ranked against the purchases disclosed in the 60 days before this
+        # window closed, not against a fixed two-year table. A fixed cutoff
+        # selects 2% of one month's purchases and 24% of another's, because the
+        # market moves every stock's discount together, and in the heavy months
+        # it reaches past the top decile into the flat ones. `store` caches per
+        # date, so scoring many tickers on one day is one query.
+        window = score_window(tx_rows, all_prior, history_start,
+                              get_discount_reference(filed_date))
         aggregate_score = window.aggregate_score
         breakdown_combined = window.breakdown
         scored_txs = window.scored_txs

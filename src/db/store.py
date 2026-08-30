@@ -617,3 +617,54 @@ def fill_missing_price_context(since_date, limit: int = 5000) -> tuple:
                 WHERE id = %(id)s
             """, updates, page_size=500)
     return len(updates), ranked
+
+
+DISCOUNT_REFERENCE_DAYS = 60
+
+_discount_reference_cache: dict = {}
+
+
+def get_discount_reference(as_of, days: int = DISCOUNT_REFERENCE_DAYS):
+    """
+    The 52-week discounts of purchases disclosed in the `days` before `as_of`, sorted.
+
+    This is what `discount_score` ranks a purchase against. A fixed cutoff on a
+    two-year distribution selects 2% of one month's purchases and 24% of
+    another's, because the market moves every stock's discount together; ranking
+    against contemporaneous filings is what keeps the cut at a decile.
+
+    Only filings dated on or before `as_of` are included, so the reference a
+    purchase is scored against contains nothing that had not been disclosed when
+    it was scored. Cached per (as_of, days) because the backfill scores many
+    tickers against the same window.
+    """
+    import numpy as np
+
+    key = (as_of, days)
+    if key in _discount_reference_cache:
+        return _discount_reference_cache[key]
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.pct_below_52wk_high
+                FROM transactions t
+                JOIN form4_filings f ON f.id = t.filing_id
+                WHERE t.transaction_code = 'P'
+                  AND t.is_10b51 = FALSE
+                  AND t.pct_below_52wk_high IS NOT NULL
+                  AND COALESCE(t.total_value, 0) >= 2000
+                  AND f.filed_date > %s::date - %s
+                  AND f.filed_date <= %s
+                """,
+                (as_of, days, as_of),
+            )
+            values = np.sort(np.array([float(r[0]) for r in cur.fetchall()]))
+
+    _discount_reference_cache[key] = values
+    return values
+
+
+def clear_discount_reference_cache() -> None:
+    _discount_reference_cache.clear()

@@ -26,7 +26,9 @@ where the jump is.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
+
+import numpy as np
 
 # Empirical distribution of pct_below_52wk_high over the 8,289 eligible,
 # labelled purchases in the research sample, at every fifth percentile.
@@ -54,9 +56,45 @@ KNOTS: list[tuple[float, int]] = [
 DEEP_DISCOUNT_PCT = KNOTS[-3][0]
 
 
-def discount_score(pct_below_52wk_high: Optional[float]) -> Optional[int]:
+# How many recent purchases a trailing reference needs before it is trusted.
+# Below this the percentile is noise and the fixed table is the better answer.
+MIN_REFERENCE = 120
+
+# The trailing window the percentile is taken against, in days of filings.
+#
+# The fixed table alone is not enough, and measuring it is what found that out.
+# It was built on two years, so "the 90th percentile" means the top decile of
+# *that whole period*, not of the moment. The market moves every stock's discount
+# together, so a fixed cutoff selects 2.0% of one month's purchases and 23.7% of
+# another's, and in the heavy months it reaches well past the top decile into the
+# nine flat ones. Measured over 18 months: the fixed cutoff returns +4.19pp with
+# a median of **-2.33pp**, while the top decile of each month returns +11.10pp
+# with a median of +7.38pp. More than half the effect was being given away.
+#
+# Ranking against the purchases disclosed in the preceding 60 days recovers most
+# of it, at +9.74pp with t=+2.35 and a median of +3.01pp, and halves the spread
+# in how much of each month gets selected. It stays point-in-time because the
+# window holds only filings that already existed.
+#
+# 60 days is chosen on the mechanism rather than on the number. A 21-day window
+# scored higher on both statistics, +11.03pp and a median of +10.97pp, but it
+# rests on about 150 reference purchases, leaves two months unscoreable, and sits
+# alone as a spike beside a flat run from 30 to 180 days. Picking it because it
+# won would be selecting on the metric, which is the failure this whole exercise
+# exists to correct.
+REFERENCE_DAYS = 60
+
+
+def discount_score(pct_below_52wk_high: Optional[float],
+                   reference: Optional[Sequence[float]] = None) -> Optional[int]:
     """
-    The percentile of this discount in the research distribution, 0 to 100.
+    The percentile of this discount among recent purchases, 0 to 100.
+
+    `reference` is the discounts of purchases disclosed in the preceding
+    `REFERENCE_DAYS`, from `store.get_discount_reference`. Given enough of them
+    the score is this purchase's rank inside that window. Without them it falls
+    back to the fixed table, which is what the first day of ingest and the
+    earliest backfilled filings get.
 
     None when the context is missing. A caller must not substitute a default:
     an unrankable purchase is unrankable, and scoring it at the median would
@@ -70,6 +108,10 @@ def discount_score(pct_below_52wk_high: Optional[float]) -> Optional[int]:
         return None
     if value != value:  # NaN
         return None
+
+    if reference is not None and len(reference) >= MIN_REFERENCE:
+        below = np.searchsorted(reference, value, side="left")
+        return int(round(below / len(reference) * 100))
 
     if value <= KNOTS[0][0]:
         return KNOTS[0][1]

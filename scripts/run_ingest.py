@@ -30,7 +30,7 @@ from src.db.connection import apply_schema, get_conn
 from src.db.purchases import purchase_rollup
 from src.ingest.edgar import fetch_form4_index
 from src.db.store import (
-    write_filing, fill_missing_price_context,
+    write_filing, fill_missing_price_context, get_discount_reference,
     update_company_market_data, get_last_filed_date, get_history_start,
     save_signal, mark_signal_alerted, prune_old_data,
 )
@@ -209,6 +209,9 @@ def main():
                  f"will score 0 rather than be ranked on a partial year")
 
     history_start = get_history_start()
+    # What today's purchases are ranked against: the discounts of everything
+    # disclosed in the preceding 60 days. Fetched once for the whole run.
+    discount_reference = get_discount_reference(today)
     tickers_to_score = get_tickers_with_recent_purchases(recent_date)
     _log(f"Tickers with purchases filed in past 7 days: {len(tickers_to_score)}")
     _log(f"History floor for first-purchase checks: {history_start or 'unknown'}")
@@ -261,7 +264,8 @@ def main():
             company = {"cap_tier": tx_row.get("cap_tier") or (mdata.get("cap_tier") if mdata else None)}
 
             result = score_transaction(tx_row, owner, company, mdata, prior_for_insider,
-                                       history_start=history_start)
+                                       history_start=history_start,
+                                       discount_reference=discount_reference)
             if result and result.get("eligible"):
                 scored_txs.append({"owner": owner, "transaction": tx_row, "score_result": result})
                 if result["score"] > aggregate_score:

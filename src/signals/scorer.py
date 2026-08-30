@@ -36,7 +36,7 @@ reason. Do not add a factor that only one path can compute.
 
 import calendar
 from datetime import date, timedelta
-from typing import Optional
+from typing import Optional, Sequence
 
 from src.signals.constants import (
     BUY_SCORE,
@@ -88,6 +88,7 @@ def score_transaction(
     market_data: dict,
     prior_purchases: list,  # previous P transactions by same insider (any date)
     history_start: Optional[date] = None,
+    discount_reference: Optional[Sequence[float]] = None,
 ) -> Optional[dict]:
     """
     Score a single transaction. Returns None if ineligible (not a P, is 10b5-1, etc.).
@@ -184,7 +185,7 @@ def score_transaction(
     # `pct_below_52wk_high` is stored on the transaction at ingest by
     # src/market/context.py. It is never computed here, so this stays a pure
     # function of stored data and the live path and the backfill cannot diverge.
-    score = discount_score(transaction.get("pct_below_52wk_high"))
+    score = discount_score(transaction.get("pct_below_52wk_high"), discount_reference)
 
     # The former factor table is kept as context rather than as points. Every
     # weight in it was set by univariate lift on a sample the model itself had

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Optional
+from typing import Optional, Sequence
 
 from src.signals.scorer import score_transaction
 
@@ -53,7 +53,8 @@ def owner_of(tx_row: dict) -> dict:
 
 
 def score_purchase(tx_row: dict, prior_for_insider: list[dict],
-                   history_start: Optional[date] = None) -> Optional[dict]:
+                   history_start: Optional[date] = None,
+                   discount_reference: Optional[Sequence[float]] = None) -> Optional[dict]:
     """
     Score one purchase against that insider's earlier ones.
 
@@ -75,11 +76,13 @@ def score_purchase(tx_row: dict, prior_for_insider: list[dict],
         {"cap_tier": cap_tier},
         prior_for_insider,
         history_start=history_start,
+        discount_reference=discount_reference,
     )
 
 
 def score_window(tx_rows: list[dict], all_prior: list[dict],
-                 history_start: Optional[date] = None) -> ScoredWindow:
+                 history_start: Optional[date] = None,
+                 discount_reference: Optional[Sequence[float]] = None) -> ScoredWindow:
     """Score every purchase disclosed in one window for one ticker."""
     window = ScoredWindow()
 
@@ -87,7 +90,8 @@ def score_window(tx_rows: list[dict], all_prior: list[dict],
         owner = owner_of(tx_row)
         prior_for_insider = [p for p in all_prior if p.get("insider_name") == owner["name"]]
 
-        result = score_purchase(tx_row, prior_for_insider, history_start)
+        result = score_purchase(tx_row, prior_for_insider, history_start,
+                                discount_reference)
         if result and result.get("eligible"):
             window.scored_txs.append(
                 {"owner": owner, "transaction": tx_row, "score_result": result}
