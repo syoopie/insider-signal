@@ -70,7 +70,9 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 
 | What | Where |
 |---|---|
-| Scoring weights / factors | `src/signals/scorer.py` → `ROLE_SCORES`, `CAP_SCORES`, `score_transaction()` |
+| The scoring model | `src/signals/discount.py` → `KNOTS`, `discount_score()` |
+| Scoring eligibility / disqualifiers | `src/signals/scorer.py` → `score_transaction()` |
+| Point-in-time price context | `src/market/context.py`; stored on `transactions` at ingest |
 | Signal classification thresholds | `src/signals/scorer.py` → `classify_signal()` |
 | Cluster eligibility filters | `src/signals/cluster.py` → `detect_clusters_for_ticker()` |
 | Evidence blob structure | `src/signals/formatter.py` → `build_evidence()` |
@@ -88,9 +90,12 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 | Backtest lookback window | `scripts/run_backtest.py` → `LOOKBACK_DAYS = 730` |
 
 **Key thresholds (do not change without re-running full backfill + backtest):**
-- BUY: score ≥ 60
-- CLUSTER_BUY: ≥3 direct insiders, 14d window, avg score ≥22 (was 25), tight OR max_score ≥30 (was 35); large-cap downgraded to WATCH by the callers
-- WATCH: score 45–59 OR weak cluster
+- The score *is* the percentile of `transactions.pct_below_52wk_high` (`src/signals/discount.py`)
+- BUY: score ≥ 90, meaning the top decile of discount, where the whole measured effect sits
+- WATCH: score 70–89 OR a cluster that missed its bar
+- CLUSTER_BUY: ≥3 direct insiders, 14d window, avg score ≥80, tight OR max_score ≥85;
+  large-cap downgraded to WATCH by the callers
+- A purchase with no 52-week high (under 200 bars of history) scores 0 and is never alerted
 - Backtest lookback: 730 days
 
 ---
@@ -101,12 +106,17 @@ Ingests SEC Form 4 insider purchase disclosures daily, scores them with a
 research-backed model, and surfaces actionable buy signals via a Next.js
 dashboard and Telegram alerts. Runs at zero cost indefinitely.
 
-**Research basis (non-negotiable — these are the foundation of every design decision):**
-- Lakonishok & Lee (2001): small-cap insider buys → +7.4% abnormal return at 12 months
-- Cohen, Malloy & Pomorski (2012): opportunistic trades → 82 bps/month alpha; routine ≈ 0
-- Jeng, Metrick & Zeckhauser (2003): purchase portfolio → ~6% annualized alpha
-- TipRanks CFO study: CFO (21.5%) > Director (20.7%) > Officer (19.8%) > CEO (19.3%)
-- Cluster research: 3+ insiders buying together ≈ 2× alpha of single insider buy
+**What the eligibility rules rest on:**
+- Cohen, Malloy & Pomorski (2012): opportunistic trades → 82 bps/month alpha; routine ≈ 0.
+  This is why 10b5-1 and routine same-month buyers are disqualified outright.
+- Jeng, Metrick & Zeckhauser (2003): purchase portfolio → ~6% annualized alpha. Purchases
+  are the only transaction type scored.
+
+**What the ranking rests on** is this system's own walk-forward test, not the literature.
+See section 7b of `docs/scoring-improvement-plan.md`. Lakonishok & Lee's small-cap cut and
+the cluster literature were both measured here and both *lower* the result, so neither
+carries weight in the score any more. The TipRanks role ordering is indistinguishable from
+zero on this data.
 
 ---
 
@@ -440,9 +450,11 @@ Measured that way, over 18 months and 6,690 out-of-sample rows at 90d:
   gate drops it to +7.62, tier-1 features drop it to +6.80, and inside the most discounted
   third the number of cluster buyers points the wrong way at −4.53, t=−1.85.
 
-It is **not shipped**, because `tx_pct_below_52wk_high` is exactly the kind of factor only
-the live path can compute today. Shipping it means storing point-in-time price context on
-the transaction row at ingest first (Phase 1B of the plan).
+**This shipped on 2026-08-30.** `src/signals/discount.py` is the model, `src/market/context.py`
+fetches the input once at ingest, and `transactions.pct_below_52wk_high` stores it so both the
+live path and `backfill_signals.py` read one number. That storage is what makes the factor
+legal under the rule below; computing it at scoring time is what made the old 52-week factors
+score the same purchase 12 points apart.
 
 **Do not change a weight without re-running the harness.** `scripts/build_price_panel.py`,
 `build_research_dataset.py`, then `scripts/hillclimb.py`. Register a hypothesis in
@@ -458,64 +470,53 @@ window and fires on 46% of the validation one, purely because of when ingest sta
 3. `total_value < $2,000` → trivial noise (DRIP/401k/fractional reinvestment)
 4. `is_routine = TRUE` (or live calc shows ≥2 of 3 prior same-month purchases) → disqualified
 
-### Score Factors (additive, capped at 100)
+### The Score (one factor)
 
-| Factor | Points | Condition |
+`score = discount_score(transactions.pct_below_52wk_high)` — the percentile of how far
+below its 52-week high the stock sat on the day the insider bought, against a fixed
+empirical CDF in `src/signals/discount.py`. 0 to 100, monotone, no other term.
+
+| Value | Score | Meaning |
 |---|---|---|
-| `indirect_purchase` | **−15** | `is_direct = FALSE` — empirical lift -18%/60d, -36%/90d |
-| `role_cfo` | +15 | role_category = 'cfo' — -0.2%/60d, +6.8%/90d lift |
-| `role_director` | +16 | role_category = 'director' — -2.4%/60d, +0.9%/90d |
-| `role_chairman` | 0 | role_category = 'chairman' — -4.4%/60d, -10.1%/90d; n=2 too small to penalize |
-| `role_coo` | +15 | role_category = 'coo' — -1.3%/60d, +6.4%/90d |
-| `role_officer` | +12 | role_category = 'officer' — +20.8%/60d (n=16) |
-| `role_ceo` | **−5** | role_category = 'ceo' — -17.3%/60d, -13.4%/90d; moderate penalty |
-| `role_other` | 0 | role_category = 'other' — -24.4%/60d; n=5 too small to penalize |
-| `cap_small` | +15 | cap_tier = 'small' (<$2B) — Lakonishok & Lee; +1.1%/60d |
-| `cap_mid` | 0 | cap_tier = 'mid' ($2B–$10B) — -9.7%/60d, -12.1%/90d |
-| `cap_large` | 0 | cap_tier = 'large' (>$10B) |
-| `cap_unknown` | +5 | cap_tier = 'unknown' — +0.5%/60d, +6.3%/90d |
-| `value_500k_plus` | **0** | Removed (round 4): was +15; -4.7%/60d, -6.5%/90d lift |
-| `value_100k_plus` | 0 | Removed: -6.7%/60d, -6.9%/90d |
-| `holdings_increase_30pct` | 0 | Removed: -9.3%/60d, -6.3%/90d |
-| `holdings_increase_15pct` | 0 | Removed: -9.6%/60d, -9%/90d |
-| `holdings_increase_5pct` | **+15** | ≥5% holdings increase — +9.2%/60d, +9.3%/90d; raised from +10 |
-| `prior_purchase_31_365d` | +15 | Prior buy 31-364d ago (sustained conviction) — +2.4%/60d |
-| `sequenced_buying_30d` | +10 | Prior buy within 30 days (rapid sequence) |
-| `first_purchase_12mo` | **−10** | No prior buy in 365d, **and** the DB covers that whole year |
-| `first_purchase_unverifiable` | 0 | No prior buy, but the DB starts less than 365d before the trade |
+| 0% below the high | 0 | at its 52-week high |
+| 24.9% below | 50 | the median insider purchase |
+| 39.1% below | 70 | WATCH |
+| 60.1% below | 90 | BUY — the top decile, where the effect lives |
+| no 52-week high | 0 | under 200 bars of history; never alerted |
 
-**Timing factors are mutually exclusive** — exactly one of `sequenced_buying_30d`,
-`prior_purchase_31_365d`, `first_purchase_12mo`, or `first_purchase_unverifiable`
-fires per signal.
+**The former factor table now scores zero.** `role_*`, `cap_*`,
+`holdings_increase_5pct`, `indirect_purchase`, `sequenced_buying_30d`,
+`prior_purchase_31_365d`, `first_purchase_12mo` and `first_purchase_unverifiable`
+are still emitted into `score_breakdown` at 0 points, because they describe a filing
+and the dashboard shows them. They do not rank it. Measured walk-forward the whole
+table returned +0.78pp of selection alpha at a permutation p of 0.27, and adding it
+back as a tiebreak drops the result from +11.13pp to +7.62pp.
 
-**Scores are a pure function of stored data.** Nothing in `score_transaction`
-reads a live price, so daily ingest and `backfill_signals.py` always agree on a
-given transaction. The 52-week-low factors (+12 / +7) were removed for exactly
-this reason: they could only fire in the live path, which has a Yahoo quote, so
-the same purchase scored up to 12 points apart depending on which entry point
-saw it, and every `--force` backfill silently reclassified live signals. They
-also compared the purchase price against *today's* 52-week low rather than the
-low as of the trade. Reinstating them means storing the low as of the
-transaction date at ingest. **Do not add a factor only one path can compute.**
+**Timing factors are still mutually exclusive** — exactly one of
+`sequenced_buying_30d`, `prior_purchase_31_365d`, `first_purchase_12mo` or
+`first_purchase_unverifiable` appears per signal, and `first_purchase_12mo` still
+needs `history_start` to be a full year back or it becomes a fact about the ingest
+start date rather than about the insider.
 
-**`first_purchase_12mo` needs a full year of history to mean anything.**
-`score_transaction` takes `history_start` (= `MIN(filed_date)`, via
-`store.get_history_start()`). Before this guard the penalty fired on 87% of
-signals dated before 2025-04-03 against 32% after, which is a fact about the
-ingest start date, not about insiders. It also contaminated the factor-lift
-analysis that set the weights in this table, so the round 4/5 numbers below
-should be re-derived from a backtest run after 2026-08-29.
+**Scores are a pure function of stored data.** Nothing in `score_transaction` reads
+a live price. `pct_below_52wk_high` is fetched once at ingest by
+`src/market/context.py` and stored on the transaction row, which is the *only* reason
+a price factor is allowed here at all. The old 52-week-low factors (+12 / +7) were
+deleted because they fired only in the live path, so the same purchase scored up to
+12 points apart depending on which entry point saw it, and they compared against
+*today's* low rather than the low as of the trade. **Do not add a factor only one
+path can compute — store its input at ingest instead.**
 
 ### Signal Classification (`classify_signal()`)
 
 ```
 cluster_flag=True:
-    avg(participant_scores) >= 22 AND (tight_cluster OR max_score >= 30) → CLUSTER_BUY
+    avg(participant_scores) >= 80 AND (tight_cluster OR max_score >= 85) → CLUSTER_BUY
     otherwise                                                            → WATCH
 no cluster:
-    score >= 60                  → BUY  (was 65; reduced after 2026-05-25 recalibration)
-    score >= 45                  → WATCH
-    score < 45                   → LOW
+    score >= 90                  → BUY    (the top decile of discount)
+    score >= 70                  → WATCH
+    score < 70                   → LOW
 ```
 
 **The large-cap downgrade is not in `classify_signal()`.** Both callers
@@ -524,10 +525,13 @@ call: `CLUSTER_BUY` + `cap_tier == 'large'` → `WATCH` (0% hit rate at 90d, −
 avg excess). Anything that classifies signals must do the same or it will
 disagree with the stored data.
 
-The cluster uses the **average** of all participant scores, not the max — three
-directors each scoring 31 gives avg=31, which clears 22. Empirical: loose
-clusters with weak individual scores averaged −5% excess at 90d; tight or
-high-score clusters averaged +3–5%.
+The cluster uses the **average** of all participant scores, not the max, so the
+bar asks whether the group as a whole was buying weakness rather than whether one
+member of it was. A cluster that does not clear it is surfaced as WATCH and never
+alerted. Cluster size alone no longer promotes anything: inside the most
+discounted third of purchases the number of cluster buyers points the wrong way at
+−4.53pp with t=−1.85, so three insiders buying a stock at its 52-week high is a
+WATCH.
 
 ---
 
