@@ -635,8 +635,17 @@ def _load_discount_series():
     backfill four times slower: 500-odd round trips to a database that scales to
     zero when idle. One query and a binary search per date does the same work,
     and keeps the free-tier connection count where it was.
+
+    It also read `transactions` directly, which CLAUDE.md forbids for scoring and
+    for good reason. One row is one broker fill, so a purchase that arrived as
+    forty fills counted forty times, and a 4/A amendment counted its restated
+    transactions twice. That inflated the reference by 1.23x and skewed it toward
+    whichever purchases happened to be split across the most fills. The rollup is
+    one row per decision, which is what the thing being ranked also is.
     """
     import numpy as np
+
+    from src.db.purchases import purchase_rollup
 
     global _discount_series
     if _discount_series is not None:
@@ -645,15 +654,13 @@ def _load_discount_series():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT f.filed_date, t.pct_below_52wk_high
-                FROM transactions t
-                JOIN form4_filings f ON f.id = t.filing_id
-                WHERE t.transaction_code = 'P'
-                  AND t.is_10b51 = FALSE
-                  AND t.pct_below_52wk_high IS NOT NULL
-                  AND COALESCE(t.total_value, 0) >= 2000
-                ORDER BY f.filed_date
+                f"""
+                SELECT filed_date, pct_below_52wk_high
+                FROM ({purchase_rollup("AND t.pct_below_52wk_high IS NOT NULL")}) rolled
+                WHERE is_10b51 = FALSE
+                  AND COALESCE(total_value, 0) >= 2000
+                  AND pct_below_52wk_high IS NOT NULL
+                ORDER BY filed_date
                 """
             )
             rows = cur.fetchall()
