@@ -12,6 +12,15 @@ _ROLE_PRIORITY = {"cfo": 0, "ceo": 1, "chairman": 2, "director": 3, "coo": 4, "o
 
 
 RESEARCH_REFS = {
+    "discount_rank":       ("Bought this far below the stock's 52-week high: +11.13pp above "
+                            "same-month, same-volatility peers at the top decile, median +7.39pp, "
+                            "18 months out of sample. The same screen without an insider buying "
+                            "has a median of -1.30pp."),
+    "price_context_missing": ("Under a year of trading history, so there is no 52-week high to "
+                              "measure against. Not ranked, and never alerted."),
+    # The rest describe the filing. They are recorded on every signal and score
+    # nothing, because measured out of sample none of them ranked purchases
+    # better than chance. The citations are what the weights used to rest on.
     "role_cfo":            "CFO: 21.5% avg annual return (highest of any role) — TipRanks/ResearchGate",
     "role_ceo":            "CEO: 19.3% avg annual return — TipRanks/ResearchGate",
     "role_director":       "Director: 20.7% avg annual return — TipRanks/ResearchGate",
