@@ -307,14 +307,14 @@ def main():
         # Date of the latest purchase in the window (tx_rows sorted DESC by transaction_date)
         signal_date = tx_rows[0].get("transaction_date") or (filed_date + timedelta(days=1))
 
-        # Ranked against the purchases disclosed in the 60 days before this
-        # window closed, not against a fixed two-year table. A fixed cutoff
-        # selects 2% of one month's purchases and 24% of another's, because the
-        # market moves every stock's discount together, and in the heavy months
-        # it reaches past the top decile into the flat ones. `store` caches per
-        # date, so scoring many tickers on one day is one query.
+        # Each purchase is ranked against the discounts of everything disclosed
+        # in the 60 days before its own filing, not against a fixed two-year
+        # table. A fixed cutoff selects 2% of one month's purchases and 24% of
+        # another's, because the market moves every stock's discount together,
+        # and in the heavy months it reaches past the top decile into the flat
+        # ones. The series is loaded once and sliced, so this is not a query.
         window = score_window(tx_rows, all_prior, history_start,
-                              get_discount_reference(filed_date))
+                              get_discount_reference)
         aggregate_score = window.aggregate_score
         breakdown_combined = window.breakdown
         scored_txs = window.scored_txs

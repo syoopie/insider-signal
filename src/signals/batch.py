@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from src.signals.scorer import score_transaction
 
@@ -82,16 +82,27 @@ def score_purchase(tx_row: dict, prior_for_insider: list[dict],
 
 def score_window(tx_rows: list[dict], all_prior: list[dict],
                  history_start: Optional[date] = None,
-                 discount_reference: Optional[Sequence[float]] = None) -> ScoredWindow:
-    """Score every purchase disclosed in one window for one ticker."""
+                 reference_for: Optional[Callable[[date], Sequence[float]]] = None
+                 ) -> ScoredWindow:
+    """
+    Score every purchase disclosed in one window for one ticker.
+
+    `reference_for` maps a filing date to the discounts of purchases disclosed
+    before it. It is a callable rather than one array because a window spans
+    seven days of filings, and each purchase is ranked against what had been
+    disclosed when *it* was filed. Passing one array for the whole window scored
+    a Monday filing against Friday's reference, which is a look-ahead of a few
+    days and, more practically, made this path disagree with the research
+    builder on 5.8% of signals.
+    """
     window = ScoredWindow()
 
     for tx_row in tx_rows:
         owner = owner_of(tx_row)
         prior_for_insider = [p for p in all_prior if p.get("insider_name") == owner["name"]]
 
-        result = score_purchase(tx_row, prior_for_insider, history_start,
-                                discount_reference)
+        reference = reference_for(tx_row["filed_date"]) if reference_for else None
+        result = score_purchase(tx_row, prior_for_insider, history_start, reference)
         if result and result.get("eligible"):
             window.scored_txs.append(
                 {"owner": owner, "transaction": tx_row, "score_result": result}
