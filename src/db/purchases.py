@@ -40,6 +40,7 @@ WITH deduped AS (
         t.filing_id, t.insider_name, t.insider_role, t.role_category,
         t.transaction_date, t.transaction_code, t.shares, t.price_per_share,
         t.total_value, t.shares_after, t.is_10b51, t.is_direct, t.is_routine,
+        t.pct_below_52wk_high, t.px_52wk_high, t.px_close_at_tx,
         f.filed_date, f.cik, c.ticker, c.cap_tier, c.name AS company_name
     FROM transactions t
     JOIN form4_filings f ON f.id = t.filing_id
@@ -71,7 +72,12 @@ SELECT
          THEN sum(total_value) / sum(shares) END AS price_per_share,
     max(shares_after)  AS shares_after,
     bool_or(is_10b51)  AS is_10b51,
-    bool_or(is_routine) AS is_routine
+    bool_or(is_routine) AS is_routine,
+    -- Price context is a property of (ticker, transaction_date), so every fill
+    -- being rolled up carries the same value and max() just unwraps it.
+    max(pct_below_52wk_high) AS pct_below_52wk_high,
+    max(px_52wk_high)        AS px_52wk_high,
+    max(px_close_at_tx)      AS px_close_at_tx
 FROM ranked
 WHERE filing_id = winning_filing_id
 GROUP BY ticker, cik, cap_tier, company_name, insider_name,

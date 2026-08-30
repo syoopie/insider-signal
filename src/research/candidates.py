@@ -15,6 +15,7 @@ import pandas as pd
 
 from src.research.features import ALL_CANDIDATES, CURRENT_FACTORS, TIER1, TIER2
 from src.research.models import fit_logistic, fit_rank_model
+from src.signals.discount import discount_score
 from src.research.walkforward import Fitter, Scorer, feature_fitter, score_of
 
 RAW_TERMS_PRESENT = ["pct_holdings_increase", "total_value"]
@@ -92,6 +93,26 @@ def tail_gate(column: str, quantile: float = 0.90,
     return fitter
 
 
+def shipped_scorer() -> Fitter:
+    """
+    The production scoring function, run over the research frame.
+
+    Not a re-implementation of the winning ranking but a call into
+    `src/signals/discount.py`, so the harness measures what ingest will actually
+    write. If the shipped number ever stops matching the researched one, this is
+    where it shows up.
+    """
+    def fitter(_train: pd.DataFrame, _label: str) -> Scorer:
+        def score(frame: pd.DataFrame) -> np.ndarray:
+            values = pd.to_numeric(frame.get(DISCOUNT), errors="coerce")
+            return np.array([
+                np.nan if (v is None or v != v) else float(discount_score(v))
+                for v in values
+            ])
+        return score
+    return fitter
+
+
 def only_where(inner: Fitter, column: str, keep: Sequence) -> Fitter:
     """`inner`, but nothing outside `keep` can ever be picked."""
     allowed = set(keep)
@@ -147,4 +168,5 @@ CANDIDATES: dict[str, Fitter] = {
     "ridge discount+trend+liquidity": ridge(
         [DISCOUNT, "tx_ret_252d", "tx_dollar_vol_21d"], 10.0),
     "ridge discount alone": ridge([DISCOUNT], 10.0),
+    "SHIPPED scorer": shipped_scorer(),
 }

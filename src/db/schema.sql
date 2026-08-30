@@ -50,6 +50,18 @@ CREATE TABLE IF NOT EXISTS transactions (
 -- Add is_routine to existing tables (idempotent).
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_routine BOOLEAN DEFAULT NULL;
 
+-- Point-in-time price context, as of transaction_date, written once at ingest.
+-- The scorer ranks purchases by pct_below_52wk_high, and the live path has a
+-- network while backfill_signals.py does not. Storing it is what lets both
+-- paths agree; computing it at scoring time is what made the old 52-week
+-- factors score the same purchase 12 points apart. price_context_bars is how
+-- much history stood behind the window, so a "52-week high" over 40 bars can
+-- be refused rather than believed.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS px_close_at_tx NUMERIC;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS px_52wk_high NUMERIC;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS pct_below_52wk_high NUMERIC;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS price_context_bars INT;
+
 CREATE INDEX IF NOT EXISTS idx_tx_transaction_date ON transactions(transaction_date);
 CREATE INDEX IF NOT EXISTS idx_tx_filing_id ON transactions(filing_id);
 CREATE INDEX IF NOT EXISTS idx_tx_code ON transactions(transaction_code);

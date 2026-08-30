@@ -561,3 +561,59 @@ def get_unalerted_signals(min_score: int = 45) -> List[dict]:
             )
             rows = cur.fetchall()
     return [dict(r) for r in rows]
+
+
+def fill_missing_price_context(since_date, limit: int = 5000) -> tuple:
+    """
+    Give every recently-filed purchase the price context the scorer ranks on.
+
+    Returns (attempted, ranked). Called by the daily ingest between writing
+    filings and scoring them, so a purchase written this morning is rankable
+    this morning. It is idempotent and cheap on a normal day, because
+    price_context_bars is only NULL for rows nobody has looked at yet.
+
+    A purchase left without context scores zero and is never alerted. That is
+    the conservative failure, but it is silent, so the count returned here is
+    logged and `audit_data.py` counts the standing total.
+    """
+    from psycopg2.extras import RealDictCursor, execute_batch
+
+    from src.market.context import context_for
+
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT t.id, t.transaction_date, c.ticker
+                FROM transactions t
+                JOIN form4_filings f ON f.id = t.filing_id
+                JOIN companies c ON c.cik = f.cik
+                WHERE t.transaction_code = 'P'
+                  AND t.price_context_bars IS NULL
+                  AND c.ticker IS NOT NULL
+                  AND f.filed_date >= %s
+                ORDER BY c.ticker, t.transaction_date
+                LIMIT %s
+                """,
+                (since_date, limit),
+            )
+            rows = cur.fetchall()
+
+    if not rows:
+        return 0, 0
+
+    updates = [{"id": r["id"], **context_for(r["ticker"], r["transaction_date"])}
+               for r in rows]
+    ranked = sum(1 for u in updates if u["pct_below_52wk_high"] is not None)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            execute_batch(cur, """
+                UPDATE transactions
+                SET px_close_at_tx = %(px_close_at_tx)s,
+                    px_52wk_high = %(px_52wk_high)s,
+                    pct_below_52wk_high = %(pct_below_52wk_high)s,
+                    price_context_bars = %(price_context_bars)s
+                WHERE id = %(id)s
+            """, updates, page_size=500)
+    return len(updates), ranked

@@ -1,37 +1,37 @@
 """
 Signal scoring engine.
 
-Scores each open-market purchase (transaction code 'P') against the
-research-backed factor table. Returns a score 0–100 with a full
-breakdown of which factors fired and why.
+Two stages, and the split is the whole design.
 
-Research basis:
-  - Cohen, Malloy & Pomorski (2012): opportunistic trades >> routine trades;
-    routine = same calendar month in ≥2 of preceding 3 years → disqualified
-  - Lakonishok & Lee (2001): small-cap insider buys = +7.4% abnormal at 12mo
-  - TipRanks/ResearchGate CFO study: CFO > Director > Officer > CEO by return
-  - Cluster research: 3+ insiders buying ≈ 2× alpha of single buy
-  - Pficdn et al.: large purchases as % of holdings predict abnormal returns;
-    small fraction-of-holdings purchases are not informative
+**The filing decides eligibility.** A signal has to be a voluntary, non-trivial,
+open-market purchase: transaction code P, not a 10b5-1 plan, at least $2,000,
+not a filer error, and not a routine same-month repeat. These are hard
+disqualifiers and they are what the research actually supports.
 
-Cluster qualification note:
-  classify_signal() uses the *average* of all participant scores (not the max
-  individual score) to gate CLUSTER_BUY signals. This means three directors
-  each scoring 42 qualify as CLUSTER_BUY (avg=42 ≥ 35 threshold) even though
-  no single insider cleared 50. The collective action is the signal.
+**The price decides the rank.** Among purchases that clear those gates, the one
+thing that predicts out of sample is how far below its 52-week high the stock
+sat on the day the insider bought. `src/signals/discount.py` holds the mapping
+and the evidence; `docs/scoring-improvement-plan.md` section 7b holds the full
+account. Measured walk-forward over 18 months and 6,690 purchases, the top
+decile returns +11.13pp above its own month and volatility quintile with a
+median of +7.39pp, above all 5,000 random rankings on both.
 
-Score factor mutual exclusivity (timing factors):
-  Four mutually exclusive purchase-history factors — exactly one fires per signal:
-  - sequenced_buying_30d        (+10): prior buy within 30 days (rapid sequence)
-  - prior_purchase_31_365d      (+15): prior buy in 31-364 days (sustained conviction)
-  - first_purchase_12mo         (-10): no prior buy in 365 days, and the database
-                                       covers that whole year so the absence is real
-  - first_purchase_unverifiable   (0): no prior buy, but the database does not reach
-                                       back a full year before the trade
+The additive factor table this replaced measured +0.78pp with a permutation p
+of 0.27. Its factors are still emitted in the breakdown at zero points, because
+they describe the filing usefully even though they do not rank it.
+
+**Both stages matter, and the placebo control is why.** The same discount screen
+run on stocks nobody bought, on the same dates with the same holding windows,
+returns +5.55pp on the mean and −1.30pp on the median. A deeply discounted stock
+in general is a lottery ticket whose typical outcome is a loss. A deeply
+discounted stock an insider bought has a positive median and a 57.7% hit rate.
+The Form 4 is the gate and the discount is the ranker; neither works alone.
 
 Scores are a pure function of stored data. Nothing here reads a live price, so
 the live ingest path and the historical backfill always agree on a given
-transaction. Do not add a factor that only one of them can compute.
+transaction. `pct_below_52wk_high` is fetched once at ingest by
+`src/market/context.py` and stored on the transaction row for exactly that
+reason. Do not add a factor that only one path can compute.
 """
 
 import calendar
@@ -44,6 +44,7 @@ from src.signals.constants import (
     CLUSTER_MIN_MAX_SCORE,
     WATCH_SCORE,
 )
+from src.signals.discount import discount_score
 
 
 # Role → base score delta.
@@ -174,97 +175,95 @@ def score_transaction(
         if routine_years >= 2:
             return {"score": 0, "breakdown": {"routine_trader": "DISQUALIFIED"}, "disqualified": True, "eligible": False}
 
-    breakdown = {}
-    score = 0
-
-    # --- Indirect purchase penalty ---
-    # is_direct=False means the purchase was made through a trust, LLC, or family
-    # entity. These inflate cluster counts (fund partners filing separately for
-    # the same block) and carry less personal conviction than direct account buys.
-    is_direct = transaction.get("is_direct", True)
-    if is_direct is False:
-        breakdown["indirect_purchase"] = INDIRECT_PENALTY
-        score += INDIRECT_PENALTY
-
-    # --- Role ---
-    role = owner.get("role_category", "other")
-    role_pts = ROLE_SCORES.get(role, 0)
-    breakdown[f"role_{role}"] = role_pts
-    score += role_pts
-
-    # --- Market cap tier ---
-    cap_tier = company.get("cap_tier") or market_data.get("cap_tier", "unknown")
-    cap_pts = CAP_SCORES.get(cap_tier, 5)
-    if cap_pts > 0:
-        breakdown[f"cap_{cap_tier}"] = cap_pts
-    score += cap_pts
-
-    # Transaction value removed entirely (round 4): value_500k_plus had -4.7%/-6.5% lift
-    # at 60d/90d despite weight +15 — the largest single scoring error. Large dollar
-    # purchases correlate with negative outcomes, likely insiders averaging down in
-    # declining stocks. Dollar size doesn't predict alpha; quality factors do.
-
-    # --- Purchase as % of prior holdings (Pficdn et al.) ---
-    # holdings_5pct: +9.2%/+9.3% lift at 60d/90d — best non-role factor. Increased to 15.
-    #   Fires for insiders meaningfully adding to an existing position.
-    # holdings_30pct/15pct: confirmed negative at both horizons (removed in round 3).
-    shares_bought = float(transaction.get("shares") or 0)
-    shares_after  = float(transaction.get("shares_after") or 0)
-    if shares_bought > 0 and shares_after > shares_bought:
-        shares_before = shares_after - shares_bought
-        pct_increase = shares_bought / shares_before * 100
-        if pct_increase >= 5:
-            breakdown["holdings_increase_5pct"] = 15   # +9.2%/+9.3% — best factor; raised from 10
-            score += 15
-
-    # --- Timing: three mutually exclusive purchase-history factors ---
+    # --- The ranking ---
+    # Everything above this line decides whether a purchase is a real, voluntary,
+    # non-trivial open-market buy. Everything below decides how good it is, and
+    # the answer measured out of sample is: how far below its 52-week high the
+    # stock sat on the day the insider bought, and nothing else.
     #
-    # Empirical finding round 2 (2026-05-25): factor-lift analysis confirms:
-    # - first_purchase_12mo (no prior in 365d): -7.4%/-14.8% lift → removed (0)
-    #   Insiders buying for the first time in a year are not more informed; they may
-    #   simply be reacting to news or filling a position quota.
-    # - prior_purchase_31_365d: signals WITHOUT first_purchase_12mo (n=21) averaged
-    #   +8.2% at 60d and +15.7% at 90d — sustained conviction is the strongest timing signal.
-    # - sequenced_buying_30d: increased to 10; rapid re-entry in 30d shows urgency.
-    cutoff_365d = tx_date - timedelta(days=365)
-    cutoff_30d  = tx_date - timedelta(days=30)
+    # `pct_below_52wk_high` is stored on the transaction at ingest by
+    # src/market/context.py. It is never computed here, so this stays a pure
+    # function of stored data and the live path and the backfill cannot diverge.
+    score = discount_score(transaction.get("pct_below_52wk_high"))
 
-    prior_30d  = [p for p in prior_purchases
-                  if cutoff_30d  <= (_parse_date(p.get("transaction_date")) or date.min) < tx_date]
+    # The former factor table is kept as context rather than as points. Every
+    # weight in it was set by univariate lift on a sample the model itself had
+    # selected, and measured on the walk-forward ruler the whole thing returns
+    # +0.78pp of selection alpha at a permutation p of 0.27. Three of its four
+    # load-bearing factors are indistinguishable from zero and cap_small carries
+    # +15 points with the opposite sign to its measured effect.
+    #
+    # They stay in the breakdown at zero so /how-it-works can still show what
+    # the filing said and so a later round has the columns to work with. They do
+    # not move the score, and adding them back as a tiebreak was measured: it
+    # drops the result from +11.13 to +7.62 and fails the t>=2 bar.
+    breakdown = _descriptive_factors(transaction, owner, company, market_data,
+                                     prior_purchases, tx_date, history_start)
+
+    if score is None:
+        # No price context means no rank. Scoring it at the median would put an
+        # unmeasurable purchase into WATCH on no evidence, so it is surfaced at
+        # zero and never alerted. `audit_data.py` counts these, and a rise in
+        # the count is a price-fetch problem, not a market one. The descriptive
+        # factors are still recorded, so the dashboard can show what the filing
+        # said even when the rank is unavailable.
+        return {
+            "score": 0,
+            "breakdown": {"price_context_missing": 0, **breakdown},
+            "disqualified": False,
+            "eligible": True,
+            "unranked": True,
+        }
+
+    return {
+        "score": score,
+        "breakdown": {"discount_rank": score, **breakdown},
+        "disqualified": False,
+        "eligible": True,
+    }
+
+
+def _descriptive_factors(transaction, owner, company, market_data,
+                         prior_purchases, tx_date, history_start) -> dict:
+    """
+    What the filing says, recorded at zero points. Not part of the score.
+
+    Keeping the names and the mutual exclusivity intact means the dashboard, the
+    evidence blob and `analyze_factors.py` keep working, and a future round can
+    ask whether any of them earn a weight without first having to re-derive them.
+    """
+    out = {}
+
+    if transaction.get("is_direct", True) is False:
+        out["indirect_purchase"] = 0
+
+    out[f"role_{owner.get('role_category', 'other')}"] = 0
+
+    cap_tier = company.get("cap_tier") or market_data.get("cap_tier", "unknown")
+    out[f"cap_{cap_tier}"] = 0
+
+    shares_bought = float(transaction.get("shares") or 0)
+    shares_after = float(transaction.get("shares_after") or 0)
+    if shares_bought > 0 and shares_after > shares_bought:
+        if shares_bought / (shares_after - shares_bought) * 100 >= 5:
+            out["holdings_increase_5pct"] = 0
+
+    cutoff_365d = tx_date - timedelta(days=365)
+    cutoff_30d = tx_date - timedelta(days=30)
+    prior_30d = [p for p in prior_purchases
+                 if cutoff_30d <= (_parse_date(p.get("transaction_date")) or date.min) < tx_date]
     prior_365d = [p for p in prior_purchases
                   if cutoff_365d <= (_parse_date(p.get("transaction_date")) or date.min) < tx_date]
 
     if prior_30d:
-        breakdown["sequenced_buying_30d"] = 10
-        score += 10
+        out["sequenced_buying_30d"] = 0
     elif prior_365d:
-        # Sustained conviction: prior buy 31-364 days ago (+2.4%/60d).
-        breakdown["prior_purchase_31_365d"] = 15
-        score += 15
+        out["prior_purchase_31_365d"] = 0
     elif history_start is not None and cutoff_365d < history_start:
-        # The year before this trade is outside what the database stores, so the
-        # absence of a prior purchase is not evidence of one. Charging the
-        # penalty here made it fire on 87% of pre-2025-04 signals against 32%
-        # after, which is a property of the ingest start date, not the insider.
-        breakdown["first_purchase_unverifiable"] = 0
+        out["first_purchase_unverifiable"] = 0
     else:
-        # First-time buyer in 12mo: -4.2%/-1.7% lift (n=174/156, round 4). Strengthen penalty.
-        breakdown["first_purchase_12mo"] = -10
-        score += -10
-
-    # The 52-week-low factor was removed. It could only ever fire in the live
-    # path, because the historical backfill has no price history to compare
-    # against, so the same purchase scored up to 12 points higher depending on
-    # which entry point happened to see it. It was also comparing the purchase
-    # price against *today's* 52-week low rather than the low as of the trade.
-    # Reinstating it means storing the low as of the transaction date at ingest.
-
-    return {
-        "score": min(score, 100),
-        "breakdown": breakdown,
-        "disqualified": False,
-        "eligible": True,
-    }
+        out["first_purchase_12mo"] = 0
+    return out
 
 
 def classify_signal(
@@ -282,18 +281,18 @@ def classify_signal(
         participant. Used to compute the cluster-aggregate score.
     tight_cluster: True if 3+ insiders bought within a 5-day sub-window.
 
-    CLUSTER_BUY qualification:
-      - avg(participant_scores) >= 22 (lowered from 25; round 4 removes value_500k_plus
-        (-15 pts) which compresses individual scores; director+small = 31, but many
-        valid cluster participants may score 22-30 without a large holdings increase)
-      - AND (tight_cluster OR max individual score >= 30)
-        (lowered from 35 for same reason — director+small=31 already marginal)
-      Loose clusters with weak individual scores are surfaced as WATCH.
+    Scores are percentiles of the 52-week discount, so BUY at 90 is the top
+    decile and WATCH at 70 the top three. The top decile is where the entire
+    measured effect sits.
 
-    BUY threshold: 60.
-      Achievable with: dir(16)+small(15)+holdings5pct(15)+prior_purchase(15) = 61.
-      Or: cfo(15)+small(15)+holdings5pct(15)+prior_purchase(15) = 60.
-      Effectively requires 3-4 strong positive factors — no cheap path via dollar-value.
+    CLUSTER_BUY qualification:
+      - avg(participant_scores) >= 80, so the group as a whole was buying into
+        real weakness rather than one member of it
+      - AND (tight_cluster OR max participant score >= 85)
+      A cluster that does not clear the discount bar is surfaced as WATCH and
+      never alerted. It used to be promoted on cluster size alone, which the
+      data does not support: inside the most discounted third the number of
+      cluster buyers points the wrong way at -4.53 with t=-1.85.
     """
     if cluster_flag:
         if participant_scores:

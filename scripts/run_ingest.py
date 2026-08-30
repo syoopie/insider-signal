@@ -30,7 +30,7 @@ from src.db.connection import apply_schema, get_conn
 from src.db.purchases import purchase_rollup
 from src.ingest.edgar import fetch_form4_index
 from src.db.store import (
-    write_filing,
+    write_filing, fill_missing_price_context,
     update_company_market_data, get_last_filed_date, get_history_start,
     save_signal, mark_signal_alerted, prune_old_data,
 )
@@ -197,6 +197,17 @@ def main():
     # stored and then never scored by anything. 4.8% of purchases were landing
     # in that hole, 178 of them direct and over $25k.
     recent_date = today - timedelta(days=7)
+
+    # The scorer ranks a purchase by how far below its 52-week high the stock
+    # sat on the day it was bought, and that number lives on the transaction
+    # row. Fill it before scoring, or every filing written today scores zero.
+    attempted, ranked = fill_missing_price_context(recent_date)
+    if attempted:
+        _log(f"Price context: {ranked}/{attempted} purchases rankable")
+        if ranked < attempted:
+            _log(f"  {attempted - ranked} have under 200 bars of history and "
+                 f"will score 0 rather than be ranked on a partial year")
+
     history_start = get_history_start()
     tickers_to_score = get_tickers_with_recent_purchases(recent_date)
     _log(f"Tickers with purchases filed in past 7 days: {len(tickers_to_score)}")

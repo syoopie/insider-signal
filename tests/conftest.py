@@ -23,6 +23,10 @@ def make_tx():
             "shares_after": 1000.0,
             "price_per_share": 10.0,
             "total_value": 10_000.0,
+            # Stored at ingest by src/market/context.py. Defaulted to the
+            # research sample's median so a test that is not about the ranking
+            # gets a scoreable purchase; pass None to exercise the unranked path.
+            "pct_below_52wk_high": 24.87,
         }
         tx.update(overrides)
         return tx

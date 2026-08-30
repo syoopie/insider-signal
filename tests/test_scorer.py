@@ -50,61 +50,75 @@ def test_computed_routine_disqualifies_when_flag_is_null(make_tx):
     assert r["breakdown"] == {"routine_trader": "DISQUALIFIED"}
 
 
-# ── Additive factors ────────────────────────────────────────────────────────
+# ── The ranking ─────────────────────────────────────────────────────────────
 
-def test_base_director_small_first_buy(make_tx):
-    # director +16, small +15, first_purchase_12mo -10
-    r = score(make_tx())
-    assert r["score"] == 21
-    assert r["breakdown"]["role_director"] == 16
-    assert r["breakdown"]["cap_small"] == 15
-    assert r["breakdown"]["first_purchase_12mo"] == -10
-
-
-def test_indirect_purchase_penalty(make_tx):
-    r = score(make_tx(is_direct=False))
-    assert r["breakdown"]["indirect_purchase"] == -15
-    assert r["score"] == 21 - 15
+def test_the_score_is_the_discount_percentile(make_tx):
+    """
+    24.87% below the 52-week high is the median of the research sample, so it
+    scores 50. 60.12% is the ninetieth percentile, so it scores 90 and is a BUY.
+    """
+    assert score(make_tx(pct_below_52wk_high=24.87))["score"] == 50
+    assert score(make_tx(pct_below_52wk_high=60.12))["score"] == 90
+    assert score(make_tx(pct_below_52wk_high=0.0))["score"] == 0
 
 
-def test_role_scores(make_tx):
-    assert score(make_tx(), owner={"role_category": "cfo"})["breakdown"]["role_cfo"] == 15
-    assert score(make_tx(), owner={"role_category": "ceo"})["breakdown"]["role_ceo"] == -5
-    assert score(make_tx(), owner={"role_category": "coo"})["breakdown"]["role_coo"] == 15
-    assert score(make_tx(), owner={"role_category": "officer"})["breakdown"]["role_officer"] == 12
-    # chairman and other score 0 and are not written into the breakdown as points
-    assert score(make_tx(), owner={"role_category": "chairman"})["breakdown"]["role_chairman"] == 0
+def test_the_score_is_monotone_in_the_discount(make_tx):
+    """
+    Depth still orders the tail. Inside the most discounted third, more discount
+    is worth +10.6pp with t=+2.22, so the score must not flatten into a flag.
+    """
+    scores = [score(make_tx(pct_below_52wk_high=v))["score"]
+              for v in (0, 5, 12, 25, 40, 55, 70, 95)]
+    assert scores == sorted(scores)
+    assert len(set(scores)) > 5
 
 
-def test_cap_tier_scores(make_tx):
-    assert score(make_tx(), company={"cap_tier": "small"})["breakdown"]["cap_small"] == 15
-    assert score(make_tx(), company={"cap_tier": "unknown"})["breakdown"]["cap_unknown"] == 5
-    mid = score(make_tx(), company={"cap_tier": "mid"})
-    assert "cap_mid" not in mid["breakdown"]  # zero-point tiers are omitted
-    large = score(make_tx(), company={"cap_tier": "large"})
-    assert "cap_large" not in large["breakdown"]
+def test_a_purchase_with_no_price_context_is_never_alerted(make_tx):
+    """
+    Unrankable is not average. Scoring a purchase we cannot measure at the
+    median would place it in WATCH on no evidence.
+    """
+    result = score(make_tx(pct_below_52wk_high=None))
+    assert result["score"] == 0
+    assert result["eligible"] is True
+    assert result["unranked"] is True
+    assert result["breakdown"]["price_context_missing"] == 0
 
 
-def test_holdings_increase_5pct(make_tx):
-    at_5 = score(make_tx(shares=50, shares_after=1050))  # +5.0%
-    assert at_5["breakdown"]["holdings_increase_5pct"] == 15
-    under_5 = score(make_tx(shares=40, shares_after=1040))  # +4.0%
-    assert "holdings_increase_5pct" not in under_5["breakdown"]
+def test_the_filing_factors_are_recorded_but_score_nothing(make_tx):
+    """
+    Every weight in the old table was set by univariate lift on a sample the
+    model had selected. Measured walk-forward the whole table returns +0.78pp at
+    a permutation p of 0.27, and adding it back as a tiebreak drops the result
+    from +11.13 to +7.62. It stays as description, not as points.
+    """
+    plain = score(make_tx(pct_below_52wk_high=30.0))
+    loaded = score(make_tx(pct_below_52wk_high=30.0, is_direct=False,
+                           shares=50, shares_after=1050),
+                   owner={"role_category": "cfo"},
+                   company={"cap_tier": "large"})
+    assert plain["score"] == loaded["score"]
+    assert loaded["breakdown"]["indirect_purchase"] == 0
+    assert loaded["breakdown"]["role_cfo"] == 0
+    assert loaded["breakdown"]["cap_large"] == 0
+    assert loaded["breakdown"]["holdings_increase_5pct"] == 0
 
 
-def test_timing_factors_are_mutually_exclusive(make_tx):
+def test_timing_factors_are_still_mutually_exclusive(make_tx):
     ref = "2026-06-15"
-    seq = score(make_tx(transaction_date=ref), priors=[{"transaction_date": "2026-06-01"}])
-    assert seq["breakdown"].get("sequenced_buying_30d") == 10
+    seq = score(make_tx(transaction_date=ref, pct_below_52wk_high=30.0),
+                priors=[{"transaction_date": "2026-06-01"}])
+    assert "sequenced_buying_30d" in seq["breakdown"]
     assert "prior_purchase_31_365d" not in seq["breakdown"]
     assert "first_purchase_12mo" not in seq["breakdown"]
 
-    sustained = score(make_tx(transaction_date=ref), priors=[{"transaction_date": "2026-01-15"}])
-    assert sustained["breakdown"].get("prior_purchase_31_365d") == 15
+    sustained = score(make_tx(transaction_date=ref, pct_below_52wk_high=30.0),
+                      priors=[{"transaction_date": "2026-01-15"}])
+    assert "prior_purchase_31_365d" in sustained["breakdown"]
     assert "sequenced_buying_30d" not in sustained["breakdown"]
 
-    first = score(make_tx(transaction_date=ref), priors=[])
-    assert first["breakdown"].get("first_purchase_12mo") == -10
+    first = score(make_tx(transaction_date=ref, pct_below_52wk_high=30.0), priors=[])
+    assert "first_purchase_12mo" in first["breakdown"]
 
 
 def test_transaction_date_may_be_a_date_object(make_tx):
@@ -114,40 +128,42 @@ def test_transaction_date_may_be_a_date_object(make_tx):
     swallowed it and fell back to date.today() — silently measuring every timing
     factor from today instead of from the trade.
     """
-    as_obj = score(make_tx(transaction_date=date(2024, 9, 1)))
-    as_str = score(make_tx(transaction_date="2024-09-01"))
+    as_obj = score(make_tx(transaction_date=date(2024, 9, 1), pct_below_52wk_high=30.0))
+    as_str = score(make_tx(transaction_date="2024-09-01", pct_below_52wk_high=30.0))
     assert as_obj["breakdown"] == as_str["breakdown"]
     assert as_obj["score"] == as_str["score"]
 
     # A prior buy 40 days before the trade is sustained conviction, not a first
     # purchase. Reading the date as today would place it inside the 30d window.
     priors = [{"transaction_date": "2024-07-23"}]
-    scored = score(make_tx(transaction_date=date(2024, 9, 1)), priors=priors)
-    assert scored["breakdown"].get("prior_purchase_31_365d") == 15
+    scored = score(make_tx(transaction_date=date(2024, 9, 1), pct_below_52wk_high=30.0),
+                   priors=priors)
+    assert "prior_purchase_31_365d" in scored["breakdown"]
 
 
-def test_first_purchase_penalty_needs_a_full_year_of_history(make_tx):
+def test_first_purchase_flag_needs_a_full_year_of_history(make_tx):
     """
-    "No prior purchase in 365 days" is only evidence when the database actually
-    covers those 365 days. It did not for the first year of ingest, so 87% of
-    signals before 2025-04-03 took the penalty against 32% after — a fact about
-    the ingest start date, not about insiders.
+    "No prior purchase in 365 days" is only meaningful when the database
+    actually covers those 365 days. It did not for the first year of ingest, so
+    87% of signals before 2025-04-03 carried the flag against 32% after, which
+    is a fact about the ingest start date rather than about insiders. The flag
+    no longer moves the score, but it still has to describe the filing honestly.
     """
-    tx = make_tx(transaction_date="2026-06-15")
+    tx = make_tx(transaction_date="2026-06-15", pct_below_52wk_high=30.0)
 
     covered = score_transaction(tx, {"role_category": "director"}, {}, {}, [],
                                 history_start=date(2024, 1, 1))
-    assert covered["breakdown"].get("first_purchase_12mo") == -10
+    assert "first_purchase_12mo" in covered["breakdown"]
 
     cold = score_transaction(tx, {"role_category": "director"}, {}, {}, [],
                              history_start=date(2026, 1, 1))
     assert "first_purchase_12mo" not in cold["breakdown"]
-    assert cold["breakdown"].get("first_purchase_unverifiable") == 0
-    assert cold["score"] == covered["score"] + 10
+    assert "first_purchase_unverifiable" in cold["breakdown"]
+    assert cold["score"] == covered["score"]
 
-    # Unknown floor keeps the old behaviour rather than silently waiving it.
-    assert score_transaction(tx, {"role_category": "director"}, {}, {}, [],
-                             history_start=None)["breakdown"].get("first_purchase_12mo") == -10
+    assert "first_purchase_12mo" in score_transaction(
+        tx, {"role_category": "director"}, {}, {}, [],
+        history_start=None)["breakdown"]
 
 
 def test_live_price_data_cannot_change_the_score(make_tx):
@@ -159,43 +175,42 @@ def test_live_price_data_cannot_change_the_score(make_tx):
     purchase scored up to 12 points apart depending on which path saw it, and a
     --force backfill silently reclassified signals the live path had written.
     """
-    at_low = score(make_tx(price_per_share=10), market={"price_52wk_low": 10})
-    no_market = score(make_tx(price_per_share=10), market={})
+    at_low = score(make_tx(price_per_share=10, pct_below_52wk_high=30.0),
+                   market={"price_52wk_low": 10})
+    no_market = score(make_tx(price_per_share=10, pct_below_52wk_high=30.0), market={})
     assert at_low["score"] == no_market["score"]
-    assert not any("52wk" in f for f in at_low["breakdown"])
+    assert not any("52wk_low" in f for f in at_low["breakdown"])
 
 
-def test_score_is_capped_at_100(make_tx):
-    r = score(
-        make_tx(shares=50, shares_after=1050, price_per_share=10),
-        owner={"role_category": "director"},
-        company={"cap_tier": "small"},
-        market={"price_52wk_low": 10},
-        priors=[{"transaction_date": (date.today().replace(year=date.today().year - 1)).isoformat()}],
-    )
-    assert r["score"] <= 100
+def test_the_score_stays_inside_zero_to_one_hundred(make_tx):
+    for value in (-5.0, 0.0, 50.0, 99.15, 250.0):
+        assert 0 <= score(make_tx(pct_below_52wk_high=value))["score"] <= 100
 
 
 # ── classify_signal ─────────────────────────────────────────────────────────
 
 def test_classify_non_cluster_thresholds():
-    assert classify_signal(60, False) == "BUY"
-    assert classify_signal(59, False) == "WATCH"
-    assert classify_signal(45, False) == "WATCH"
-    assert classify_signal(44, False) == "LOW"
+    assert classify_signal(90, False) == "BUY"
+    assert classify_signal(89, False) == "WATCH"
+    assert classify_signal(70, False) == "WATCH"
+    assert classify_signal(69, False) == "LOW"
 
 
-def test_classify_cluster_buy_requires_avg_and_tight_or_maxscore():
-    # avg 30, max 30 -> CLUSTER_BUY
-    assert classify_signal(30, True, [30, 30, 30], tight_cluster=False) == "CLUSTER_BUY"
-    # avg 25 >= 22 but loose and max 25 < 30 -> WATCH
-    assert classify_signal(25, True, [25, 25, 25], tight_cluster=False) == "WATCH"
-    # avg 25, loose, but max score 30 -> CLUSTER_BUY
-    assert classify_signal(30, True, [25, 25, 35], tight_cluster=False) == "CLUSTER_BUY"
-    # avg 25, tight -> CLUSTER_BUY
-    assert classify_signal(25, True, [25, 25, 25], tight_cluster=True) == "CLUSTER_BUY"
-    # avg below 22 -> WATCH regardless
-    assert classify_signal(21, True, [10, 20, 21], tight_cluster=True) == "WATCH"
+def test_classify_cluster_buy_requires_the_group_to_be_buying_weakness():
+    assert classify_signal(85, True, [80, 85, 90], tight_cluster=False) == "CLUSTER_BUY"
+    # Average clears 80 but the window is loose and no participant reaches 85.
+    assert classify_signal(82, True, [80, 82, 82], tight_cluster=False) == "WATCH"
+    assert classify_signal(82, True, [80, 82, 82], tight_cluster=True) == "CLUSTER_BUY"
+
+
+def test_a_cluster_in_a_stock_near_its_high_is_not_an_alert():
+    """
+    Cluster size alone used to promote a signal. Inside the most discounted
+    third the number of cluster buyers points the wrong way at -4.53, t=-1.85,
+    so three insiders buying a stock at its 52-week high is a WATCH.
+    """
+    assert classify_signal(30, True, [28, 30, 32], tight_cluster=True) == "WATCH"
+    assert classify_signal(30, True, [28, 30, 32], tight_cluster=False) == "WATCH"
 
 
 def test_purchase_with_no_price_is_disqualified(make_tx):
