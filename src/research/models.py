@@ -150,6 +150,77 @@ def fit_linear(train: pd.DataFrame, columns: Sequence[str], label: str,
     return FittedModel("linear", standardizer, beta, "linear")
 
 
+@dataclass(frozen=True)
+class RankModel:
+    """
+    Features mapped through a training-set empirical CDF, then weighted linearly.
+
+    Two problems this solves at once. Levels drift across the sample, and a
+    weight fitted on one level regime is reading a clock; ranks are invariant to
+    any monotone shift. And the metric being optimised is a within-month
+    ordering, so fitting on the raw excess return spends most of its effort on
+    the month effect, which no ranking can capture.
+
+    The empirical CDF comes from training only. Ranking a purchase against the
+    other purchases of its own month would be the natural cross-sectional
+    transform and is what quant equity does, but it would need the rest of that
+    month's filings to score the first one, which is a look-ahead the deployed
+    pipeline could not reproduce.
+    """
+    columns: list[str]
+    knots: dict[str, np.ndarray]
+    beta: np.ndarray
+
+    def _ranked(self, frame: pd.DataFrame) -> np.ndarray:
+        prepared = log_scale(frame)
+        vectors = []
+        for name in self.columns:
+            values = pd.to_numeric(prepared.get(name), errors="coerce").to_numpy(dtype="float64")
+            grid = self.knots[name]
+            ranks = np.searchsorted(grid, values, side="right") / max(len(grid), 1)
+            vectors.append(np.where(np.isfinite(values), ranks, 0.5) - 0.5)
+        return np.column_stack(vectors) if vectors else np.empty((len(frame), 0))
+
+    def raw_score(self, frame: pd.DataFrame) -> np.ndarray:
+        return self._ranked(frame) @ self.beta
+
+    def coefficient_table(self) -> pd.DataFrame:
+        return pd.DataFrame({"feature": self.columns, "beta": self.beta}) \
+            .sort_values("beta", key=lambda s: s.abs(), ascending=False)
+
+
+def fit_rank_model(train: pd.DataFrame, columns: Sequence[str], label: str,
+                   alpha: float = 10.0) -> Optional[RankModel]:
+    """Ridge on rank-transformed features, targeting the within-month rank of the label."""
+    prepared = log_scale(train)
+    kept, knots = [], {}
+    for name in columns:
+        if name not in prepared.columns:
+            continue
+        values = pd.to_numeric(prepared[name], errors="coerce").dropna()
+        if len(values) < 30 or values.nunique() < 3:
+            continue
+        kept.append(name)
+        knots[name] = np.sort(values.to_numpy(dtype="float64"))
+    if not kept:
+        return None
+
+    model = RankModel(kept, knots, np.zeros(len(kept)))
+    X = model._ranked(train)
+    months = pd.to_datetime(train["exec_date"]).dt.to_period("M")
+    y = train.groupby(months)[label].rank(pct=True).to_numpy(dtype="float64") - 0.5
+    good = np.isfinite(y)
+    if good.sum() < 50:
+        return None
+    X, y = X[good], y[good]
+    gram = X.T @ X + alpha * np.eye(X.shape[1])
+    try:
+        beta = np.linalg.solve(gram, X.T @ y)
+    except np.linalg.LinAlgError:
+        return None
+    return RankModel(kept, knots, beta)
+
+
 def fit_linear_significant_only(train: pd.DataFrame, columns: Sequence[str],
                                 label: str) -> Optional[FittedModel]:
     """

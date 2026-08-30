@@ -199,7 +199,9 @@ def risk_bucket(frame: pd.DataFrame, column: str = RISK_COLUMN,
     Bucketing within the month rather than across the sample keeps the control
     honest when the whole market's volatility moves, which it does.
     """
-    values = pd.to_numeric(frame.get(column), errors="coerce")
+    if column not in frame.columns:
+        return pd.Series(0.0, index=frame.index, dtype="float64")
+    values = pd.to_numeric(frame[column], errors="coerce")
     months = month_of(frame)
     out = pd.Series(np.nan, index=frame.index, dtype="float64")
     for _month, idx in months.groupby(months).groups.items():
@@ -282,6 +284,48 @@ def random_selection_alpha(scored: pd.DataFrame, draws: int = 400,
     for _ in range(draws):
         work["_r"] = rng.random(len(work))
         stat = selection_alpha(work, "_r", rate, horizon, min_month_rows,
+                               statistic=statistic, risk_matched=risk_matched)
+        if stat.mean is not None:
+            out.append(stat.mean)
+    return np.array(out)
+
+
+def permutation_alpha(frame: pd.DataFrame, fitter: Fitter, draws: int = 200,
+                      rate: float = 0.10, horizon: int = PRIMARY_HORIZON,
+                      seed: int = 20260830, statistic: str = "mean",
+                      risk_matched: bool = True) -> np.ndarray:
+    """
+    The whole pipeline's statistic under labels shuffled inside each month.
+
+    `random_selection_alpha` asks whether one fixed set of predictions beats a
+    random pick. It cannot answer the question that actually threatens this
+    work, which is whether *fitting a model* to eight features on eighteen
+    monthly folds and reporting the best of several candidates manufactures an
+    edge on its own. Permuting the label and re-running the fit answers exactly
+    that: every draw pays the same price in search that the real run paid, and
+    the only thing removed is the link between a purchase and its outcome.
+
+    Shuffling within the month rather than across the sample keeps each month's
+    return distribution intact, so the null is "this model cannot tell these
+    purchases apart", not the far weaker "months differ".
+    """
+    label = label_column(horizon)
+    rng = np.random.default_rng(seed)
+    work = frame.reset_index(drop=True)
+    months = month_of(work).to_numpy()
+    blocks = [np.flatnonzero(months == m) for m in pd.unique(months)]
+    original = work[label].to_numpy(dtype="float64").copy()
+
+    out = []
+    for _ in range(draws):
+        shuffled = original.copy()
+        for positions in blocks:
+            shuffled[positions] = rng.permutation(shuffled[positions])
+        work[label] = shuffled
+        scored = walk_forward(work, fitter, horizon)
+        if scored.empty:
+            continue
+        stat = selection_alpha(scored, "oos", rate, horizon,
                                statistic=statistic, risk_matched=risk_matched)
         if stat.mean is not None:
             out.append(stat.mean)

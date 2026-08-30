@@ -16,6 +16,7 @@ from src.research.walkforward import (
     MIN_MONTH_ROWS,
     folds,
     percentile_of,
+    permutation_alpha,
     rank_ic,
     random_selection_alpha,
     score_of,
@@ -258,6 +259,34 @@ def test_a_fat_right_tail_lifts_the_mean_but_not_the_median():
     scored = walk_forward(pd.DataFrame(rows), score_of("lottery"), 90)
     assert selection_alpha(scored, rate=0.10, statistic="mean").mean > 0.5
     assert selection_alpha(scored, rate=0.10, statistic="median").mean < 0
+
+
+# ── the permutation test, which prices the search itself ────────────────────
+
+def test_a_fitted_model_on_shuffled_labels_lands_where_the_real_one_does_not():
+    """
+    The threat this exists for. A model fitted on many features across many
+    folds can manufacture an edge from nothing, and a random-pick baseline never
+    pays that price so it never detects it. Under permuted labels the same fit
+    must come out flat, and the real signal must sit far above the draws.
+    """
+    panel = _panel(months=20, per_month=70)
+    fitter = score_of("signal")
+    null = permutation_alpha(panel, fitter, draws=40, rate=0.10)
+    real = selection_alpha(walk_forward(panel, fitter, 90), rate=0.10,
+                           risk_matched=True).mean
+    assert null.size >= 30
+    assert abs(float(np.median(null))) < 1.0
+    assert percentile_of(real, null) == 100.0
+
+
+def test_the_permutation_null_catches_a_model_that_only_fits_noise():
+    panel = _panel(months=20, per_month=70)
+    fitter = score_of("noise")
+    null = permutation_alpha(panel, fitter, draws=40, rate=0.10)
+    real = selection_alpha(walk_forward(panel, fitter, 90), rate=0.10,
+                           risk_matched=True).mean
+    assert (percentile_of(real, null) or 0) < 95
 
 
 def test_the_median_statistic_still_sees_a_genuinely_better_pick():
