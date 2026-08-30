@@ -9,6 +9,7 @@ import decimal
 from datetime import date, datetime, timedelta
 from typing import Optional, Tuple, List
 from src.db.connection import get_conn
+from src.signals.discount import REFERENCE_DAYS as DISCOUNT_REFERENCE_DAYS
 from src.ingest.common import _clean_ticker
 
 _SIGNAL_COOLDOWN_DAYS = 7   # suppress follow-up signals within this window
@@ -621,8 +622,6 @@ def fill_missing_price_context(since_date, limit: int = 5000) -> tuple:
     clear_discount_reference_cache()
     return len(updates), ranked
 
-
-DISCOUNT_REFERENCE_DAYS = 60
 
 _discount_series = None
 

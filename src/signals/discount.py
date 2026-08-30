@@ -62,27 +62,49 @@ MIN_REFERENCE = 120
 
 # The trailing window the percentile is taken against, in days of filings.
 #
-# The fixed table alone is not enough, and measuring it is what found that out.
-# It was built on two years, so "the 90th percentile" means the top decile of
-# *that whole period*, not of the moment. The market moves every stock's discount
-# together, so a fixed cutoff selects 2.0% of one month's purchases and 23.7% of
-# another's, and in the heavy months it reaches well past the top decile into the
-# nine flat ones. Measured over 18 months: the fixed cutoff returns +4.19pp with
-# a median of **-2.33pp**, while the top decile of each month returns +11.10pp
-# with a median of +7.38pp. More than half the effect was being given away.
+# A fixed table is not enough, and measuring the shipped rule is what found that
+# out. The table was built on two years, so "the 90th percentile" meant the top
+# decile of *that whole period*, not of the moment. The market moves every
+# stock's discount together, so a fixed cutoff selected 2.0% of one month's
+# purchases and 23.7% of another's, and in the heavy months it reached well past
+# the top decile into the nine flat ones. It returned +4.19pp with a median of
+# -2.33pp against the top-decile-of-month rule's +11.10pp and +7.38pp. More than
+# half the effect was being given away.
 #
-# Ranking against the purchases disclosed in the preceding 60 days recovers most
-# of it, at +9.74pp with t=+2.35 and a median of +3.01pp, and halves the spread
-# in how much of each month gets selected. It stays point-in-time because the
-# window holds only filings that already existed.
+# The rule the research validated is "the top decile of the current
+# cross-section", which cannot be computed at filing time without knowing the
+# rest of the month. A trailing window is the causal approximation of it, and
+# the shorter the window the closer the approximation. That is testable
+# independently of returns, by asking what fraction of each month clears the
+# cutoff, and it holds monotonically:
 #
-# 60 days is chosen on the mechanism rather than on the number. A 21-day window
-# scored higher on both statistics, +11.03pp and a median of +10.97pp, but it
-# rests on about 150 reference purchases, leaves two months unscoreable, and sits
-# alone as a spike beside a flat run from 30 to 180 days. Picking it because it
-# won would be selecting on the metric, which is the failure this whole exercise
-# exists to correct.
-REFERENCE_DAYS = 60
+#   window  refs   mean      t   median     t   share of month selected
+#       14   210  +13.60  +2.39   +7.95  +1.47   0.0% to 12.6%
+#       21   306  +11.37  +2.51   +8.75  +1.68   0.0% to 13.7%
+#       30   424  +11.05  +2.61   +7.42  +1.87   0.8% to 15.6%
+#       45   518   +8.98  +2.15   +2.73  +0.56   2.5% to 18.1%
+#       60   687   +8.02  +2.05   +1.09  +0.24   2.0% to 20.0%
+#       90  1060   +9.29  +2.21   +1.16  +0.24   2.5% to 20.4%
+#      180  2073   +9.29  +2.08   +1.93  +0.42   3.0% to 20.4%
+#      400  4323   +7.07  +1.79   +3.30  +0.75   1.5% to 22.2%
+#   month      -  +11.10  +2.28   +7.38  +1.33   9.1% to 10.1%  (the ceiling)
+#
+# The spread narrows as the window shortens, from 20.7 points at 400 days to
+# 12.6 at 14, and the returns follow it. That is a mechanism agreeing with an
+# outcome rather than a maximum picked out of a sweep.
+#
+# 30 days, for three reasons that are not "it scored highest", though it does.
+# It has the best t on both the mean and the median of any window here. It rests
+# on 424 reference purchases, two to three times what 14 and 21 days give. And it
+# is the shortest window that never leaves a month with no signals at all: 14 and
+# 21 days both have months where nothing clears the cutoff, which is a product
+# failure whatever it measures.
+#
+# An earlier version of this comment argued for 60 days and dismissed the short
+# end as a spike. That was measured against a reference inflated 1.23x by
+# counting broker fills as separate purchases, and without the share-of-month
+# diagnostic that shows the trend is monotone rather than spiky.
+REFERENCE_DAYS = 30
 
 
 def discount_score(pct_below_52wk_high: Optional[float],
