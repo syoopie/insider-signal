@@ -1,12 +1,19 @@
 /**
  * The scoring model, mirrored from `src/signals/discount.py` for the explainer.
  *
- * The knots are the empirical distribution of "how far below its 52-week high
- * was this stock on the day the insider bought", over the 8,289 eligible,
- * labelled purchases in the research sample. The score is that value's
- * percentile, so 90 is the top decile.
+ * The score is a purchase's discount expressed as a percentile. In the pipeline
+ * the reference is the purchases disclosed in the preceding 60 days, so the same
+ * discount scores differently in a calm market and a drawdown; that adaptation
+ * is load-bearing, because a fixed cutoff selected 2% of one month's purchases
+ * and 24% of another's and gave away more than half the effect.
  *
- * Keep the table byte-identical to the Python. It is the whole model.
+ * The explainer cannot query the database, so it uses the fixed table below,
+ * which is the same fallback the pipeline uses before 120 recent purchases have
+ * accumulated. It is the distribution over the 8,289 eligible, labelled
+ * purchases in the research sample, at every fifth percentile. Treat the numbers
+ * it produces as representative of a typical market rather than exact.
+ *
+ * Keep the table byte-identical to the Python.
  */
 
 export const DISCOUNT_KNOTS: ReadonlyArray<readonly [number, number]> = [

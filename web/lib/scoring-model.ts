@@ -7,7 +7,11 @@
  */
 
 export const THRESHOLDS = {
-  /** classify_signal(): score >= 90 -> BUY. The score is a percentile, so this is the top decile. */
+  /**
+   * classify_signal(): score >= 90 -> BUY. The score is the purchase's discount
+   * percentile among filings from the preceding 60 days, so this is the top
+   * decile of what insiders are currently buying rather than a fixed price cut.
+   */
   buy: 90,
   /** classify_signal(): score >= 70 -> WATCH */
   watch: 70,
@@ -125,10 +129,10 @@ export const RESEARCH = [
 ] as const;
 
 export const LIMITATIONS = [
-  "The score is one number: how far below its 52-week high the stock sat when the insider bought. Everything else the model records — role, company size, purchase size, buying history — is shown because it describes the filing, and scores nothing, because measured out of sample none of it ranked.",
+  "The score is one number: how far below its 52-week high the stock sat when the insider bought, ranked against the purchases disclosed in the preceding 60 days. Everything else the model records — role, company size, purchase size, buying history — is shown because it describes the filing, and scores nothing, because measured out of sample none of it ranked.",
+  "Because the ranking is relative, a BUY means \"among the most beaten-down things insiders are buying right now\", not \"below some fixed price\". A fixed cutoff was tried first and gave away more than half the effect, selecting 2% of one month’s purchases and 24% of another’s.",
   "That one number rests on 18 months and a t-statistic of 2.29. It is a real effect by every control applied to it, and it is not a large sample.",
   "A stock with under a year of trading history has no 52-week high, so its purchases score zero and are never alerted. That is about 7% of purchases, mostly recent listings.",
-  "Alert volume moves with the market. In a broad drawdown more purchases genuinely sit in deeply discounted stocks, so more of them clear the BUY cutoff.",
   "Signals are dated the day after the filing reaches EDGAR, never the transaction date. Insiders have two business days to file, so acting on the transaction date would assume knowledge nobody had.",
   "The backtest models entry at the filing date plus four days. Fills at a different price, and any slippage or commission, are not modelled.",
   "Delisted tickers are scored as a 50% loss rather than dropped. That is a blunt correction for survivorship bias and may be too harsh or too kind in any individual case.",
