@@ -81,7 +81,21 @@ In your GitHub repository:
 |---|---|---|
 | `DATABASE_URL` | Neon **direct** connection string | Ingest job writes to the database |
 | `TELEGRAM_BOT_TOKEN` | Token from BotFather in Step 3 | Sends alerts and error notifications |
-| `TELEGRAM_CHAT_ID` | Chat ID from `getUpdates` in Step 3 | Tells Telegram who to message |
+| `TELEGRAM_CHAT_ID` | Chat ID from `getUpdates` in Step 3 | Seeds the first row of `telegram_subscribers` — see below |
+
+Alerts fan out to everyone in the `telegram_subscribers` table, not to
+`TELEGRAM_CHAT_ID` directly. After the first `apply_schema.py` run, seed
+yourself in as the first recipient:
+
+```bash
+uv run python scripts/seed_telegram_subscriber.py
+```
+
+From then on, anyone can join by messaging the bot `/subscribe` or adding it
+to a group — but only once the webhook in `web/` is registered (Step 5
+covers deploying it; `scripts/register_telegram_webhook.py` covers pointing
+Telegram at it). Until you register the webhook, `/subscribe` gets no
+response — the bot only has an outbound send path, not a listener.
 
 ---
 
@@ -100,6 +114,8 @@ Vercel hosts the Next.js dashboard in `web/` for free.
 | `DATABASE_URL` | The Neon connection string from Step 2 |
 | `NEXT_PUBLIC_SITE_URL` | Your deployed URL (optional; only affects link previews) |
 | `REVALIDATE_SECRET` | Any long random string (optional; see below) |
+| `TELEGRAM_BOT_TOKEN` | Token from BotFather in Step 3 (optional; see below) |
+| `TELEGRAM_WEBHOOK_SECRET` | Any long random string (optional; see below) |
 
 5. **Deploy**. Pushes to `main` go to production; other branches get previews.
 
@@ -118,6 +134,25 @@ Add two GitHub Actions secrets:
 `daily_ingest.yml` calls the endpoint after a successful run. The step is skipped
 when `REVALIDATE_URL` is unset, and it never fails the workflow — a missed
 refresh just means the normal 15-minute expiry catches up.
+
+### Optional: self-serve subscribe/unsubscribe
+
+Without this, adding a recipient means editing `TELEGRAM_CHAT_ID` and
+re-seeding. With it, anyone can `/subscribe` by messaging the bot or adding
+it to a group.
+
+1. Check **Settings → Deployment Protection** is off for the production
+   domain — a protected domain 401s Telegram's requests before your route
+   ever sees them.
+2. Set `TELEGRAM_WEBHOOK_SECRET` in Vercel (the table above) and deploy.
+3. Point Telegram at the deployed route:
+   ```bash
+   uv run python scripts/register_telegram_webhook.py \
+     --url https://<your-deployment>/api/telegram/webhook
+   ```
+   This also stops `getUpdates` from working — Telegram delivers to one
+   destination at a time. `--delete` reverts to `getUpdates` for local
+   debugging.
 
 ---
 

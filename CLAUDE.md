@@ -129,7 +129,7 @@ zero on this data.
 | Scheduler | GitHub Actions | Daily ingest weekdays 11am UTC; weekly backtest Sundays 12pm UTC |
 | Database | Neon PostgreSQL (free tier) | 0.5 GB limit; direct URL for Actions, HTTP driver for the web app |
 | Dashboard | Next.js 16 on Vercel | `web/`; Root Directory must be `web`. Read-only |
-| Alerts | Telegram Bot API | BUY and CLUSTER_BUY only (BUY alerts were silently never sent until 2026-08-29) |
+| Alerts | Telegram Bot API | BUY and CLUSTER_BUY only (BUY alerts were silently never sent until 2026-08-29). Fans out to `telegram_subscribers`, maintained by the webhook in `web/` |
 | Data | SEC EDGAR (free, public) | 10 req/sec hard limit; we use 8 for ingest, 3 for bootstrap |
 
 **All credentials live in GitHub Actions Secrets and Vercel environment variables — never in code.**
@@ -178,10 +178,16 @@ scripts/run_backtest.py
                                               for this run_label only)
     ↓
 web/ (Next.js on Vercel)                    ← reads all tables, no writes; read-only
+    ↓  (one exception)
+web/app/api/telegram/webhook/route.ts       ← Telegram calls this on /subscribe, /unsubscribe,
+                                               and group add/remove; writes telegram_subscribers
 ```
 
-**Key constraint**: `web/` never writes to the database. All writes happen
-through the ingest and backtest scripts.
+**Key constraint**: `web/` never writes to the database, with one deliberate
+exception. The dashboard pages and everything under `lib/` stay read-only; all
+other writes happen through the ingest and backtest scripts. The Telegram
+webhook route is the second writer, isolated on purpose — see "Dashboard
+Routes" below and the comment at the top of the route file.
 
 ---
 
@@ -227,6 +233,7 @@ pyproject.toml          # package + deps (uv); uv.lock is the lockfile
 
 web/                    # Next.js 16 dashboard (Vercel). See web/README.md and web/AGENTS.md.
   app/                  # Routes: / /backtest /clusters /sectors /ticker /how-it-works
+  app/api/telegram/webhook/route.ts  # The one write path — see "Key constraint" above
   components/           # UI. Anything under components/ may be bundled for the browser.
   lib/db.ts             # Neon HTTP client, read-only, `server-only`
   lib/queries/          # One typed module per concern; JSONB parsed at this boundary
@@ -414,6 +421,23 @@ a research re-run silently overwrote the baseline it was supposed to be compared
 `scripts/run_backtest.py --label <name>` writes its own rows. **The dashboard and the
 freshness bar read `run_label = 'scheduled'` only**, so anything that queries `backtest_runs`
 for display must filter on it or an experiment will leak onto the site.
+
+### `telegram_subscribers`
+```
+chat_id     BIGINT PRIMARY KEY   — Telegram chat id: a person's DM or a group
+chat_type   TEXT                 — 'private' | 'group' | 'supergroup'
+title       TEXT                 — group title, or the person's name/username
+active      BOOLEAN              — FALSE on /unsubscribe or the bot being removed
+joined_at   TIMESTAMPTZ
+updated_at  TIMESTAMPTZ
+```
+Written only by `web/app/api/telegram/webhook/route.ts` (`/subscribe`, `/start`,
+`/unsubscribe`, `/stop`, and Telegram's `my_chat_member` update for the bot being
+added to or removed from a group). Read only by
+`src/db/store.get_active_telegram_subscribers()`, which `src/alerts/telegram._send()`
+fans every alert out to. `scripts/seed_telegram_subscriber.py` inserts the legacy
+`TELEGRAM_CHAT_ID` once, so migrating off the env var doesn't go dark for the one
+person already subscribed.
 
 ---
 
@@ -874,9 +898,21 @@ a pre-registered bar.
 - Can manually look up and set: `UPDATE companies SET market_cap=X, cap_tier='small' WHERE ticker='XYZ'`
 
 **Telegram alerts not sending:**
-- Check `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in GitHub Actions Secrets.
+- Check `TELEGRAM_BOT_TOKEN` in GitHub Actions Secrets.
+- Check `telegram_subscribers` has at least one `active = TRUE` row — `_send()` skips
+  entirely with "No active Telegram subscribers" if the table is empty, which it will be
+  on a fresh deploy until `scripts/seed_telegram_subscriber.py` runs.
 - `alerted=TRUE` on a signal means it already sent — no re-alert.
 - Only `BUY` and `CLUSTER_BUY` signal types trigger alerts (not WATCH or LOW).
+
+**`/subscribe` gets no reply:**
+- The webhook must be registered before Telegram will deliver anything to
+  `web/app/api/telegram/webhook/route.ts` — see `scripts/register_telegram_webhook.py`
+  in `scripts/README.md`.
+- Check Vercel's Deployment Protection is off for the production domain; if it's on,
+  Telegram's request 401s before the route runs.
+- Check `TELEGRAM_WEBHOOK_SECRET` matches between Vercel and whatever was passed to
+  `register_telegram_webhook.py` — a mismatch makes the route 401 every update.
 
 **GitHub Actions disabled:**
 - Re-enable from Actions tab on GitHub. Then verify `last_run.txt` is being committed by daily ingest.
@@ -898,7 +934,7 @@ a pre-registered bar.
 - **Never** change the cluster threshold (14d, 3 insiders), BUY threshold (60), cluster avg (22), or cluster max_score (30) without re-running the full backfill — every signal in the DB would be stale.
 - **Never** add `ORDER BY RANDOM()` or non-deterministic queries to backfill — idempotency depends on deterministic processing order.
 - **Never** call `get_market_data()` in the backfill script — it fetches live prices which don't represent historical cap tiers. Use `tx.get("cap_tier")` from the companies join instead.
-- **Never** write to the DB from `web/` — the dashboard is strictly read-only. `lib/db.ts` exposes reads only.
+- **Never** write to the DB from `web/` pages or `lib/` — read-only, `lib/db.ts` exposes reads only. The lone exception is `app/api/telegram/webhook/route.ts`, which owns its own write client and must not be reused elsewhere.
 - **Never** use the pooled Neon URL (`-pooler.neon.tech`) in GitHub Actions — the direct URL is correct there.
 - **Never** import a *value* from `web/lib/queries/` into a client component. `import type` is fine; a value import drags the DB client into the browser bundle and `server-only` will fail the build.
 - **Don't** change `LOOKBACK_DAYS` in `run_backtest.py` without understanding that it affects the date range of the backtest chart (via `detail.exec_date`).

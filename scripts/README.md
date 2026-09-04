@@ -22,6 +22,8 @@ GitHub Actions secret in CI).
 | `backfill_sic.py` | Once after the first ingest, then rarely — fills `companies.sic_code` / `sic_description` for `/sectors`. |
 | `purge_debt_transactions.py` | Rarely — removes Table I rows reporting notes rather than stock, which store a principal amount in both the share and price fields. The parser now skips these; this clears rows written before that. `--dry-run`. |
 | `apply_schema.py` | After editing `src/db/schema.sql`. Every statement there is idempotent, so this adds what is missing and touches nothing else. `--dry-run`. |
+| `seed_telegram_subscriber.py` | Once, right after the first `apply_schema.py` run — puts the existing `TELEGRAM_CHAT_ID` into `telegram_subscribers` so switching to DB-driven fan-out doesn't stop alerting the one person already getting them. |
+| `register_telegram_webhook.py` | Once, after deploying the `/api/telegram/webhook` route in `web/` — points Telegram's `setWebhook` at it so `/subscribe` works. `--delete` reverts to `getUpdates` for local debugging. |
 
 ## Analysis
 
