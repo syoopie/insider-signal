@@ -121,13 +121,22 @@ async function unsubscribe(chatId: number) {
 
 async function reply(chatId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) return;
+  if (!token) {
+    console.error("[telegram-webhook] TELEGRAM_BOT_TOKEN is not set — cannot reply");
+    return;
+  }
   try {
-    await fetch(`${TELEGRAM_API}/bot${token}/sendMessage`, {
+    const res = await fetch(`${TELEGRAM_API}/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text }),
     });
+    // fetch() only rejects on a network failure — a bad token or bad chat_id
+    // comes back as a normal response with a non-2xx status, which the
+    // subscription must not be silently indifferent to.
+    if (!res.ok) {
+      console.error("[telegram-webhook] sendMessage failed:", res.status, await res.text());
+    }
   } catch (err) {
     // The subscription is the thing that matters; a missed confirmation is not
     // worth failing the update over.
