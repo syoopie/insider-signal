@@ -445,6 +445,14 @@ person already subscribed.
 
 **Before changing any weight in this section, read
 [`docs/scoring-improvement-plan.md`](docs/scoring-improvement-plan.md), especially section 7a.**
+
+**Before proposing a new factor, read [`docs/beyond-price.md`](docs/beyond-price.md).** It
+measures what the frozen ruler can resolve: about 5pp of selection alpha for an insider-family
+candidate and about 13pp for a price-family one. Every insider feature ever tested landed
+between +0.3pp and +3.5pp, which is below that resolution, so those runs cannot distinguish a
+real effect from zero. Adding another feature at the current power learns nothing. Buy power
+first, in the order that document sets out.
+
 The weights below were set by univariate lift measured on a sample the model itself selected,
 with no holdout. The score has a *theoretical maximum of 61* against a BUY threshold of 60,
 so it is a four-factor conjunction rather than a ranking.

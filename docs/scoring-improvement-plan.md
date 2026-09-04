@@ -6,6 +6,13 @@ This plan argues that **the scoring model cannot be improved by changing weights
 factors until the measurement apparatus is rebuilt**, and lays out the rebuild, the
 evaluation protocol, and the variables worth adding once those exist.
 
+**Superseded for planning purposes by [`beyond-price.md`](beyond-price.md), 2026-09-05.**
+This document remains the record of what was measured and is still the reference for how the
+apparatus works. It is no longer the plan. Its unresolved question, why every insider-derived
+variable measures zero while the price screen works, turns out to be a power problem: the
+ruler in section 7b resolves about 5pp of selection alpha for an insider-family candidate, and
+every one tested landed below 3.5pp. Read the successor before running another candidate.
+
 Every number below was measured against the production database or live Yahoo Finance on
 2026-08-29. Where something is inference rather than measurement it says so.
 
