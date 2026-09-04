@@ -11,29 +11,54 @@ crash the ingest pipeline).
 
 import requests
 from datetime import date
+from psycopg2.extras import RealDictCursor
 
 from src.config import telegram_credentials
+from src.db.connection import get_conn
+from src.db.store import get_active_telegram_subscribers
 
 
 TELEGRAM_API = "https://api.telegram.org"
 
 
 def _send(text: str) -> bool:
-    token, chat_id = telegram_credentials()
-    if not token or not chat_id:
+    """
+    Fan one message out to every active subscriber.
+
+    Recipients come from the telegram_subscribers table, not from
+    TELEGRAM_CHAT_ID: people subscribe by messaging the bot or adding it to a
+    group, and the webhook in web/ maintains the list. The chat_id half of
+    telegram_credentials() is now only read by scripts/seed_telegram_subscriber.py.
+
+    One failing recipient must not silence the rest — a person who blocked the
+    bot makes its own send raise, and everyone after them still gets the alert.
+    """
+    token, _ = telegram_credentials()
+    if not token:
         print("Telegram not configured — skipping alert")
         return False
-    try:
-        resp = requests.post(
-            f"{TELEGRAM_API}/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return True
-    except Exception as e:
-        print(f"Telegram send failed: {e}")
+
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            chat_ids = get_active_telegram_subscribers(cur)
+
+    if not chat_ids:
+        print("No active Telegram subscribers — skipping alert")
         return False
+
+    sent = 0
+    for chat_id in chat_ids:
+        try:
+            resp = requests.post(
+                f"{TELEGRAM_API}/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            sent += 1
+        except Exception as e:
+            print(f"Telegram send to {chat_id} failed: {e}")
+    return sent > 0
 
 
 def send_signal(evidence: dict) -> bool:

@@ -564,6 +564,20 @@ def get_unalerted_signals(min_score: int = 45) -> List[dict]:
     return [dict(r) for r in rows]
 
 
+def get_active_telegram_subscribers(cur) -> List[int]:
+    """
+    Chat ids the alerter should fan out to. Takes an open RealDictCursor so the
+    caller owns the connection, the same way write_filing does.
+
+    An empty list is a real answer, not an error: nobody has messaged the bot
+    yet, or everyone has unsubscribed.
+    """
+    cur.execute(
+        "SELECT chat_id FROM telegram_subscribers WHERE active = TRUE ORDER BY joined_at"
+    )
+    return [int(r["chat_id"]) for r in cur.fetchall()]
+
+
 def fill_missing_price_context(since_date, limit: int = 5000) -> tuple:
     """
     Give every recently-filed purchase the price context the scorer ranks on.
