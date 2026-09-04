@@ -112,3 +112,17 @@ ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS iwm_avg_return NUMERIC;
 -- only. Backfilled to 'scheduled' because every pre-existing row is one.
 ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS run_label TEXT NOT NULL DEFAULT 'scheduled';
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_label ON backtest_runs (run_label, run_date DESC);
+
+-- Who gets alerted. Replaces the single TELEGRAM_CHAT_ID env var, which could
+-- only ever reach one recipient and needed a redeploy to change. Rows are
+-- written by the Telegram webhook in web/, the one place the dashboard writes.
+CREATE TABLE IF NOT EXISTS telegram_subscribers (
+    chat_id    BIGINT PRIMARY KEY,
+    chat_type  TEXT NOT NULL,       -- 'private' | 'group' | 'supergroup'
+    title      TEXT,                -- group title, or the person's name/username for private chats
+    active     BOOLEAN NOT NULL DEFAULT TRUE,
+    joined_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_subscribers_active ON telegram_subscribers(active);
