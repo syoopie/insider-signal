@@ -146,10 +146,26 @@ filings by a scheduled job, and **the history that would break the deadlock is b
 daily.** A4 is not an accelerator, it is the only way any of this improves, and every day it
 is deferred costs a day of the archive it is meant to build.
 
-`scripts/build_form4_archive.py` is written for exactly this: resumable per-window parquet
-under `data/form4/`, a manifest so an interrupted long fetch costs one window, and nothing in
-Neon. It also stores `is_director`, `is_officer` and `is_ten_percent`, which the parser has
-always read and `write_filing` has always discarded.
+`scripts/build_form4_archive.py` is written for exactly this: resumable parquet under
+`data/form4/`, a manifest so an interrupted build costs one quarter, and nothing in Neon. It
+also stores `is_director`, `is_officer` and `is_ten_percent`, which the parser has always read
+and `write_filing` has always discarded.
+
+**Done, 2026-09-09.** 901,760 filings and 1,513,233 transactions, 2016-01-04 to 2026-03-31,
+119,072 of them open-market purchases against the database's ~13,000. The deadlock this
+section describes is no longer the binding constraint.
+
+It got there by abandoning the per-filing fetch. That path was measured at three requests per
+historical filing and was rate-limited by EDGAR twenty-two minutes into its first real run,
+on a projected nine hours for two years. **SEC DERA publishes the same filings already
+parsed**, one zip per quarter, and the whole decade took 41 requests and 50 seconds.
+`src/ingest/dera.py` checks equal to EDGAR's daily index on distinct accessions, and
+`verify_form4_archive.py` passes against the database on the overlap.
+
+The gate that follows is unchanged and still open: turning this parquet into research rows
+needs the purchase rollup, and writing a second pandas definition of it is exactly what
+`src/db/purchases.py` exists to prevent. Run the same SQL in DuckDB over the parquet and
+verify on the overlap.
 
 `scripts/verify_form4_archive.py` is the gate and the pilot passes it. Over 2026-08-04 to
 2026-08-06: the archive is missing **0.00%** of comparable stored filings, **0 of 870** shared

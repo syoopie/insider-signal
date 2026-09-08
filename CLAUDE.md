@@ -93,7 +93,7 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 | What the ruler can resolve | `walkforward.minimum_detectable_effect`; `hillclimb.py --mde` |
 | Benchmark legs a purchase is charged against | `src/research/protocol.py` → `LABEL_FAMILIES`; `--label` on both rulers |
 | SIC code to sector fund | `src/research/sectors.py` → `SIC_RANGES` |
-| Form 4 history beyond Neon's 24 months | `scripts/build_form4_archive.py` → `data/form4/` |
+| Form 4 history beyond Neon retention | `scripts/build_form4_archive.py` + `src/ingest/dera.py` → `data/form4/` |
 
 **Key thresholds (do not change without re-running full backfill + backtest):**
 - The score is `pct_below_52wk_high` as a percentile of the last 30 days of filings
@@ -209,6 +209,8 @@ src/
   ingest/
     edgar.py            # EDGAR API client — rate-limited, User-Agent required, tenacity retries
     parser.py           # Form 4 XML → normalized dict; classify_role() keyword matcher
+    dera.py             # SEC quarterly Form 3/4/5 datasets → archive rows. Research only,
+                        #   the daily pipeline never imports it.
     common.py           # log(), phase(), setup_log_tee(), fmt_elapsed() — shared logging utils
   research/             # Offline only. The pipeline never imports this package.
     walkforward.py      # The frozen ruler: folds, rank_ic, selection_alpha, class_alpha,
@@ -240,7 +242,7 @@ scripts/                # see scripts/README.md for the full when-to-run table
   analyze_factors.py    # Factor-return correlation report (read-only)
   hillclimb.py          # The ruler for rankings. --mde prints what it can resolve
   gates.py              # The ruler for exclusions. Spends every row, not a decile
-  build_form4_archive.py# Form 4 history into data/form4/ parquet, resumable
+  build_form4_archive.py# Form 4 history into data/form4/ parquet, from DERA quarterly zips
   verify_form4_archive.py# Prove the archive matches the DB on the shared window
   dev/start.{ps1,sh,bat}# Launch the Next.js dashboard in web/ locally
 
@@ -480,10 +482,20 @@ That is also the shape the evidence says the Form 4 has: the placebo control say
 supplies the median while insider attributes fail to order the discounted set. Hypotheses go
 in `src/research/gates.py`, never in the harness.
 
-**The research sample slides, it does not grow.** `prune_old_data(months=24)` runs inside the
-daily ingest, so Neon holds exactly two years and the ruler will sit at about 16 predictable
-months forever. `scripts/build_form4_archive.py` is the only fix, and every day it is deferred
-costs a day of history. Its long fetch has not been run yet.
+**The research sample slid rather than growing, and the archive is the fix.**
+`prune_old_data` runs inside the daily ingest, so Neon holds a fixed window and the ruler sat
+at about 16 predictable months forever. `scripts/build_form4_archive.py` has now been run:
+`data/form4/` holds **901,760 filings and 1,513,233 transactions from 2016-01-04 to
+2026-03-31**, against the database's 121,570 over the same dates. 87.75% of it is filings the
+database never ingested. `verify_form4_archive.py` passes on the overlap, with purchase value
+within 1.43%.
+
+It is built from **SEC DERA's quarterly Form 3/4/5 datasets**, one zip per quarter, not by
+fetching filings one at a time. The per-filing path costs three requests for anything older
+than a year, because the submissions API has aged the filing out and `fetch_filing_xml` falls
+back to scraping the index page; that amplification put a 9 req/sec budget over EDGAR's limit
+and earned a 429 twenty-two minutes in. DERA is 41 requests and finishes in **50 seconds**.
+`src/ingest/dera.py` carries the equivalence check against EDGAR's daily index.
 
 The weights below were set by univariate lift measured on a sample the model itself selected,
 with no holdout. The score has a *theoretical maximum of 61* against a BUY threshold of 60,

@@ -25,7 +25,8 @@ class EdgarServerError(RuntimeError):
 
 
 EDGAR_BASE = "https://efts.sec.gov/LATEST/search-index"
-EDGAR_ARCHIVES = "https://www.sec.gov/Archives/edgar"
+EDGAR_ROOT = "https://www.sec.gov/Archives"
+EDGAR_ARCHIVES = f"{EDGAR_ROOT}/edgar"
 EDGAR_SUBMISSIONS = "https://data.sec.gov/submissions"
 EDGAR_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 
@@ -82,26 +83,14 @@ def _get_raising(url: str, params: dict = None, req_per_sec: float = 8.0) -> dic
     """
     try:
         return _get(url, params=params, req_per_sec=req_per_sec)
-    except RetryError as e:
-        # Unwrap the underlying exception from tenacity's wrapper.
-        cause = e.last_attempt.exception()
-        if isinstance(cause, requests.HTTPError) and cause.response is not None:
-            code = cause.response.status_code
-            if code == 429:
-                raise EdgarRateLimitError(f"Rate limited (429) after retries — {url}") from cause
-            if code == 403:
-                raise EdgarBlockedError(f"Blocked (403) after retries — {url}") from cause
-            if code >= 500:
-                raise EdgarServerError(f"Server error ({code}) after retries — {url}") from cause
-        raise
-    except requests.HTTPError as e:
-        code = e.response.status_code if e.response is not None else 0
-        if code == 429:
-            raise EdgarRateLimitError(f"Rate limited (429) after retries — {url}") from e
-        if code == 403:
-            raise EdgarBlockedError(f"Blocked (403) after retries — {url}") from e
-        if code >= 500:
-            raise EdgarServerError(f"Server error ({code}) after retries — {url}") from e
+    except (RetryError, requests.HTTPError) as e:
+        # Older tenacity wraps the last exception rather than re-raising it.
+        cause = e.last_attempt.exception() if isinstance(e, RetryError) else e
+        response = getattr(cause, "response", None)
+        if response is not None:
+            error = _domain_error(response.status_code, url)
+            if error:
+                raise error from cause
         raise
 
 
@@ -310,3 +299,14 @@ def fetch_cik_ticker_map(req_per_sec: float = 8.0) -> Dict[str, str]:
         if ticker and cik:
             result[ticker] = cik
     return result
+
+
+def _domain_error(code: int, url: str):
+    """The domain exception for a terminal HTTP status, or None if it is not one."""
+    if code == 429:
+        return EdgarRateLimitError(f"Rate limited (429) after retries — {url}")
+    if code == 403:
+        return EdgarBlockedError(f"Blocked (403) after retries — {url}")
+    if code >= 500:
+        return EdgarServerError(f"Server error ({code}) after retries — {url}")
+    return None
