@@ -14,7 +14,10 @@ import pytest
 
 from src.research.walkforward import (
     amputation_curve,
+    class_alpha,
+    minimum_detectable_effect,
     MIN_MONTH_ROWS,
+    STATISTICS,
     folds,
     percentile_of,
     permutation_alpha,
@@ -309,3 +312,161 @@ def test_the_median_statistic_still_sees_a_genuinely_better_pick():
     stat = selection_alpha(scored, rate=0.10, statistic="median")
     assert stat.mean > 1.0
     assert stat.t_stat > 3
+
+
+# ── the gate estimand, where an exclusion is the hypothesis ─────────────────
+
+def _class_panel(months: int = 24, per_month: int = 80, seed: int = 5,
+                 penalty: float = -9.0) -> pd.DataFrame:
+    """
+    A book where one fifth of every month is a class that reliably underperforms.
+
+    No ranking is planted. The only structure is membership, which is the shape
+    a veto candidate has: net-seller firms, late filings, indirect purchases.
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    for m in range(months):
+        start = date(2024, 1, 1) + timedelta(days=31 * m)
+        month_effect = rng.normal(0, 8)
+        for i in range(per_month):
+            bad = i % 5 == 0
+            rows.append({
+                "exec_date": start + timedelta(days=i % 25),
+                "ticker": f"T{rng.integers(0, 200)}",
+                "bad_class": bad,
+                "excess_spy_90d": month_effect + (penalty if bad else 0.0)
+                + rng.normal(0, 6),
+            })
+    return pd.DataFrame(rows)
+
+
+def test_excluding_a_class_that_is_no_different_scores_zero():
+    panel = _class_panel(penalty=0.0)
+    rng = np.random.default_rng(3)
+    keep = pd.Series(rng.random(len(panel)) > 0.2, index=panel.index)
+    stat = class_alpha(panel, keep)
+    assert abs(stat.mean) < 0.6
+    assert abs(stat.t_stat) < 2
+
+
+def test_excluding_a_class_that_loses_money_raises_what_is_left():
+    panel = _class_panel()
+    stat = class_alpha(panel, ~panel["bad_class"])
+    assert stat.mean > 1.0
+    assert stat.t_stat > 3
+
+
+def test_the_same_class_measured_as_a_promotion_reads_the_other_way():
+    panel = _class_panel()
+    assert class_alpha(panel, panel["bad_class"]).mean < -4.0
+
+
+def test_keeping_everything_scores_exactly_zero():
+    panel = _class_panel()
+    keep = pd.Series(True, index=panel.index)
+    assert class_alpha(panel, keep).mean == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_gate_on_the_top_decile_reproduces_the_ranking_metric():
+    """
+    The two estimands are one core seen from two sides, and this is the check
+    that keeps them that way. Feeding `class_alpha` exactly the rows the top
+    decile selected must return the number `selection_alpha` printed.
+    """
+    scored = walk_forward(_panel(), score_of("signal"), 90)
+    ranked = selection_alpha(scored, rate=0.10, risk_matched=True)
+
+    work = scored.copy()
+    work["month"] = pd.to_datetime(work["exec_date"]).dt.to_period("M")
+    picked = pd.concat([
+        block.nlargest(max(2, int(round(len(block) * 0.10))), "oos")
+        for _month, block in work.groupby("month")
+        if len(block) >= MIN_MONTH_ROWS
+    ]).index
+    keep = pd.Series(scored.index.isin(picked), index=scored.index)
+
+    assert class_alpha(scored, keep).mean == pytest.approx(ranked.mean, abs=1e-9)
+
+
+def test_a_veto_uses_far_more_rows_than_the_ranking_it_replaces():
+    panel = _class_panel()
+    ranked = selection_alpha(walk_forward(panel, score_of("bad_class"), 90),
+                             rate=0.10)
+    assert class_alpha(panel, ~panel["bad_class"]).n_rows > ranked.n_rows * 5
+
+
+# ── the left tail, where a feature that cannot rank winners may drop losers ──
+
+def _tail_panel(months: int = 24, per_month: int = 80, seed: int = 9) -> pd.DataFrame:
+    """
+    A class with the same mean as the rest and a much fatter left tail.
+
+    `mean` cannot see it and `p10` and `loss20` must. This is the case the
+    strategy actually has: the archive holds one ticker at +541% and -91%.
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    for m in range(months):
+        start = date(2024, 1, 1) + timedelta(days=31 * m)
+        for i in range(per_month):
+            fragile = i % 4 == 0
+            outcome = rng.normal(0, 40) if fragile else rng.normal(0, 7)
+            rows.append({
+                "exec_date": start + timedelta(days=i % 25),
+                "ticker": f"T{rng.integers(0, 200)}",
+                "fragile": fragile,
+                "excess_spy_90d": outcome,
+            })
+    return pd.DataFrame(rows)
+
+
+def test_the_mean_cannot_see_a_fat_left_tail_and_p10_can():
+    panel = _tail_panel()
+    keep = ~panel["fragile"]
+    assert abs(class_alpha(panel, keep, statistic="mean").mean) < 1.5
+    assert class_alpha(panel, keep, statistic="p10").mean > 5.0
+
+
+def test_the_loss_rate_statistic_counts_down_not_up():
+    panel = _tail_panel()
+    stat = class_alpha(panel, ~panel["fragile"], statistic="loss20")
+    assert stat.mean < -2.0
+    assert STATISTICS["loss20"].lower_is_better
+
+
+# ── the resolution the ruler runs at ────────────────────────────────────────
+
+def test_a_noisier_book_can_only_be_measured_at_a_coarser_resolution():
+    """
+    The number that reframes seven rounds of null results. The resolution is a
+    property of the book and the pick pattern, not of the candidate, so "did not
+    clear t=2" means different things in different places and a single shared
+    threshold hides that.
+    """
+    quiet = _panel(months=24, per_month=60)
+    loud = quiet.copy()
+    rng = np.random.default_rng(4)
+    loud["excess_spy_90d"] = loud["excess_spy_90d"] + rng.normal(0, 25, len(loud))
+
+    fitter = score_of("signal")
+    assert (minimum_detectable_effect(loud, fitter, draws=25).detectable
+            > minimum_detectable_effect(quiet, fitter, draws=25).detectable * 1.5)
+
+
+def test_an_effect_below_the_resolution_is_not_detected_and_one_above_is():
+    panel = _panel(months=24, per_month=60)
+    fitter = score_of("signal")
+    mde = minimum_detectable_effect(panel, fitter, draws=25).detectable
+    assert mde is not None and mde > 0
+
+    def alpha_at(strength: float) -> float:
+        work = panel.copy()
+        work["excess_spy_90d"] = (work["excess_spy_90d"]
+                                  - 4.0 * work["signal"]
+                                  + strength * work["signal"])
+        return selection_alpha(walk_forward(work, fitter, 90), rate=0.10,
+                               risk_matched=True).t_stat
+
+    assert alpha_at(0.0) < 2.0
+    assert alpha_at(8.0) > 2.0

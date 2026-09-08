@@ -96,7 +96,8 @@ def folds(frame: pd.DataFrame, horizon: int = PRIMARY_HORIZON,
 
 def walk_forward(frame: pd.DataFrame, fitter: Fitter,
                  horizon: int = PRIMARY_HORIZON,
-                 column: str = "oos") -> pd.DataFrame:
+                 column: str = "oos",
+                 label: Optional[str] = None) -> pd.DataFrame:
     """
     Every predictable row, carrying a prediction made without seeing it.
 
@@ -105,7 +106,7 @@ def walk_forward(frame: pd.DataFrame, fitter: Fitter,
     is what a fit that fails to converge should do rather than emitting zeros
     that would be silently ranked.
     """
-    label = label_column(horizon)
+    label = label or label_column(horizon)
     pieces = []
     for fold in folds(frame, horizon):
         scorer = fitter(fold.train, label)
@@ -156,9 +157,92 @@ class MonthlyStat:
                 f"mean={self.mean:+7.3f}  {tail}")
 
 
+@dataclass(frozen=True)
+class Statistic:
+    """
+    How a month's outcomes and its benchmark are each summarised.
+
+    Two aggregators rather than one because they answer different questions.
+    `of_outcomes` collapses the selected purchases. `of_benchmark` collapses a
+    series that is already one benchmark value per selected purchase, so it is
+    a plain average for every statistic except the two that shipped, where it
+    stays as it was to keep every published number reproducible.
+    """
+    of_outcomes: Callable[[pd.Series], float]
+    of_benchmark: Callable[[pd.Series], float]
+    lower_is_better: bool = False
+
+
+# What counts as a hold that hurt. The strategy's own archive has the same
+# ticker at +541% and -91%, so the fraction of picks below this is a property
+# worth ranking on even when the mean says nothing.
+BAD_LOSS_PCT = -20.0
+
+
+def _p10(values: pd.Series) -> float:
+    return float(values.quantile(0.10))
+
+
+def _loss_rate(values: pd.Series) -> float:
+    return float((values < BAD_LOSS_PCT).mean() * 100.0)
+
+
+def _mean(values: pd.Series) -> float:
+    return float(values.mean())
+
+
+STATISTICS: dict[str, Statistic] = {
+    "mean": Statistic(_mean, _mean),
+    "median": Statistic(lambda s: float(s.median()), lambda s: float(s.median())),
+    "p10": Statistic(_p10, _mean),
+    "loss20": Statistic(_loss_rate, _mean, lower_is_better=True),
+}
+
+
+def _prepare(scored: pd.DataFrame, label: str, risk_matched: bool,
+             require: Sequence[str] = ()) -> pd.DataFrame:
+    keep = scored[label].notna()
+    for column in require:
+        keep &= scored[column].notna()
+    work = scored[keep].copy()
+    work["month"] = month_of(work)
+    work["_bucket"] = risk_bucket(work) if risk_matched else 0.0
+    return work
+
+
+def _per_month(work: pd.DataFrame, label: str, stat: Statistic,
+               select: Callable[[pd.DataFrame], pd.DataFrame],
+               min_month_rows: int) -> MonthlyStat:
+    """
+    One number per month: what `select` picked, minus what its benchmark did.
+
+    The benchmark is drawn from the whole month, so a selection that keeps most
+    of the month is charged against a pool that includes what it dropped. That
+    is what makes an exclusion measurable at all.
+    """
+    rows = []
+    for month, block in work.groupby("month"):
+        if len(block) < min_month_rows:
+            continue
+        picks = select(block)
+        if picks.empty:
+            continue
+        reference = block.groupby("_bucket")[label].apply(stat.of_outcomes)
+        expected = picks["_bucket"].map(reference).astype("float64")
+        rows.append({"month": month, "n": len(picks),
+                     "value": stat.of_outcomes(picks[label])
+                     - stat.of_benchmark(expected)})
+    if not rows:
+        return MonthlyStat(pd.DataFrame(columns=["month", "n", "value"]), None, 0, 0)
+    frame = pd.DataFrame(rows)
+    return MonthlyStat(frame, float(frame["value"].mean()), len(frame),
+                       int(frame["n"].sum()))
+
+
 def rank_ic(scored: pd.DataFrame, column: str = "oos",
             horizon: int = PRIMARY_HORIZON,
-            min_month_rows: int = MIN_MONTH_ROWS) -> MonthlyStat:
+            min_month_rows: int = MIN_MONTH_ROWS,
+            label: Optional[str] = None) -> MonthlyStat:
     """
     Mean within-month Spearman correlation between prediction and outcome.
 
@@ -167,7 +251,7 @@ def rank_ic(scored: pd.DataFrame, column: str = "oos",
     nearer the top. It cannot be won by preferring good months, because it never
     compares across them.
     """
-    label = label_column(horizon)
+    label = label or label_column(horizon)
     work = scored[scored[column].notna() & scored[label].notna()].copy()
     work["month"] = month_of(work)
 
@@ -221,7 +305,8 @@ def selection_alpha(scored: pd.DataFrame, column: str = "oos",
                     rate: float = 0.10, horizon: int = PRIMARY_HORIZON,
                     min_month_rows: int = MIN_MONTH_ROWS,
                     min_picks: int = 2, statistic: str = "mean",
-                    risk_matched: bool = False) -> MonthlyStat:
+                    risk_matched: bool = False,
+                    label: Optional[str] = None) -> MonthlyStat:
     """
     What the top `rate` of each month returned, minus what its benchmark returned.
 
@@ -239,30 +324,57 @@ def selection_alpha(scored: pd.DataFrame, column: str = "oos",
 
     `statistic` of "median" answers the other half. A fat right tail lifts a mean
     without any of the picks being reliably good, and the shipped-model postmortem
-    already turned on exactly that gap between mean and median.
+    already turned on exactly that gap between mean and median. "p10" and
+    "loss20" ask about the left tail instead, where a feature that cannot rank
+    winners may still be able to drop losers.
     """
-    label = label_column(horizon)
-    work = scored[scored[column].notna() & scored[label].notna()].copy()
-    work["month"] = month_of(work)
-    work["_bucket"] = risk_bucket(work) if risk_matched else 0.0
-    aggregate = (lambda s: float(s.median())) if statistic == "median" \
-        else (lambda s: float(s.mean()))
+    label = label or label_column(horizon)
+    stat = STATISTICS[statistic]
+    work = _prepare(scored, label, risk_matched, require=(column,))
 
-    rows = []
-    for month, block in work.groupby("month"):
-        if len(block) < min_month_rows:
-            continue
-        k = max(min_picks, int(round(len(block) * rate)))
-        picks = block.nlargest(k, column)
-        reference = block.groupby("_bucket")[label].apply(aggregate)
-        expected = picks["_bucket"].map(reference).astype("float64")
-        rows.append({"month": month, "n": len(picks),
-                     "value": aggregate(picks[label]) - aggregate(expected)})
-    if not rows:
-        return MonthlyStat(pd.DataFrame(columns=["month", "n", "value"]), None, 0, 0)
-    frame = pd.DataFrame(rows)
-    return MonthlyStat(frame, float(frame["value"].mean()), len(frame),
-                       int(frame["n"].sum()))
+    def select(block: pd.DataFrame) -> pd.DataFrame:
+        return block.nlargest(max(min_picks, int(round(len(block) * rate))), column)
+
+    return _per_month(work, label, stat, select, min_month_rows)
+
+
+def class_alpha(scored: pd.DataFrame, keep: pd.Series,
+                horizon: int = PRIMARY_HORIZON,
+                min_month_rows: int = MIN_MONTH_ROWS,
+                min_picks: int = 2, statistic: str = "mean",
+                risk_matched: bool = True,
+                label: Optional[str] = None) -> MonthlyStat:
+    """
+    What one class of purchase returned against the whole month it came from.
+
+    The estimand the ranking metric cannot express. `selection_alpha` spends the
+    entire sample on the top decile, roughly 37 rows a month, and its standard
+    error is set by that. Asking instead whether excluding a class raises what
+    is left uses every row, which is about three times the precision for no new
+    data. It is also the shape the evidence says the Form 4 has: the placebo
+    control shows the filing supplies the median and the hit rate while insider
+    attributes fail to order the discounted set, so a gate is the hypothesis
+    that fits and a ranking is not.
+
+    `keep` is a boolean mask over `scored`. A veto is the complement: pass
+    `~is_net_seller` to ask what excluding net-seller firms is worth. The
+    benchmark is always the whole month including the rows `keep` drops, which
+    is what makes the difference readable as the value of dropping them.
+
+    Under "loss20" a lower number is better, because the statistic counts holds
+    that fell past -20%. `STATISTICS[name].lower_is_better` carries that so a
+    caller ranking candidates does not have to remember it.
+    """
+    label = label or label_column(horizon)
+    stat = STATISTICS[statistic]
+    mask = keep.reindex(scored.index).fillna(False).astype(bool)
+    work = _prepare(scored.assign(_keep=mask), label, risk_matched)
+
+    def select(block: pd.DataFrame) -> pd.DataFrame:
+        picks = block[block["_keep"]]
+        return picks if len(picks) >= min_picks else block.iloc[0:0]
+
+    return _per_month(work, label, stat, select, min_month_rows)
 
 
 def random_selection_alpha(scored: pd.DataFrame, draws: int = 400,
@@ -270,7 +382,8 @@ def random_selection_alpha(scored: pd.DataFrame, draws: int = 400,
                            seed: int = 20260830,
                            min_month_rows: int = MIN_MONTH_ROWS,
                            statistic: str = "mean",
-                           risk_matched: bool = False) -> np.ndarray:
+                           risk_matched: bool = False,
+                           label: Optional[str] = None) -> np.ndarray:
     """
     The same statistic under `draws` random rankings. The coin flip, drawn properly.
 
@@ -284,7 +397,8 @@ def random_selection_alpha(scored: pd.DataFrame, draws: int = 400,
     for _ in range(draws):
         work["_r"] = rng.random(len(work))
         stat = selection_alpha(work, "_r", rate, horizon, min_month_rows,
-                               statistic=statistic, risk_matched=risk_matched)
+                               statistic=statistic, risk_matched=risk_matched,
+                               label=label)
         if stat.mean is not None:
             out.append(stat.mean)
     return np.array(out)
@@ -293,7 +407,8 @@ def random_selection_alpha(scored: pd.DataFrame, draws: int = 400,
 def permutation_alpha(frame: pd.DataFrame, fitter: Fitter, draws: int = 200,
                       rate: float = 0.10, horizon: int = PRIMARY_HORIZON,
                       seed: int = 20260830, statistic: str = "mean",
-                      risk_matched: bool = True) -> np.ndarray:
+                      risk_matched: bool = True,
+                      label: Optional[str] = None) -> np.ndarray:
     """
     The whole pipeline's statistic under labels shuffled inside each month.
 
@@ -309,7 +424,7 @@ def permutation_alpha(frame: pd.DataFrame, fitter: Fitter, draws: int = 200,
     return distribution intact, so the null is "this model cannot tell these
     purchases apart", not the far weaker "months differ".
     """
-    label = label_column(horizon)
+    label = label or label_column(horizon)
     rng = np.random.default_rng(seed)
     work = frame.reset_index(drop=True)
     months = month_of(work).to_numpy()
@@ -322,11 +437,12 @@ def permutation_alpha(frame: pd.DataFrame, fitter: Fitter, draws: int = 200,
         for positions in blocks:
             shuffled[positions] = rng.permutation(shuffled[positions])
         work[label] = shuffled
-        scored = walk_forward(work, fitter, horizon)
+        scored = walk_forward(work, fitter, horizon, label=label)
         if scored.empty:
             continue
         stat = selection_alpha(scored, "oos", rate, horizon,
-                               statistic=statistic, risk_matched=risk_matched)
+                               statistic=statistic, risk_matched=risk_matched,
+                               label=label)
         if stat.mean is not None:
             out.append(stat.mean)
     return np.array(out)
@@ -336,7 +452,8 @@ def amputation_curve(scored: pd.DataFrame, column: str = "oos",
                      drops: Sequence[int] = (0, 1, 3, 5, 10, 20),
                      draws: int = 300, rate: float = 0.10,
                      horizon: int = PRIMARY_HORIZON,
-                     seed: int = 20260830) -> pd.DataFrame:
+                     seed: int = 20260830,
+                     label: Optional[str] = None) -> pd.DataFrame:
     """
     What survives when the biggest-contributing tickers are removed, against a
     null that has had the same thing done to it.
@@ -349,7 +466,7 @@ def amputation_curve(scored: pd.DataFrame, column: str = "oos",
     -0.07 to -2.37. The percentile against that matched null is the number that
     means something.
     """
-    label = label_column(horizon)
+    label = label or label_column(horizon)
     work = scored.copy()
     work["month"] = month_of(work)
 
@@ -367,7 +484,7 @@ def amputation_curve(scored: pd.DataFrame, column: str = "oos",
         for n in drops:
             sub = work[~work["ticker"].isin(set(contrib.head(n).index))]
             out.append(selection_alpha(sub, col, rate, horizon,
-                                       risk_matched=True).mean)
+                                       risk_matched=True, label=label).mean)
         return out
 
     real = curve(column)
@@ -392,6 +509,74 @@ def amputation_curve(scored: pd.DataFrame, column: str = "oos",
             if col.size and value is not None else None,
         })
     return pd.DataFrame(rows)
+
+
+# Two-sided 5% and 80% power. The bar hillclimb prints is t >= 2, so the
+# critical value is the normal one rather than anything fitted.
+_Z_CRITICAL = 1.96
+_Z_POWER = 0.8416
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """What a candidate family can be seen at, and what it scored."""
+    null_sd: Optional[float]
+    detectable: Optional[float]
+    draws: int
+
+    def line(self) -> str:
+        if self.detectable is None:
+            return "  MDE  not computable"
+        return (f"  null sd {self.null_sd:.2f}pp over {self.draws} permutations, "
+                f"so this family is detectable at {self.detectable:.1f}pp "
+                f"with 80% power")
+
+
+def minimum_detectable_effect(frame: pd.DataFrame, fitter: Fitter,
+                              draws: int = 60, rate: float = 0.10,
+                              horizon: int = PRIMARY_HORIZON,
+                              seed: int = 20260905,
+                              risk_matched: bool = True,
+                              label: Optional[str] = None) -> Resolution:
+    """
+    The smallest selection alpha this ruler could tell apart from zero.
+
+    Every null result the project has recorded was reported without one of
+    these, which is why seven rounds of factor work read as seven failures.
+    Tier-1 insider features scored +1.68pp at t=+0.88 against a null spread of
+    about 1.9pp; that is not a measurement of zero, it is a measurement below
+    the instrument's resolution, and it looks identical whether the truth is
+    zero or four points.
+
+    The null has to keep the candidate's own pick pattern, because the spread
+    is set by what a family selects and not by the metric alone. Ranking by
+    distance below the 52-week high concentrates its picks in volatile names
+    and carries a null spread near 4.9pp; a ridge on insider features spreads
+    across the month and carries about 1.9pp. Permuting labels inside each
+    month and refitting preserves that, where drawing random rankings does not.
+
+    This is the resolution against a *homogeneous* effect, one that is the same
+    size every month. Measured on the real dataset the null spread is 1.07 to
+    1.36pp for every family tried, so the ruler resolves about 3pp. The observed
+    spread of a candidate that has a real effect can be far wider: the discount
+    screen's is 4.86pp, four and a half times its own null, because how much the
+    screen is worth varies month to month. `noise` shows 1.18 against a null of
+    1.33, which is the check that the two coincide when there is nothing there.
+
+    So a candidate scoring below 3pp cannot be seen at all, and one scoring
+    above it is still judged on its own observed spread by the t-stat that
+    hillclimb prints. Reported against the mean bar. The median and 15-month
+    bars cannot be folded into one number, so a candidate near this threshold is
+    at the edge of the instrument rather than safely above it.
+    """
+    null = permutation_alpha(frame, fitter, draws, rate, horizon, seed,
+                             risk_matched=risk_matched, label=label)
+    if null.size < 2:
+        return Resolution(None, None, int(null.size))
+    sd = float(null.std(ddof=1))
+    if not np.isfinite(sd) or sd <= 1e-12:
+        return Resolution(sd, None, int(null.size))
+    return Resolution(sd, (_Z_CRITICAL + _Z_POWER) * sd, int(null.size))
 
 
 def percentile_of(value: Optional[float], draws: np.ndarray) -> Optional[float]:
