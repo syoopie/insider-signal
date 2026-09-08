@@ -28,6 +28,181 @@ that are free, then re-run the *existing* candidate set before adding anything n
 existing candidates still measure zero at three times the resolution, that is a real finding
 and section 7 says what to do with it.
 
+**Phases A1, A2, A3, A5 and every B1 item were built and run on 2026-09-08. Section 0a is
+what they found, including two corrections to this document and one thing that changes the
+priority order.** A4 is written and not yet run.
+
+---
+
+## 0a. What the build found, 2026-09-08
+
+### The resolution is about 3pp, not 5 to 14, and section 2.1 was wrong
+
+`minimum_detectable_effect` in `src/research/walkforward.py` permutes labels inside each
+month, refits the whole walk-forward, and reports 2.80 times the spread of the result.
+`scripts/hillclimb.py --mde` prints it. Measured at 90d:
+
+| candidate | alpha | t | permutation null sd | **MDE at 80% power** | observed sd of alpha/t |
+|---|---|---|---|---|---|
+| below 52wk high | +12.84 | +2.39 | 1.35 | **3.79** | 5.37 |
+| SHIPPED scorer | +12.59 | +2.32 | 1.34 | **3.75** | 5.43 |
+| gate p90 + insiders | +8.06 | +2.27 | 1.40 | **3.93** | 3.55 |
+| ridge tier1 | +4.47 | +1.77 | 1.21 | **3.40** | 2.53 |
+| noise | +2.19 | +2.15 | 1.35 | **3.79** | 1.02 |
+
+Section 2.1 derived 5.3pp and 13.6pp by dividing each candidate's alpha by its t. That is the
+spread of its *observed* monthly series, which carries the effect's own month-to-month
+variation as well as the noise. The two coincide when there is no effect, and `noise` is the
+check: 1.02 observed against a 1.35 null. They diverge when there is one, and the discount
+screen is the check on that: 5.37 observed against 1.07 to 1.35.
+
+So the ruler is sharper than this document claimed. The conclusion survives and gets tighter.
+Every insider feature ever tested scored between +0.3pp and +3.5pp, and the resolution is
+about 3.4 to 3.9pp, so those runs still could not distinguish a real effect from zero. The
+underpowering was roughly twofold, not threefold.
+
+`hillclimb.py` now reports such a candidate as `BELOW RESOLUTION (3.8pp)` rather than as a
+failure. `noise` scoring +2.19 at t=+2.15 in the same run is why that matters: the t-bar alone
+would have passed a coin flip.
+
+### The gate estimand is worth four times the precision, and it was free
+
+`class_alpha` charges a class against the whole month it came from. `scripts/gates.py` races
+the exclusions the way `hillclimb.py` races the rankings. Its resolutions:
+
+| gate | kept | dropped | alpha | t | **MDE** | verdict |
+|---|---|---|---|---|---|---|
+| firm not net selling | 6,681 | 952 | +0.07 | +0.37 | 0.40 | below resolution |
+| filed 30+ days late, dropped | 7,455 | 178 | +0.03 | +0.37 | 0.20 | below resolution |
+| direct only | 5,145 | 2,488 | +0.64 | +0.98 | 0.80 | below resolution |
+| buyers are 25% of the roster | 5,431 | 2,202 | +0.17 | +0.34 | 0.70 | below resolution |
+| not averaging down | 5,780 | 1,853 | +0.09 | +0.55 | 0.62 | below resolution |
+| an officer, not a plain director | 2,341 | 5,292 | +0.12 | +0.12 | 1.87 | below resolution |
+| coin flip, the control | 6,125 | 1,508 | +0.16 | +1.19 | 0.59 | below resolution |
+| keep everything, the control | 7,633 | 0 | 0.00 | n/a | 0.00 | exact zero, as it must be |
+
+A gate resolves 0.2 to 0.8pp where a ranking needs 3.4 to 3.9. **These are measured zeros.**
+Net insider demand, the item section 6 called "the cheapest large win available", is worth
++0.07pp against a resolution of 0.40. Averaging down, the filter CLAUDE.md blames for the
+worst outcome in the history, is worth +0.09 against 0.62. Both are now settled rather than
+untested.
+
+### The three shipped disqualifiers, measured on the rows they discard
+
+Never done before, because `evaluable` keeps only what the pipeline already scored.
+
+| rule | kept | dropped | alpha | t | MDE | percentile vs chance |
+|---|---|---|---|---|---|---|
+| not a 10b5-1 plan trade | 8,562 | 577 | **+0.37** | +1.33 | 0.28 | **100** |
+| not a routine buyer | 8,850 | 289 | **−0.19** | −1.34 | 0.16 | **0** |
+| at least $2,000 | 8,370 | 769 | −0.22 | −0.87 | 0.33 | 2 |
+
+Excluding 10b5-1 trades earns its place directionally, at the 100th percentile of the null and
+above its own resolution, though it does not clear Benjamini-Hochberg at 5% (q=0.28).
+
+**Excluding routine buyers points the wrong way.** It is above its resolution, at the 0th
+percentile of the null, with t=−1.34. Nothing here is conclusive at q=0.28, but the sign is
+the opposite of what Cohen, Malloy and Pomorski support and the rule is currently deleting
+289 purchases on that authority. This is the first rule to re-test when the sample grows.
+
+### Four labels, and the coin flip only reads as a coin flip under one of them
+
+`excess_sector_{h}d` and `excess_vol_{h}d` now exist alongside SPY and IWM;
+`--label` selects one on either script.
+
+| candidate | spy | vol | sector | iwm |
+|---|---|---|---|---|
+| below 52wk high | +12.84, t=2.39 | +0.131, t=1.95 | +12.48, t=2.05 | +12.75, t=2.38 |
+| ridge tier1 | +4.47, t=1.77 | +0.163, t=1.94 | +3.03, t=1.45 | +5.41, t=2.13 |
+| gate p90 + insiders | +8.06, t=2.27 | +0.074, t=1.54 | +8.28, t=2.32 | +8.38, t=2.45 |
+| **noise** | **+2.19, t=2.15** | **−0.008, t=−0.43** | −0.74, t=−0.41 | +2.12, t=2.13 |
+
+Two things fall out. No candidate flips sign across labels, so nothing here is disqualified by
+the section 3 rule. And the discount screen survives industry matching with a *higher* median
+than against SPY, +11.82 against +10.29, which is the closest thing yet to an answer for the
+placebo control's open question: the effect is not an industry tilt.
+
+The uncomfortable one is the last row. Under SPY and IWM a random ranking scores +2.19 with
+t=+2.15; under the vol label it scores −0.008 with t=−0.43. Risk-quintile matching does not
+fully neutralise a label whose standard deviation runs from 11.8 to 58.4 across those
+quintiles, and the residue is large enough for chance to clear the t-bar. **The vol label is
+the better-behaved ruler and it shrinks every headline number, including the shipped model's.**
+Under it, the price screen at t=+1.95 and tier-1 insider features at t=+1.94 are
+indistinguishable from each other. That is worth taking seriously rather than reporting once
+and dropping.
+
+### The correction that changes the priority order: the sample cannot grow
+
+The database's earliest filing is **2024-09-03**, exactly 24 months before the day this was
+run. `prune_old_data(months=24)` runs inside the daily ingest. Every month, ingest adds one
+month at the back and pruning deletes one at the front.
+
+The 2026-08-30 run had 18 predictable months and 6,690 out-of-sample rows. The same command
+on 2026-09-08 has **16 predictable months and 6,333 rows**, and it will have about 16 forever.
+
+Section 2.3 called more history "the largest single lever available". It is stronger than
+that. The standard error falls as 1/sqrt(months), the sample is pinned at 24 months of
+filings by a scheduled job, and **the history that would break the deadlock is being deleted
+daily.** A4 is not an accelerator, it is the only way any of this improves, and every day it
+is deferred costs a day of the archive it is meant to build.
+
+`scripts/build_form4_archive.py` is written for exactly this: resumable per-window parquet
+under `data/form4/`, a manifest so an interrupted long fetch costs one window, and nothing in
+Neon. It also stores `is_director`, `is_officer` and `is_ten_percent`, which the parser has
+always read and `write_filing` has always discarded.
+
+`scripts/verify_form4_archive.py` is the gate and the pilot passes it. Over 2026-08-04 to
+2026-08-06: the archive is missing **0.00%** of comparable stored filings, **0 of 870** shared
+filings disagree on transaction count, and purchase value matches the database **exactly**.
+
+**Measured fetch rate: 4m27s for three days of filings**, 2,264 index records down to 1,169
+document fetches. That is roughly 25 minutes per calendar month of history, so ten years is on
+the order of 50 hours, in line with the estimate in A4 but worth re-timing rather than
+trusting, because EDGAR throttles hard under sustained load and a later pilot ran at less than
+half this rate.
+
+### One more coverage hole, found by the verifier
+
+Comparing accession sets between the archive and the database failed at first, in both
+directions. All 76 database-only filings were tickers that have since left
+`data/tickers.txt`; all 99 archive-only ones were tickers in it. The difference is the ticker
+universe drifting under two years of ingest runs, not data loss, and the verifier now compares
+on today's universe.
+
+The finding is worth more than the fix. **The archive holds 110 filings the database never
+ingested, 11.22% of its own rows over three days**, because those issuers entered the universe
+after they filed. Every research number ever computed here has been missing them, and the
+missingness is not random: it is concentrated in companies that grew into the index, which is
+exactly the population a small-cap insider effect would live in.
+
+### The full candidate re-run
+
+16 months, 6,333 out-of-sample rows at 90d, on the rebuilt panel and dataset:
+
+| candidate | matched alpha | t | median | verdict |
+|---|---|---|---|---|
+| current score | +13.68 | +2.33 | +12.61 | beats chance |
+| below 52wk high | +12.84 | +2.39 | +10.29 | beats chance |
+| SHIPPED scorer | +12.59 | +2.32 | +10.09 | beats chance |
+| gate p90 + insiders | +8.06 | +2.27 | +7.45 | beats chance |
+| ridge tier1 | **+4.47** | +1.77 | +3.90 | **above resolution for the first time**, fails t≥2 |
+| ridge all | +3.15 | +0.89 | +2.45 | fails t≥2 |
+| noise | +2.19 | +2.15 | +0.25 | below resolution |
+| ridge current factors | −2.63 | −1.80 | −1.64 | wrong sign |
+
+`ridge tier1` was +1.68 at t=+0.88 on 2026-08-30 and is +4.47 at t=+1.77 now. It has crossed
+its own resolution of 3.40 for the first time. **Do not read that as a result.** The dataset
+underneath it changed: a fresh panel, a fresh rollup, two fewer months and a different window,
+and the whole table moved up with it. What it does establish is that this candidate is no
+longer invisible, which is the precondition section 7 requires before the ranker question can
+be closed either way.
+
+### What this leaves
+
+Nothing new ships. The scoring model is unchanged, and B1 has retired six free hypotheses on
+evidence rather than on silence. The one item that would move the result is A4, and the
+pruning finding makes it urgent rather than merely valuable.
+
 ---
 
 ## 1. The scoreboard
@@ -112,10 +287,16 @@ which is a much weaker claim and one that most of the published literature would
 Standard error across months scales as `label_noise / (pick_count × sqrt(months))`. Every lever
 below is free and they multiply.
 
-**Lever 1: more months.** SE falls as `1/sqrt(months)`. The dataset has 18 predictable months.
-Going to 72 halves the SE and takes the insider-family MDE from 5.3pp to 2.7pp. Going to 120
-takes it to 2.1pp. The database starts 2024-04-03. EDGAR serves Form 4 back to 2003. **This is
-the largest single lever available and it costs nothing but fetch time.**
+**Lever 1: more months.** SE falls as `1/sqrt(months)`. The dataset has 16 predictable months.
+Going to 64 halves the SE and takes the insider-family MDE from 3.4pp to 1.7pp. EDGAR serves
+Form 4 back to 2003. **This is the largest single lever available and it costs nothing but
+fetch time.**
+
+It is also the only lever that can ever fire, which section 0a establishes and this section
+originally missed. `prune_old_data(months=24)` runs inside the daily ingest, so the database
+holds exactly two years and no more. The sample does not slowly accumulate: it slides. 18
+predictable months on 2026-08-30, 16 on 2026-09-08, and about 16 in perpetuity. A local
+archive is not an optimisation of this lever, it is the lever.
 
 **Lever 2: a wider estimand.** The current metric spends the whole sample on the top decile,
 about 37 rows per month. A *veto* estimand asks whether excluding a class raises the median of
@@ -308,11 +489,15 @@ way inside the discounted set. *Estimand:* ranker on the discounted subset, and 
 bottom of the distribution. *Kill:* it does not beat raw `cluster_n_buyers`, which itself
 measures −4.53 there.
 
-**B1.4 Joint officer-and-director role.** Parsed from the raw title string, which is already
-stored. *Hypothesis:* the literature places the effect in managers rather than large
-shareholders, and the current seven-way `role_category` split puts an officer who sits on the
-board into one bucket or the other arbitrarily. *Estimand:* gate lift. *Kill:* n < 300 in the
-extended archive, or no lift.
+**B1.4 Joint officer-and-director role.** ~~Parsed from the raw title string, which is already
+stored.~~ **Wrong, and moved to B2. 2026-09-08.** The raw title cannot express it.
+`parse_form4` reads `isDirector`, `isOfficer` and `isTenPercentOwner` off
+`reportingOwnerRelationship`, `write_filing` stores none of the three, and the parser fills
+`officerTitle` with the literal "Director" when there is no title. A CFO on the board and a
+CFO who is not are the same stored row. Searching the title for both words matches 11 rows out
+of 7,633, which is noise. The nearest computable cut, officers against plain directors, was
+run instead: +0.12pp against a 1.87pp resolution. `scripts/build_form4_archive.py` stores all
+three flags, so the real cut arrives with A4 at no extra fetch.
 
 **B1.5 Amendments.** A 4/A restates a transaction under a new accession number.
 `purchase_rollup()` already picks the newest filing per key, so amendments are handled
@@ -516,12 +701,15 @@ the re-run.
 
 ## 9. Debts this plan names but does not fix
 
-- **`docs/scoring.md` and `docs/research.md` are stale.** Both still describe the retired
-  weight table, the 60 and 45 thresholds, and `cap_small = +15`, a factor the archive measures
-  with the opposite sign. Agents read these. Fix them before the next round starts, or delete
-  them and point at CLAUDE.md.
-- **The price panel and research dataset are dated 2026-08-30.** Every number in this document
-  and in section 7b of the prior plan rests on that snapshot. Rebuild before running anything.
+- ~~**`docs/scoring.md` and `docs/research.md` are stale.**~~ **Rewritten 2026-09-08.**
+  `scoring.md` now describes the single-factor model and the thresholds that shipped;
+  `research.md` splits its citations into what is still load-bearing, what this system
+  measured and kept, and what was implemented as a weight and then measured away. The
+  entries in the last group are kept rather than deleted so nobody adds them back.
+- ~~**The price panel and research dataset are dated 2026-08-30.**~~ **Rebuilt 2026-09-08.**
+  The panel covers 1,375 symbols to 2026-09-04 and the dataset holds 10,338 rows. Every
+  number in section 0a is on that snapshot. Note that rebuilding *lost* two predictable
+  months to pruning, which is the finding in section 0a.
 - **Five tickers are unresolvable** because filers typed them by hand: `(CALX)`, `N O G`,
   `NYSE/TRN`, `BFA, BFB`, `WLY, WLYB`. `audit_data.py` flags them and the rows still need a
   repair.
@@ -538,18 +726,26 @@ the re-run.
 
 Each row ends in a falsifiable check. Do not start a row until the one above it passes.
 
-| # | Work | Gate |
-|---|---|---|
-| A1 | Print the MDE from `hillclimb.py` | Reproduces 5.3pp and 13.6pp within 1pp |
-| A2 | `veto_alpha`, `tail_alpha`, `gate_lift`, with sensitivity tests | Random mask centres on zero; `gate_lift` reproduces +11.0 within 0.5pp |
-| A3 | Vol-scaled and sector-relative labels; `--label` flag | Every candidate reported at three labels; sign flips disqualify |
-| A4 | Form 4 archive to 2016 in parquet, panel extended, survivorship handled | Reproduces the DB on the overlap within 2%; ≥60 predictable months; insider MDE ≤ 2.5pp |
-| **A5** | **Re-run the existing candidate set unchanged at the new power** | **The table is published. This decides whether Phase B happens at all** |
-| B1 | Six free veto and gate tests, plus the disqualifier validation | Each retires or survives on its own kill criterion |
-| B2 | Table II and all-reporting-owners, folded into the A4 re-parse | Tier-1 features re-run against corrected insider identity |
-| B3 | Book-to-market, then earnings proximity, then short interest | Each stored at ingest, both paths agreeing by construction |
-| C | Compose survivors as gates ahead of the discount ranker | Beats the shipped screen on the frozen ruler at the new power |
-| D | Stops, signal exits, sizing, concentration limits | Median and left-tail reported alongside the mean, always |
+| # | Work | Gate | State |
+|---|---|---|---|
+| A1 | Print the MDE from `hillclimb.py` | Reproduces the claimed resolution | **Done 2026-09-08. It did not: the answer is ~3.8pp, not 5.3 and 13.6, and section 0a corrects this document** |
+| A2 | A gate estimand with sensitivity tests | Random mask centres on zero; a gate over the top decile reproduces the ranking metric exactly | **Done 2026-09-08. `class_alpha`, one core with two selectors, 12 new tests** |
+| A3 | Vol-scaled and sector-relative labels; `--label` | Every candidate reported at every label; sign flips disqualify | **Done 2026-09-08. No sign flips. `noise` clears t≥2 on SPY and IWM and not on vol** |
+| **A4** | **Form 4 archive in parquet, panel extended, survivorship handled** | Reproduces the DB on the overlap within 2%; ≥60 predictable months; insider MDE ≤ 2.5pp | **Written, pilot run, two bugs found and fixed. The long fetch has not been run. Now the only item that can move the result** |
+| A5 | Re-run the existing candidate set at the new power | The table is published | **Done 2026-09-08. `ridge tier1` crosses its resolution for the first time at +4.47, t=+1.77** |
+| B1 | Six free gate tests, plus the disqualifier validation | Each retires or survives on its own kill criterion | **Done 2026-09-08. All six retired below resolution. The routine-buyer rule points the wrong way** |
+| B2 | Table II, all reporting owners, and the three relationship flags | Tier-1 features re-run against corrected insider identity | The archive already stores the flags. Table II and multiple owners still need a parser change |
+| B3 | Book-to-market, then earnings proximity, then short interest | Each stored at ingest, both paths agreeing by construction | Not started. Blocked behind A4 on power |
+| C | Compose survivors as gates ahead of the discount ranker | Beats the shipped screen on the frozen ruler at the new power | No survivors yet |
+| D | Stops, signal exits, sizing, concentration limits | Median and left-tail reported alongside the mean, always | Not started. `p10` and `loss20` exist for it |
+
+**The next gate, and it is not a fetch.** The archive stores raw filings and transactions.
+Turning them into research rows needs the purchase rollup, which today is Postgres SQL in
+`src/db/purchases.py` and is shared by three call sites precisely so there is one definition.
+Writing a pandas rollup for the archive would create the second one, which is the mistake
+`purchase_rollup` exists to prevent. Run the same SQL over the parquet instead, in DuckDB,
+which supports `DISTINCT ON` and the window function it uses, and prove it by comparing both
+paths on the overlap before any number is read off the archive.
 
 Rows A1 through A5 and every B1 item change no stored score. Anything from B3 onward that
 touches `src/signals/` triggers the golden rule in CLAUDE.md: `pytest`, then
