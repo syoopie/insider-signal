@@ -96,16 +96,38 @@ class Stat:
         return head + f"  se={self.se_clustered:5.2f}  t={t:+5.2f}"
 
 
-def label_column(horizon: int = PRIMARY_HORIZON) -> str:
-    return f"excess_spy_{horizon}d"
+# What a purchase is charged against. "spy" is what every published number was
+# measured on and stays the default.
+#
+# "vol" exists because the raw label is wildly heteroscedastic: excess-vs-SPY has
+# a standard deviation of 11.8pp in the calmest volatility quintile and 58.4pp in
+# the wildest, so a monthly mean is mostly a report on whichever picks landed in
+# the fifth. Dividing by realised volatility at the trade date flattens that to
+# 0.52 through 0.62. It is not free, because part of the discount screen's raw
+# alpha is a volatility tilt and this removes it, which is why it is a second
+# label and not a replacement.
+#
+# "sector" charges a purchase against its own industry, the confound the placebo
+# control could not remove.
+LABEL_FAMILIES = {
+    "spy": "excess_spy_{horizon}d",
+    "iwm": "excess_iwm_{horizon}d",
+    "vol": "excess_vol_{horizon}d",
+    "sector": "excess_sector_{horizon}d",
+}
 
 
-def evaluable(frame: pd.DataFrame, horizon: int = PRIMARY_HORIZON) -> pd.DataFrame:
+def label_column(horizon: int = PRIMARY_HORIZON, family: str = "spy") -> str:
+    return LABEL_FAMILIES[family].format(horizon=horizon)
+
+
+def evaluable(frame: pd.DataFrame, horizon: int = PRIMARY_HORIZON,
+              label: Optional[str] = None) -> pd.DataFrame:
     """
     Rows that can carry a verdict: eligible, scored, exit already in the past,
     and a measured excess return.
     """
-    col = label_column(horizon)
+    col = label or label_column(horizon)
     keep = (
         frame["eligible"]
         & ~frame["scorer_disqualified"].fillna(True)

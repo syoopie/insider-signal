@@ -404,6 +404,55 @@ def random_selection_alpha(scored: pd.DataFrame, draws: int = 400,
     return np.array(out)
 
 
+def _month_blocks(work: pd.DataFrame,
+                  label: str) -> tuple[list[np.ndarray], np.ndarray]:
+    months = month_of(work).to_numpy()
+    blocks = [np.flatnonzero(months == m) for m in pd.unique(months)]
+    return blocks, work[label].to_numpy(dtype="float64").copy()
+
+
+def _shuffled(original: np.ndarray, blocks: Sequence[np.ndarray],
+              rng: np.random.Generator) -> np.ndarray:
+    """
+    Outcomes reassigned at random inside each month, months left intact.
+
+    Shuffling across the sample would only test that months differ, which is
+    already known and is not the claim anything here makes.
+    """
+    out = original.copy()
+    for positions in blocks:
+        out[positions] = rng.permutation(out[positions])
+    return out
+
+
+def class_alpha_null(frame: pd.DataFrame, keep: pd.Series, draws: int = 200,
+                     horizon: int = PRIMARY_HORIZON, seed: int = 20260905,
+                     statistic: str = "mean", risk_matched: bool = True,
+                     label: Optional[str] = None) -> np.ndarray:
+    """
+    What a gate scores when the outcomes are unrelated to which rows it keeps.
+
+    The counterpart of `permutation_alpha` for a mask. A gate defined by a
+    stored attribute has nothing fitted, so the search cost the permutation is
+    pricing there does not arise, but the class sizes and the month structure
+    still set the spread and a gate has to be read against that.
+    """
+    label = label or label_column(horizon)
+    rng = np.random.default_rng(seed)
+    work = frame.reset_index(drop=True)
+    mask = keep.reset_index(drop=True)
+    blocks, original = _month_blocks(work, label)
+
+    out = []
+    for _ in range(draws):
+        work[label] = _shuffled(original, blocks, rng)
+        stat = class_alpha(work, mask, horizon, statistic=statistic,
+                           risk_matched=risk_matched, label=label)
+        if stat.mean is not None:
+            out.append(stat.mean)
+    return np.array(out)
+
+
 def permutation_alpha(frame: pd.DataFrame, fitter: Fitter, draws: int = 200,
                       rate: float = 0.10, horizon: int = PRIMARY_HORIZON,
                       seed: int = 20260830, statistic: str = "mean",
@@ -427,16 +476,11 @@ def permutation_alpha(frame: pd.DataFrame, fitter: Fitter, draws: int = 200,
     label = label or label_column(horizon)
     rng = np.random.default_rng(seed)
     work = frame.reset_index(drop=True)
-    months = month_of(work).to_numpy()
-    blocks = [np.flatnonzero(months == m) for m in pd.unique(months)]
-    original = work[label].to_numpy(dtype="float64").copy()
+    blocks, original = _month_blocks(work, label)
 
     out = []
     for _ in range(draws):
-        shuffled = original.copy()
-        for positions in blocks:
-            shuffled[positions] = rng.permutation(shuffled[positions])
-        work[label] = shuffled
+        work[label] = _shuffled(original, blocks, rng)
         scored = walk_forward(work, fitter, horizon, label=label)
         if scored.empty:
             continue

@@ -11,8 +11,11 @@ Reads the purchase rollup and the local price panel. Writes parquet. No network,
 no writes to the database, and it runs in seconds, which is the point — an
 experiment you can repeat cheaply is an experiment you will actually repeat.
 
-Sector-relative and size-matched benchmark legs are not here yet; SPY and IWM
-are. They arrive with the Tier 2 features in the improvement plan.
+Four label families come out of it: excess over SPY, over IWM, over the SPDR
+fund for the issuer's own SIC division, and the SPY excess divided by realised
+volatility at the trade date. The last two exist because the raw label is
+heteroscedastic and because industry is the confound the placebo control could
+not remove. `src/research/protocol.LABEL_FAMILIES` names them.
 
 Usage:
   python3 scripts/build_research_dataset.py
@@ -38,10 +41,12 @@ from src.db.store import get_discount_reference, get_history_start
 from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.market.features import price_context, price_on, window_return
 from src.market.panel import PANEL_PATH, load_panel
-from src.research.protocol import PRIMARY_HORIZON
+from src.research.protocol import PRIMARY_HORIZON, label_column
+from src.research.sectors import sector_etf
 from src.research.tier1 import (
     averaging_down,
     cluster_intensity,
+    insider_roster,
     insider_track_record,
     net_insider_demand,
     value_vs_own_history,
@@ -102,6 +107,14 @@ def _load_sales() -> pd.DataFrame:
             return pd.DataFrame(cur.fetchall(), columns=cols)
 
 
+def _load_sic() -> dict[str, str]:
+    """CIK to SIC code, for the sector-relative label."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT cik, sic_code FROM companies WHERE sic_code IS NOT NULL")
+            return dict(cur.fetchall())
+
+
 def _eligible(row: dict) -> bool:
     value = row.get("total_value")
     return (
@@ -137,6 +150,9 @@ def main():
     # starts. Omitting it charged the penalty for the ingest start date.
     history_start = get_history_start()
     log(f"History starts {history_start}")
+
+    sic_by_cik = _load_sic()
+    log(f"SIC codes: {len(sic_by_cik):,} companies")
 
     # Keyed off every stored purchase, not just the window, so timing factors
     # can see a full year behind a trade at the window's leading edge.
@@ -226,18 +242,32 @@ def main():
             if px_at_filing and px_paid else None
         )
 
+        row["sic_code"] = sic_by_cik.get(p["cik"])
+        etf = sector_etf(row["sic_code"])
+        row["sector_etf"] = etf
+        etf_series = panel.get(etf) if etf else None
+        vol = row.get("tx_vol_21d")
+
         for h in HORIZONS:
             exit_date = exec_date + timedelta(days=h)
             tkr = window_return(series, exec_date, exit_date)
             spy = window_return(spy_series, exec_date, exit_date)
             iwm = window_return(iwm_series, exec_date, exit_date)
+            sector = window_return(etf_series, exec_date, exit_date)
 
             row[f"status_{h}d"] = tkr.status
             row[f"ret_{h}d"] = tkr.pct
             row[f"spy_{h}d"] = spy.pct
             row[f"iwm_{h}d"] = iwm.pct
-            row[f"excess_spy_{h}d"] = (
-                tkr.pct - spy.pct if tkr.ok and spy.ok else None
+            excess = tkr.pct - spy.pct if tkr.ok and spy.ok else None
+            row[f"excess_spy_{h}d"] = excess
+            row[f"excess_sector_{h}d"] = (
+                tkr.pct - sector.pct if tkr.ok and sector.ok else None
+            )
+            # Realised volatility is annualised and in percent, as the excess
+            # return is, so the ratio is unitless and comparable across quintiles.
+            row[f"excess_vol_{h}d"] = (
+                excess / vol if excess is not None and vol and vol > 0 else None
             )
             row[f"excess_iwm_{h}d"] = (
                 tkr.pct - iwm.pct if tkr.ok and iwm.ok else None
@@ -261,6 +291,11 @@ def main():
     ):
         frame = pd.concat([frame, block], axis=1)
         log(f"  {name:<24} {len(block.columns)} columns")
+
+    # Needs cluster_n_buyers, so it cannot join the loop above.
+    roster = insider_roster(sales, frame)
+    frame = pd.concat([frame, roster], axis=1)
+    log(f"  {'insider roster':<24} {len(roster.columns)} columns")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(args.out, index=False, compression="zstd")

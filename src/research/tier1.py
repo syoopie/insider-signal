@@ -272,3 +272,46 @@ def value_vs_own_history(purchases: pd.DataFrame) -> pd.DataFrame:
             out["value_vs_own_mean"][pos] = value / float(np.mean(earlier))
 
     return pd.DataFrame(out, index=purchases.index)
+
+
+def insider_roster(sales: pd.DataFrame, purchases: pd.DataFrame) -> pd.DataFrame:
+    """
+    How many insiders the issuer has ever disclosed, and what share of them bought.
+
+    Three buyers out of five is a different statement from three out of forty,
+    and `cluster_n_buyers` cannot tell them apart. That conflation is a candidate
+    explanation for the cluster count pointing the wrong way inside the most
+    discounted third of purchases, at -4.53 with t=-1.85.
+
+    The roster is everyone seen filing at that CIK on or before this purchase's
+    own filing date, buyers and sellers alike, so it grows as coverage does and
+    never counts a person who had not yet appeared. Needs `cluster_n_buyers`
+    already on the frame, so it runs after `cluster_intensity`.
+    """
+    n = len(purchases)
+    out = {
+        "roster_size": np.zeros(n),
+        "cluster_roster_share": np.full(n, np.nan),
+    }
+
+    seen: dict[str, list[tuple]] = defaultdict(list)
+    for frame in (sales, purchases):
+        for cik, filed, name in zip(frame["cik"], frame["filed_date"],
+                                    frame["insider_name"]):
+            d = _as_date(filed)
+            if d is not None and name:
+                seen[cik].append((d, name))
+
+    buyers = purchases.get("cluster_n_buyers")
+    for pos, (cik, filed) in enumerate(zip(purchases["cik"], purchases["filed_date"])):
+        as_of = _as_date(filed)
+        if as_of is None:
+            continue
+        roster = {name for d, name in seen.get(cik, ()) if d <= as_of}
+        out["roster_size"][pos] = len(roster)
+        if roster and buyers is not None:
+            count = buyers.iloc[pos]
+            if pd.notna(count):
+                out["cluster_roster_share"][pos] = float(count) / len(roster)
+
+    return pd.DataFrame(out, index=purchases.index)

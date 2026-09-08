@@ -29,7 +29,7 @@ from src.backtest.engine import HORIZONS
 from src.ingest.common import log, phase, setup_log_tee
 from src.market.panel import PANEL_PATH
 from src.research.candidates import CANDIDATES
-from src.research.protocol import PRIMARY_HORIZON, evaluable
+from src.research.protocol import LABEL_FAMILIES, PRIMARY_HORIZON, evaluable, label_column
 from src.research.walkforward import (
     folds,
     minimum_detectable_effect,
@@ -85,6 +85,9 @@ def main() -> None:
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--horizon", type=int, default=PRIMARY_HORIZON, choices=HORIZONS)
     parser.add_argument("--rate", type=float, default=SELECTION_RATE)
+    parser.add_argument("--label", default="spy", choices=sorted(LABEL_FAMILIES),
+                        help="What a purchase is charged against. Every published "
+                             "number is on spy; the others are cross-checks.")
     parser.add_argument("--only", action="append", default=None,
                         help="Run one candidate by name. Repeatable.")
     parser.add_argument("--draws", type=int, default=RANDOM_DRAWS)
@@ -96,10 +99,14 @@ def main() -> None:
 
     phase("DATA")
     frame = pd.read_parquet(args.dataset)
-    usable = evaluable(frame, args.horizon)
+    label = label_column(args.horizon, args.label)
+    if label not in frame.columns:
+        raise SystemExit(f"{args.dataset} has no {label}; rebuild it with "
+                         "scripts/build_research_dataset.py")
+    usable = evaluable(frame, args.horizon, label)
     made = folds(usable, args.horizon)
     predicted = sum(len(f.predict) for f in made)
-    log(f"{len(usable):,} evaluable rows at {args.horizon}d")
+    log(f"{len(usable):,} evaluable rows at {args.horizon}d, charged against {label}")
     log(f"{len(made)} predictable months, {predicted:,} rows scored out of sample")
     if made:
         log(f"first predicted month {made[0].month}, last {made[-1].month}")
@@ -108,9 +115,9 @@ def main() -> None:
         return
 
     phase("THE COIN FLIP")
-    reference = walk_forward(usable, CANDIDATES["noise"], args.horizon)
+    reference = walk_forward(usable, CANDIDATES["noise"], args.horizon, label=label)
     draws = random_selection_alpha(reference, args.draws, args.rate, args.horizon,
-                                   risk_matched=True)
+                                   risk_matched=True, label=label)
     log(f"random risk-matched selection alpha over {draws.size} rankings: "
         f"p5={np.percentile(draws, 5):+.3f}  p50={np.percentile(draws, 50):+.3f}  "
         f"p95={np.percentile(draws, 95):+.3f}  sd={draws.std():.3f}")
@@ -135,23 +142,24 @@ def main() -> None:
         if fitter is None:
             log(f"  {name}: not registered")
             continue
-        scored = walk_forward(usable, fitter, args.horizon)
+        scored = walk_forward(usable, fitter, args.horizon, label=label)
         if scored.empty:
             log(f"  {name}: no fold produced a prediction")
             continue
-        ic = rank_ic(scored, "oos", args.horizon)
-        plain = selection_alpha(scored, "oos", args.rate, args.horizon)
+        ic = rank_ic(scored, "oos", args.horizon, label=label)
+        plain = selection_alpha(scored, "oos", args.rate, args.horizon, label=label)
         matched = selection_alpha(scored, "oos", args.rate, args.horizon,
-                                  risk_matched=True)
+                                  risk_matched=True, label=label)
         median = selection_alpha(scored, "oos", args.rate, args.horizon,
-                                 statistic="median", risk_matched=True)
+                                 statistic="median", risk_matched=True, label=label)
         pct = percentile_of(matched.mean, draws)
         mde = (minimum_detectable_effect(usable, fitter, args.mde, args.rate,
-                                         args.horizon).detectable
+                                         args.horizon, label=label).detectable
                if args.mde else None)
         row = {
             "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "candidate": name, "horizon": args.horizon, "rate": args.rate,
+            "label": args.label,
             "months": ic.n_months, "n": ic.n_rows,
             "rank_ic": ic.mean, "ic_t": ic.t_stat,
             "alpha": plain.mean, "matched": matched.mean, "matched_t": matched.t_stat,
