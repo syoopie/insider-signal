@@ -46,6 +46,30 @@ setup_log_tee("build_price_panel")
 DEFAULT_DAYS = 1100
 
 
+def _archive_tickers() -> list[str]:
+    """
+    Tickers with a purchase in `data/form4/`, which reaches back to 2016.
+
+    The database is the wrong source for a panel meant to cover the archive.
+    Retention holds a fixed window, so its ticker list is the companies that
+    filed recently rather than the ones that ever filed, and it names them by
+    whatever `companies` says today. The archive carries the ticker each filing
+    actually bore, which is also what avoids scoring a decade of history against
+    today's index membership.
+    """
+    from src.research.archive import connect
+
+    rows = connect().execute("""
+        SELECT DISTINCT f.ticker
+        FROM read_parquet('data/form4/filings/part-*.parquet') f
+        JOIN read_parquet('data/form4/transactions/part-*.parquet') t
+          ON t.accession_number = f.accession_number
+        WHERE t.transaction_code = 'P' AND f.ticker IS NOT NULL AND f.ticker <> ''
+        ORDER BY 1
+    """).fetchall()
+    return [r[0] for r in rows]
+
+
 def _tickers_with_purchases() -> list[str]:
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -71,6 +95,9 @@ def main():
                         help="Write partial progress every N symbols (default 100)")
     parser.add_argument("--coverage", action="store_true",
                         help="Print coverage for the existing panel and exit")
+    parser.add_argument("--archive", action="store_true",
+                        help="Include tickers from data/form4/, which reaches "
+                             "further back than the database retains")
     args = parser.parse_args()
 
     if args.coverage:
@@ -91,9 +118,15 @@ def main():
 
     phase("SYMBOL LIST")
     tickers = _tickers_with_purchases()
-    symbols = sorted(set(tickers) | set(BENCHMARK_SYMBOLS))
-    log(f"{len(tickers):,} tickers with a P transaction + {len(BENCHMARK_SYMBOLS)} benchmarks "
-        f"= {len(symbols):,} symbols")
+    symbols = set(tickers) | set(BENCHMARK_SYMBOLS)
+    log(f"{len(tickers):,} tickers with a P transaction in the database")
+    if args.archive:
+        from_archive = _archive_tickers()
+        log(f"{len(from_archive):,} in the archive, "
+            f"{len(set(from_archive) - symbols):,} of them new")
+        symbols |= set(from_archive)
+    symbols = sorted(symbols)
+    log(f"{len(symbols):,} symbols with {len(BENCHMARK_SYMBOLS)} benchmarks")
     log(f"Window: {start} → {end} ({args.days} days)")
 
     try:

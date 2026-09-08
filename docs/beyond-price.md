@@ -2,35 +2,37 @@
 
 The plan for the next scoring iteration.
 
-Written 2026-09-05. The successor to [`scoring-improvement-plan.md`](scoring-improvement-plan.md),
-which should be read first for the history. That document ends where this one begins: with a
-working price screen, a trustworthy ruler, and every insider-derived variable measuring zero.
-
-Numbers marked *(measured here)* were computed on 2026-09-05 against
-`data/prices/research_dataset.parquet` and `data/prices/hillclimb_results.csv` as they stood
-that day. Everything else is quoted from the prior plan and carries its date.
+Written 2026-09-05, executed from 2026-09-08. The successor to
+[`scoring-improvement-plan.md`](scoring-improvement-plan.md), which holds the history and
+ends where this begins: a working price screen, a trustworthy ruler, and every
+insider-derived variable measuring zero.
 
 ---
 
 ## 0. The verdict
 
-**The search for non-price metrics has not failed. It has been underpowered by roughly three
-times, and no amount of feature engineering can fix that.**
+**The search for non-price metrics has not failed. It was underpowered by roughly twice,
+and no amount of feature engineering can fix that.**
 
-The frozen ruler resolves a selection alpha of about 5pp for an insider-family candidate and
-about 13pp for a price-family one *(measured here)*. Every insider feature tested has landed
-between +0.3pp and +3.5pp. Those are not null results. They are results below the instrument's
-resolution, and they would look identical whether the true effect were zero or four points.
+The frozen ruler resolves about **3.4 to 3.9pp** of selection alpha for a ranking. Every
+insider feature tested has landed between +0.3pp and +3.5pp. Those are not null results.
+They are results below the instrument's resolution, and they would look identical whether
+the true effect were zero or three points.
 
-Seven rounds have therefore been asking a question the apparatus cannot answer. The correct
-next move is not another feature sweep. It is to buy statistical power along the three axes
-that are free, then re-run the *existing* candidate set before adding anything new. If the
-existing candidates still measure zero at three times the resolution, that is a real finding
-and section 7 says what to do with it.
+Seven rounds were therefore asking a question the apparatus could not answer. The move was
+not another feature sweep but to buy statistical power along the axes that are free, then
+re-run the *existing* candidate set before adding anything new.
 
-**Phases A1, A2, A3, A5 and every B1 item were built and run on 2026-09-08. Section 0a is
-what they found, including two corrections to this document and one thing that changes the
-priority order.** A4 is written and not yet run.
+**Phase A is done, 2026-09-08 and 09-09.** Section 0a is what it found. Two of those
+findings correct this document, and one changes the priority order.
+
+> The paragraph above used to claim the resolution was 5pp for an insider candidate and
+> 13pp for a price one. **That was wrong**, and A1 was the item that proved it: those
+> figures came from dividing each candidate's alpha by its t, which is the spread of its
+> own observed monthly series and carries the effect's month-to-month variation as well as
+> the noise. The permutation null is the right denominator. The argument survives and
+> tightens; the numbers were out by a factor of three. Section 2.1 still carries the
+> original table, marked.
 
 ---
 
@@ -373,124 +375,28 @@ tilt, which is every insider feature on the list. Run it as a second label, not 
 
 ---
 
-## 3. Phase A. Buy power. No scoring change.
+## 3. Phase A. Buy power. Done, 2026-09-08 and 09-09.
 
-Nothing in this phase alters a stored score, a threshold, or an alert. All four items are
-additive and independently landable.
+**All five items shipped.** The specifications that used to sit here have been cut; what
+each one turned out to be worth is in section 0a, which is the part worth reading.
 
-### A1. Publish the minimum detectable effect
+| | What | Where it landed |
+|---|---|---|
+| A1 | Publish the minimum detectable effect | `walkforward.minimum_detectable_effect`, `hillclimb.py --mde`. **It disproved this document's own section 2.1**, which divided alpha by t and got 5 to 14pp where the permutation null says 3.4 to 3.9 |
+| A2 | Change the estimand from ranker to gate | `walkforward.class_alpha`, `scripts/gates.py`, `src/research/gates.py`. Resolves 0.2 to 0.8pp against a ranking's 3.4, because it spends every row rather than a 37-row decile |
+| A3 | A homoscedastic second label | `LABEL_FAMILIES` in `src/research/protocol.py`, `--label` on both rulers. Under the vol label `noise` finally reads as noise, t=−0.43 against t=+2.15 on SPY |
+| A4 | More history, in a local research archive | `data/form4/`, 901,760 filings and 1,513,233 transactions from 2016. Built from SEC DERA quarterly datasets in 50 seconds after the per-filing fetch was rate-limited |
+| A5 | Re-run the existing candidate set at the new power | Done. `ridge tier1` crosses its resolution for the first time, +4.47 at t=+1.77 |
+| A6 | Roll the archive up through the shared SQL | `src/research/archive.py` runs `PURCHASE_ROLLUP_SQL` unmodified in DuckDB. 71,929 purchases; the two engines agree to 0.003%. Added after the fact: the archive is inert without it |
 
-`scripts/hillclimb.py` prints alpha, t and a percentile against random rankings. It does not
-print what it can see. Add it.
+**Phase A exit, met.** The ruler now reports what it can resolve, measures exclusions as
+well as rankings, offers a label whose variance does not swamp the effect, and reads a
+decade instead of sixteen months. The sample is no longer the binding constraint, which is
+the one thing section 2.3 said had to change.
 
-Inject a synthetic ranking of known strength into the walk-forward loop, sweep the strength,
-and report the smallest effect that clears all four pre-registered bars in 80% of draws.
-`src/research/walkforward.py` already has the machinery: `permutation_alpha` re-runs the whole
-fit under shuffled labels, and `tests/test_walkforward.py` already plants signals of known
-size against a month effect. This is a new candidate family plus about forty lines.
-
-Print one line per run: `MDE at 90d, top 10%, 18 months: X.Xpp`. Every future null result then
-arrives with the range it was blind to attached, which is the difference between "we measured
-zero" and "we could not have seen it".
-
-**Gate.** The printed MDE reproduces the 5.3pp and 13.6pp figures in section 2.1 within 1pp.
-If it does not, section 2.1 is wrong and this whole plan needs re-deriving.
-
-### A2. Change the estimand from ranker to gate
-
-Three new metrics in `walkforward.py`, each pre-registered before any feature is run through
-them.
-
-**`veto_alpha(scored, mask)`.** Excluding the rows where `mask` is true, what happens to the
-mean and median of everything retained, month by month, risk-matched? This is the natural test
-for "insiders are net sellers at this firm", "the filing is 30 days late", "the buyer is an
-LLC", and every other exclusion candidate. It uses the full sample rather than a decile, so its
-standard error is roughly a third of the ranking metric's.
-
-**`tail_alpha(scored, column, rate)`.** Among the picks a ranking already made, does `column`
-predict the *left* tail? The strategy's shape is fat in both directions, and the archive
-records the same ticker as both the best and the worst 180-day outcome. A feature that cannot
-rank the winners but can drop the −60% names is worth more to a portfolio than one that adds a
-point of mean. Report the 10th percentile of retained outcomes and the fraction below −20%.
-
-**`gate_lift(scored, mask)`.** For a *promotion* rather than an exclusion, what does the class
-return against the rest of its month? This is the estimand the placebo control used and it is
-the one the Form 4 itself passes.
-
-**Gate.** Re-run the shipped discount screen through all three. `veto_alpha` on a random mask
-must centre on zero, `gate_lift` on the top decile must reproduce the ranking metric's +11.0
-within 0.5pp, and the sensitivity tests in `tests/test_walkforward.py` must be extended to
-cover the three new statistics before any of them is used on a real candidate.
-
-### A3. A homoscedastic second label
-
-Add `excess_vol_scaled_{h}d = excess_spy_{h}d / tx_vol_21d` to
-`scripts/build_research_dataset.py`, and a `--label` flag to `scripts/hillclimb.py`.
-
-Also add the sector-relative label Phase 1D of the prior plan specified and never built. The
-dataset carries `excess_spy` and `excess_iwm` and nothing else. `companies.sic_description`
-covers 2,042 of 2,142 companies, and the SIC division maps to a liquid sector ETF that the
-price panel can hold. Industry is the largest uncontrolled confound left in the placebo
-control, which drew its placebos at random and could not say how much of the +5.55pp non-insider
-mean was industry mix.
-
-**Gate.** Report every candidate at all three labels. A candidate whose sign flips between raw
-and vol-scaled excess is a leverage tilt, not a signal, and is disqualified. Say so in the
-verdict block.
-
-### A4. More history, in a local research archive
-
-The largest lever, and the one with a real design decision inside it.
-
-**Target: Form 4 purchases back to 2016-01-01.** Ten years spans the 2018 selloff, the 2020
-crash and recovery, the 2022 bear market and the 2023 to 2026 run. The current 730-day window
-is one regime, which the prior plan already lists as a top risk and which is why
-`protocol.stable_features` had to delete five features whose prevalence tracked how far back
-ingest reached rather than anything an insider did. A ten-year window retires that guard for
-every feature except the ones genuinely defined against coverage.
-
-**It does not go into Neon.** Transactions occupy 57MB for two years and `form4_filings`
-another 30MB. Ten years is roughly 285MB and 150MB against a 500MB free tier that is already
-at 105MB. The precedent is already set and already validated: the price panel lives in
-`data/prices/panel.parquet` and `scripts/verify_price_panel.py` proved it equivalent to the
-network path to 0.003pp. Do the same here.
-
-- `scripts/build_form4_archive.py` writes `data/form4/filings.parquet` and
-  `data/form4/transactions.parquet` at the same grain `src/db/purchases.py` produces, reusing
-  `src/ingest/edgar.py` and `src/ingest/parser.py` unchanged.
-- Neon keeps its two-year window and its two-year pruning. The product does not change.
-- `scripts/build_research_dataset.py` grows a `--source {db,archive}` flag. The archive path
-  must reproduce the database path on the overlapping window.
-
-**Cost.** Roughly 750k Form 4s at the existing 8 req/sec ceiling, two requests each, is on the
-order of 50 hours of wall clock. Run it in chunks with resumable state, the way `bootstrap.py`
-already handles windows. The price panel must extend to match, which is 1,371 symbols plus
-whatever ten years of history adds, at one request per symbol.
-
-**The survivorship problem gets worse and must be handled, not noted.** Fetching by current
-ticker over ten years misses renames, acquisitions and delistings on a scale two years does
-not. The existing −50% convention is a blunt instrument. At minimum, resolve tickers through
-the EDGAR CIK-to-ticker map *as of the filing date* rather than today, and report the
-unresolved rate per year. If the unresolved rate rises materially in the early years, cap the
-archive at the first year where it stays flat and say so.
-
-**Gate.** Three checks, all falsifiable.
-
-1. On the 2024-08 to 2026-08 overlap, the archive reproduces the database's eligible purchase
-   count within 2% and the shipped screen's selection alpha within 0.5pp.
-2. Predictable months rise from 18 to at least 60 at the 90-day horizon.
-3. The printed MDE from A1 falls below 2.5pp for the insider family.
-
-If check 3 fails, more history alone was not enough and A2 and A3 have to carry the rest.
-
-### Phase A exit
-
-**Re-run the existing `CANDIDATES` dict unchanged, at the new power, and publish the table.**
-No new features. This is the single most important experiment in the document, because it is
-the one that separates "insider attributes carry nothing" from "we were never able to see
-them". Everything in Phase B is contingent on its result.
-
----
+What is still missing before the archive can be scored: `pct_below_52wk_high`, `cap_tier`
+and `is_routine` are all computed at ingest and come back NULL out of the archive. The
+price panel supplies the first and is the next step.
 
 ## 4. Phase B. The non-price metric inventory
 
@@ -714,31 +620,32 @@ and section 2.2 shows why. The stopping rule requires the power to have been bou
 
 ## 8. Risks
 
-**The archive fetch is the biggest new failure mode.** Fifty hours of EDGAR requests against
-an unofficial rate ceiling, feeding a parquet file that every downstream number then depends
-on. Mitigate the way the price panel was mitigated: resumable chunks, a checksum, a committed
-verification script that reproduces the database on the overlap, and no silent refetch.
+**The archive fetch was named here as the biggest new failure mode**, on an estimate of
+fifty hours of EDGAR requests against an unofficial rate ceiling. That risk is retired and
+the estimate was wrong by three orders of magnitude: SEC publishes the same filings as
+quarterly datasets and the decade took 41 requests and 50 seconds. What the entry got right
+is the mitigation, and it was applied. `verify_form4_archive.py` reproduces the database on
+the overlap and `verify_archive_rollup.py` proves the two engines roll purchases up alike.
+**Both caught real bugs that would otherwise have shipped silently**, including a debt
+filter that let $144 trillion through.
 
-**Survivorship gets materially worse over ten years** and A4 names it as a gate rather than a
-note. If it cannot be handled, a shorter archive with an honest unresolved rate beats a longer
-one with an invented one.
+**Survivorship gets materially worse over ten years.** Partly handled: the archive filters
+the universe on the ticker each filing actually carried, not today's index membership, so
+the point-in-time question is at least asked. A delisted issuer that never rejoined is
+still absent.
 
-**Vol-scaling changes the objective, not just the noise.** Section 2.3 measures the discount
-screen losing a point of t under it. Run it as a second label, report both, and never select on
-whichever is kinder.
+**Vol-scaling changes the objective, not just the noise.** Measured now, not predicted: the
+discount screen runs t=+2.39 against SPY and t=+1.95 under the vol label, where tier-1
+insider features sit at t=+1.94. Report both, and never select on whichever is kinder.
 
-**More power finds more spurious effects.** The candidate registry will grow and the
-multiple-comparison budget grows with it. Benjamini-Hochberg across the whole registry per run,
-with the false discovery rate printed, and the `permutation_alpha` price for model search paid
-by every fitted candidate.
+**More power finds more spurious effects.** The registry grows and the multiple-comparison
+budget grows with it. Benjamini-Hochberg across the whole registry per run, with the false
+discovery rate printed, and `permutation_alpha` paid by every fitted candidate.
 
 **Ten years is four regimes, and a factor can work in one.** Report every survivor by
-regime and refuse to ship one whose sign flips. The current plan cannot do this at all, which
-is itself an argument for A4.
+regime and refuse to ship one whose sign flips. Newly possible, and not yet done.
 
-**The apparatus can absorb unlimited effort.** Phase A is four items with four gates and it
-should take days, not weeks. If it starts growing, cut A3 and A4 to the archive alone and run
-the re-run.
+**The apparatus can absorb unlimited effort.** Phase A was meant to take days and did.
 
 ---
 
@@ -790,7 +697,7 @@ Writing a pandas rollup for the archive would create the second one, which is th
 which supports `DISTINCT ON` and the window function it uses, and prove it by comparing both
 paths on the overlap before any number is read off the archive.
 
-Rows A1 through A5 and every B1 item change no stored score. Anything from B3 onward that
+Rows A1 through A6 and every B1 item change no stored score. Anything from B3 onward that
 touches `src/signals/` triggers the golden rule in CLAUDE.md: `pytest`, then
 `backfill_signals.py --days 730 --force`, then `run_backtest.py`.
 
@@ -799,10 +706,10 @@ touches `src/signals/` triggers the golden rule in CLAUDE.md: `pytest`, then
 ## 11. What this plan deliberately does not do
 
 - It does not propose a new weight, threshold or classification rule. Not one.
-- It does not add a feature before A5 has said whether features are visible at all.
+- It does not add a feature before the re-run says whether features are visible at all.
 - It does not touch the alerting path, the dashboard contract, or the `signals` table.
 - It does not move research data into Neon. The price panel precedent holds.
-- It does not treat the shipped discount screen as settled science. A5 re-runs it too.
+- It does not treat the shipped discount screen as settled science; the re-run includes it.
 
 ---
 

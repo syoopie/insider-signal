@@ -149,53 +149,36 @@ The repo is public. `.env` is gitignored and local-only.
 
 ```
 SEC EDGAR XML
-    ↓
-scripts/run_ingest.py                       ← GitHub Actions daily entry point
-    ↓
-src/ingest/edgar.py                         ← fetch accession list + XML
-    _get_filing_list(date)                  ← queries EDGAR full-text search for Form 4s
-    fetch_form4_xml(accession_number)       ← fetches raw XML from EDGAR archives
-    ↓
-src/ingest/parser.py
-    parse_form4(xml_str)                    ← returns {issuer, owner, transactions[]}
-    classify_role(raw_title)                ← keyword-match → cfo/ceo/director/officer/etc.
-    ↓
-src/db/store.py
-    write_filing(cur, filing_meta, parsed)  ← upserts companies, form4_filings, transactions
-    _compute_is_routine(cur, name, cik)     ← checks if insider bought same month ≥2/3 prior yrs
-    ↓  (daily ingest also runs scoring immediately after writing)
-src/signals/scorer.py
-    score_transaction(tx, owner, company,   ← returns {score, breakdown, disqualified}
-                      market_data,
-                      prior_purchases)
-src/signals/cluster.py
-    detect_clusters_for_ticker(ticker, cur) ← finds clusters in 14d window; returns cluster_info
-src/signals/formatter.py
-    build_evidence(tx, company, cluster)    ← assembles JSONB evidence blob
-    ↓
-src/db/store.py
-    batch_save_signals(signals)             ← upserts signals table; deduplicates within cooldown
-    ↓
-[weekly — GitHub Actions Sunday 12pm UTC]
-scripts/refresh_market_caps.py              ← 3-pass EDGAR + YF cap refresh (run before backtest)
-scripts/run_backtest.py
-    src/backtest/engine.py
-        run_backtest(threshold=65,          ← queries signals, fetches historical prices from YF,
-                     lookback_days=730)       computes excess returns vs SPY/IWM
-        save_backtest_results(results)      ← upserts backtest_runs (replaces today's rows
-                                              for this run_label only)
-    ↓
-web/ (Next.js on Vercel)                    ← reads all tables, no writes; read-only
-    ↓  (one exception)
-web/app/api/telegram/webhook/route.ts       ← Telegram calls this on /subscribe, /unsubscribe,
-                                               and group add/remove; writes telegram_subscribers
+  → scripts/run_ingest.py                    daily, GitHub Actions
+  → edgar.fetch_form4_index / fetch_filing_xml
+  → parser.parse_form4                       {issuer, owner, transactions[]}
+  → market.context                           pct_below_52wk_high, stored on the row
+  → store.write_filing                       upserts companies, form4_filings, transactions
+                                             and precomputes is_routine
+  → signals.batch.score_window               shared with backfill_signals.py
+  → signals.cluster.cluster_from_transactions
+  → signals.formatter.build_evidence         the JSONB evidence blob
+  → store.batch_save_signals                 upserts signals, dedupes within the cooldown
+  → alerts.telegram                          BUY and CLUSTER_BUY only
+
+weekly, Sundays:
+  → scripts/refresh_market_caps.py  then  scripts/run_backtest.py
+  → backtest.engine.run_backtest             excess returns vs SPY and IWM
+  → save_backtest_results                    replaces today's rows for this run_label only
+
+web/ (Next.js on Vercel)                     reads every table, writes none
+  except web/app/api/telegram/webhook/route.ts, which writes telegram_subscribers
 ```
 
-**Key constraint**: `web/` never writes to the database, with one deliberate
-exception. The dashboard pages and everything under `lib/` stay read-only; all
-other writes happen through the ingest and backtest scripts. The Telegram
-webhook route is the second writer, isolated on purpose — see "Dashboard
-Routes" below and the comment at the top of the route file.
+**`web/` never writes to the database, with one deliberate exception.** The pages and
+everything under `lib/` stay read-only. The Telegram webhook route is the second writer,
+isolated on purpose, and owns its own client that must not be reused.
+
+**Two paths score purchases and they share every definition.** `run_ingest.py` and
+`backfill_signals.py` both go through `signals/batch.py` for scoring,
+`cluster_from_transactions` for clusters and `db/purchases.py` for the rollup. There is no
+second copy of any of them to keep in sync, and each was extracted after a drifted copy
+caused a real bug.
 
 ---
 
@@ -344,7 +327,7 @@ signal_date     DATE            — the purchase date (tx_rows[0].transaction_da
                                   Look-ahead is avoided in the backtest, not here: exec_date is
                                   derived from evidence.filed_date. See "Signal dating" below.
 score           INT             — 0–100
-signal_type     TEXT            — 'BUY' (≥60), 'WATCH' (45–59 or a weak cluster), 'CLUSTER_BUY', 'LOW'
+signal_type     TEXT            — 'BUY' (≥90), 'WATCH' (70–89 or a weak cluster), 'CLUSTER_BUY', 'LOW'
 cluster_flag    BOOLEAN         — TRUE if ≥3 direct insiders bought in 14d window
 score_breakdown JSONB           — {factor_name: points} e.g. {"role_cfo": 20, "cap_small": 15}
 evidence        JSONB           — full detail: insiders[], cluster{}, company context, filed_date
@@ -469,185 +452,85 @@ GitHub secret; the workflows pass `TELEGRAM_BOT_TOKEN` and nothing else, because
 
 ## Scoring Logic
 
-**Before changing any weight in this section, read
-[`docs/scoring-improvement-plan.md`](docs/scoring-improvement-plan.md), especially section 7a.**
+[`docs/scoring.md`](docs/scoring.md) is the account of the model and why it has one
+factor. This section is the rules an agent must not break.
 
-**Before proposing a new factor, read [`docs/beyond-price.md`](docs/beyond-price.md).**
-Three things in it govern any scoring work.
+**Three rules govern any scoring work, and each was learned by breaking it.**
 
-**The ruler resolves about 3.4 to 3.9pp of selection alpha.** `hillclimb.py --mde` prints it,
-from the spread of the same fit under labels shuffled inside each month. Every insider feature
-ever tested landed between +0.3pp and +3.5pp, so those runs could not tell a real effect from
-zero. A candidate under the resolution reports `BELOW RESOLUTION`, not a failure, and `noise`
-scoring +2.19 at t=+2.15 in the same run is why that distinction is not pedantry.
+1. **Ask what the ruler can resolve before believing a result.** `hillclimb.py --mde`
+   prints it, currently 3.4 to 3.9pp of selection alpha for a ranking. Every insider
+   feature ever tested landed between +0.3 and +3.5pp, so those runs could not tell a real
+   effect from zero. A candidate under the resolution reports `BELOW RESOLUTION`, not a
+   failure. In the same run `noise` scored +2.19 at t=+2.15, which is why that distinction
+   is not pedantry.
+2. **Ask about exclusions before rankings.** `scripts/gates.py` measures whether dropping a
+   class raises what is left. It spends every row instead of a 37-row decile, so it
+   resolves 0.2 to 0.8pp. That is also the shape the evidence says the Form 4 has: the
+   placebo control says the filing supplies the median while insider attributes fail to
+   order the discounted set.
+3. **Do not add a factor only one path can compute.** Store its input at ingest instead.
+   The deleted 52-week-low factors fired only in the live path, so the same purchase scored
+   up to 12 points apart depending on which entry point saw it, and they compared against
+   *today's* low rather than the low as of the trade.
 
-**Ask about exclusions before rankings.** `scripts/gates.py` measures whether dropping a class
-raises what is left, using every row instead of a 37-row decile, so it resolves 0.2 to 0.8pp.
-That is also the shape the evidence says the Form 4 has: the placebo control says the filing
-supplies the median while insider attributes fail to order the discounted set. Hypotheses go
-in `src/research/gates.py`, never in the harness.
+Hypotheses go in `src/research/candidates.py` and `src/research/gates.py`, never in the
+harness. Changing `src/research/walkforward.py` invalidates every number it has printed.
+Do not change a weight without re-running `scripts/build_price_panel.py`,
+`build_research_dataset.py`, then `scripts/hillclimb.py`.
 
-**The research sample slid rather than growing, and the archive is the fix.**
-`prune_old_data` runs inside the daily ingest, so Neon holds a fixed window and the ruler sat
-at about 16 predictable months forever. `scripts/build_form4_archive.py` has now been run:
-`data/form4/` holds **901,760 filings and 1,513,233 transactions from 2016-01-04 to
-2026-03-31**, against the database's 121,570 over the same dates. 87.75% of it is filings the
-database never ingested. `verify_form4_archive.py` passes on the overlap, with purchase value
-within 1.43%.
+### Hard disqualifiers (checked in order, early-exit with score 0)
 
-It is built from **SEC DERA's quarterly Form 3/4/5 datasets**, one zip per quarter, not by
-fetching filings one at a time. The per-filing path costs three requests for anything older
-than a year, because the submissions API has aged the filing out and `fetch_filing_xml` falls
-back to scraping the index page; that amplification put a 9 req/sec budget over EDGAR's limit
-and earned a 429 twenty-two minutes in. DERA is 41 requests and finishes in **50 seconds**.
-`src/ingest/dera.py` carries the equivalence check against EDGAR's daily index.
+1. `transaction_code != 'P'` — not an open-market purchase
+2. `is_10b51 = TRUE` — pre-arranged plan, zero alpha (Cohen et al.)
+3. `total_value < $2,000` — DRIP, fractional and payroll noise
+4. `is_routine = TRUE`, or a live calc showing ≥2 same-month purchases in 3 prior years
 
-The weights below were set by univariate lift measured on a sample the model itself selected,
-with no holdout. The score has a *theoretical maximum of 61* against a BUY threshold of 60,
-so it is a four-factor conjunction rather than a ranking.
+### The score is one factor
 
-A full replacement attempt ran on 2026-08-30 and produced a null result, and then the
-evaluation that produced it turned out to be the problem. **`scripts/hillclimb.py` is now
-the ruler.** Its predecessor split the history once and tested on 762 rows across three
-months, 77% of them inside a single month whose mean excess return was +10.7%, against a
-random baseline drawn once from a fixed seed. `src/research/walkforward.py` refits every
-month on holds that had already closed, judges each pick against the other purchases of its
-own month and its own volatility quintile, tests the median as well as the mean, and prices
-the model search itself by permuting labels and re-running the whole fit.
+`score = discount_score(transactions.pct_below_52wk_high, reference)` — how far below its
+52-week high the stock sat on the purchase date, as a percentile among purchases disclosed
+in the preceding 30 days (`store.get_discount_reference`). 0 to 100, monotone, no other
+term.
 
-Measured that way, over 18 months and 6,690 out-of-sample rows at 90d:
+- Below 120 reference purchases the purchase is **unranked and scores 0**. It does *not*
+  fall back to the fixed table: over 18 months the four picks that came from the fallback
+  averaged −34.07pp against the ranked picks' +15.59pp.
+- The reference must be *relative*. A fixed cutoff does not select a fixed fraction, and
+  the first version fired on 2.0% of one month's purchases and 23.7% of another's.
+- **`backfill_signals.py --days 730 --force` zeroes the oldest week of signals.**
+  `prune_old_data` deletes the filings a purchase would be ranked against, so
+  `get_discount_reference` cannot reach 120 rows at the leading edge. Correct, and still a
+  surprise. `verify_scoring_parity.py` excludes that edge for the same reason.
+- Every other factor (`role_*`, `cap_*`, `holdings_increase_5pct`, `indirect_purchase`,
+  `sequenced_buying_30d`, `prior_purchase_31_365d`, `first_purchase_12mo`,
+  `first_purchase_unverifiable`) is still emitted into `score_breakdown` **at 0 points**,
+  because the dashboard displays them. They do not rank. Timing factors remain mutually
+  exclusive, one per signal.
+- **Scores are a pure function of stored data.** Nothing in `score_transaction` reads a
+  live price. `pct_below_52wk_high` is fetched once at ingest by `src/market/context.py`.
+  The trailing reference is point-in-time: it holds only filings dated on or before the
+  purchase being scored, so a future filing cannot change a past score.
 
-- **The shipped score is a coin flip.** +0.78pp risk-matched selection alpha, t=+0.40,
-  permutation p=0.27. It does not rank: rank IC +0.016.
-- Of the four load-bearing factors, `role_director`, `holdings_increase_5pct` and
-  `prior_purchase_31_365d` are indistinguishable from zero, and `cap_small` has the opposite
-  sign to its +15 weight.
-- **One thing does work.** How far below its 52-week high a stock sat when the insider
-  bought gives +11.13pp, t=+2.29, median +7.39pp, p<1/5000. It survives all four horizons,
-  three selectivity levels, both subperiods, one-vote-per-ticker, a survivorship patch and a
-  ticker-amputation control. See `docs/scoring-improvement-plan.md` section 7b.
-- The effect is a **threshold, not a ranking**. Within-month deciles 1 to 9 are flat with
-  negative medians; decile 10 alone returns +17.5% mean and +6.6% median. Every
-  rank-transformed linear model therefore scores zero.
-- **Insider detail degrades the price screen.** Adding the current score inside the discount
-  gate drops it to +7.62, tier-1 features drop it to +6.80, and inside the most discounted
-  third the number of cluster buyers points the wrong way at −4.53, t=−1.85.
-
-**This shipped on 2026-08-30.** `src/signals/discount.py` is the model, `src/market/context.py`
-fetches the input once at ingest, and `transactions.pct_below_52wk_high` stores it so both the
-live path and `backfill_signals.py` read one number. That storage is what makes the factor
-legal under the rule below; computing it at scoring time is what made the old 52-week factors
-score the same purchase 12 points apart.
-
-**Do not change a weight without re-running the harness.** `scripts/build_price_panel.py`,
-`build_research_dataset.py`, then `scripts/hillclimb.py`. Register a hypothesis in
-`src/research/candidates.py`; changing `src/research/walkforward.py` invalidates every
-number the harness has printed. And do not trust any factor derived from what the database
-can see: `stable_features` exists because `first_purchase_12mo` never fires in the training
-window and fires on 46% of the validation one, purely because of when ingest started.
-
-### Hard Disqualifiers (checked in order, early-exit with score=0)
-
-1. `transaction_code != 'P'` → not an open-market purchase, skip entirely
-2. `is_10b51 = TRUE` → pre-arranged 10b5-1 plan; zero alpha (Cohen et al.)
-3. `total_value < $2,000` → trivial noise (DRIP/401k/fractional reinvestment)
-4. `is_routine = TRUE` (or live calc shows ≥2 of 3 prior same-month purchases) → disqualified
-
-### The Score (one factor)
-
-`score = discount_score(transactions.pct_below_52wk_high, reference)` — how far below
-its 52-week high the stock sat on the day the insider bought, as a **percentile among
-the purchases disclosed in the preceding 30 days**
-(`store.get_discount_reference`). 0 to 100, monotone, no other term. Below 120
-reference purchases it is left **unranked and scores 0**, and is never alerted. It does
-*not* fall back to the fixed table: the two rules disagree, and over 18 months the four
-picks that came from the fallback averaged −34.07pp against the ranked picks' +15.59pp.
-
-This bites at the leading edge of the retained window. `prune_old_data` deletes the
-filings a purchase would be ranked against, so `get_discount_reference` returns 4 rows at
-the earliest stored filing and does not reach 120 for about a week. Those purchases
-rescore to 0 even though they scored 98 on the day they were filed.
-**`backfill_signals.py --days 730 --force` will therefore zero out the oldest week of
-signals**, which is correct behaviour and still a surprise. `verify_scoring_parity.py`
-excludes that edge for the same reason.
-
-**The reference must be relative, and this was learned the hard way.** The first
-version ranked against a fixed two-year table, and a fixed cutoff does not select a
-fixed fraction: the market moves every stock's discount together, so it fired on 2.0%
-of one month's purchases and 23.7% of another's, reaching past the top decile into the
-nine flat ones. Measured over 18 months, top decile, risk matched:
-
-| rule | mean | median |
-|---|---|---|
-| fixed table, `score >= 90` | +4.19pp | **−2.33pp** |
-| trailing 30d, `score >= 90` | +9.92pp | +5.77pp |
-| top 10% of the month (unreachable ceiling) | +11.10pp | +7.38pp |
-
-Window length was chosen on a mechanism, not a maximum. The rule being approximated is
-"top decile of the current cross-section", so the test is what share of each month
-clears the cutoff; it should be a tenth. That share narrows monotonically as the window
-shortens, 20.7 points of spread at 400 days down to 12.6 at 14, and the returns follow
-it. 30 days rests on 424 reference purchases and is the shortest window that never
-leaves a month with no signals at all; 14 and 21 days both do.
-
-| Condition | Score |
-|---|---|
-| at its 52-week high | 0 |
-| the median recent purchase | 50 |
-| top 30% of recent purchases | 70 — WATCH |
-| top 10% of recent purchases | 90 — BUY, where the effect lives |
-| no 52-week high (under 200 bars) | 0, never alerted |
-
-**The former factor table now scores zero.** `role_*`, `cap_*`,
-`holdings_increase_5pct`, `indirect_purchase`, `sequenced_buying_30d`,
-`prior_purchase_31_365d`, `first_purchase_12mo` and `first_purchase_unverifiable`
-are still emitted into `score_breakdown` at 0 points, because they describe a filing
-and the dashboard shows them. They do not rank it. Measured walk-forward the whole
-table returned +0.78pp of selection alpha at a permutation p of 0.27, and adding it
-back as a tiebreak drops the result from +11.13pp to +7.62pp.
-
-**Timing factors are still mutually exclusive** — exactly one of
-`sequenced_buying_30d`, `prior_purchase_31_365d`, `first_purchase_12mo` or
-`first_purchase_unverifiable` appears per signal, and `first_purchase_12mo` still
-needs `history_start` to be a full year back or it becomes a fact about the ingest
-start date rather than about the insider.
-
-**Scores are a pure function of stored data.** Nothing in `score_transaction` reads
-a live price. `pct_below_52wk_high` is fetched once at ingest by
-`src/market/context.py` and stored on the transaction row, which is the *only* reason
-a price factor is allowed here at all. The trailing reference is also stored data, and
-it is point-in-time: the window holds only filings dated on or before the purchase
-being scored, so a future filing can never change a past score. The old 52-week-low factors (+12 / +7) were
-deleted because they fired only in the live path, so the same purchase scored up to
-12 points apart depending on which entry point saw it, and they compared against
-*today's* low rather than the low as of the trade. **Do not add a factor only one
-path can compute — store its input at ingest instead.**
-
-### Signal Classification (`classify_signal()`)
+### Signal classification (`classify_signal()`)
 
 ```
 cluster_flag=True:
     avg(participant_scores) >= 80 AND (tight_cluster OR max_score >= 85) → CLUSTER_BUY
     otherwise                                                            → WATCH
 no cluster:
-    score >= 90                  → BUY    (the top decile of discount)
+    score >= 90                  → BUY
     score >= 70                  → WATCH
-    score < 70                   → LOW
+    score <  70                  → LOW
 ```
 
-**The large-cap downgrade is not in `classify_signal()`.** Both callers
-(`run_ingest.py` and `backfill_signals.py`) apply it themselves right after the
-call: `CLUSTER_BUY` + `cap_tier == 'large'` → `WATCH` (0% hit rate at 90d, −16%
-avg excess). Anything that classifies signals must do the same or it will
-disagree with the stored data.
+The cluster bar uses the **average** of participant scores, so it asks whether the group as
+a whole was buying weakness. Cluster size alone promotes nothing: inside the most
+discounted third, the number of cluster buyers points the wrong way at −4.53pp, t=−1.85.
 
-The cluster uses the **average** of all participant scores, not the max, so the
-bar asks whether the group as a whole was buying weakness rather than whether one
-member of it was. A cluster that does not clear it is surfaced as WATCH and never
-alerted. Cluster size alone no longer promotes anything: inside the most
-discounted third of purchases the number of cluster buyers points the wrong way at
-−4.53pp with t=−1.85, so three insiders buying a stock at its 52-week high is a
-WATCH.
+**The large-cap downgrade is not in `classify_signal()`.** Both callers (`run_ingest.py`
+and `backfill_signals.py`) apply it right after the call: `CLUSTER_BUY` + `cap_tier ==
+'large'` → `WATCH`, on a measured 0% hit rate at 90d. Anything that classifies signals must
+do the same or it will disagree with the stored data.
 
 ---
 
@@ -867,64 +750,17 @@ uv run python scripts/run_backtest.py --label adjclose-check
 
 ---
 
-## Current DB State (as of 2026-05-25)
+## Where the numbers live
 
-- **Filings**: ~153,602 (2024-04-03 → present)
-- **P transactions (non-10b5-1)**: ~12,676
-- **Signals**: ~2,574 total (70 BUY, 349 CLUSTER_BUY, 2,155 WATCH + LOW)
-- **Companies with market_cap**: ~1,488 / 2,119 (631 still unknown → scored at +5)
-- **is_routine**: 406 routine / 10,788 opportunistic / 2,917 NULL (legacy, falls back to live calc)
-- **Coverage gap**: April 2024 start is thin (~643 filings vs 3,712+ in May 2024); October 2025 gap was filled by bootstrap re-run
+**This file is reference. It says what is true, not how it was found.** Measured
+results, dated, with the runs behind them, live in
+[`docs/scoring-improvement-plan.md`](docs/scoring-improvement-plan.md) sections 7a and 7b
+and [`docs/beyond-price.md`](docs/beyond-price.md) section 0a. A finding belongs there and
+a rule belongs here. Counts of rows in Neon belong in neither: they are stale the day
+after they are written, and `scripts/audit_data.py` prints them on demand.
 
-**Backtest, old model vs shipped, same script one day apart (2026-08-29 / 2026-08-30).**
-Only the scoring model differs; the lookback, the price data and the market period are
-the same.
-
-| Horizon | old avg | new avg | old median | new median | old hit | new hit | old sharpe | new sharpe |
-|---|---|---|---|---|---|---|---|---|
-| 30d | +4.48% | +4.36% | +1.10% | +1.28% | 55.0% | 53.9% | 0.57 | **0.60** |
-| 60d | +7.04% | **+9.05%** | +1.10% | +1.02% | 52.6% | 52.3% | 0.35 | **0.53** |
-| 90d | +7.12% | **+13.63%** | −0.90% | **−1.48%** | 48.3% | 48.5% | 0.32 | **0.45** |
-| 180d | +16.57% | **+30.45%** | +0.44% | **+9.05%** | 50.6% | **55.3%** | 0.31 | **0.51** |
-
-**This is a mixed result on this metric and the 90d pooled median is negative under both
-models.** Means and information ratios improve at every horizon past 30d, 180d improves
-on every column, and 30d is a wash. But the 90d pooled median got *worse*, and the
-60d median is flat.
-
-**`run_backtest.py` is not the ruler and this is why.** It pools every signal across 22
-months into one median, so that number answers "what did a basket bought across 2024-2026
-return" and moves with which months the model happened to fire in. `hillclimb.py` compares
-each pick against the other purchases of its own month and its own volatility quintile,
-which is the question the model is selected on. Measured *within* month on this same
-backtest output, restricted to months with ≥5 signals:
-
-| Horizon | months | shipped beats old | old mean-of-medians | shipped mean-of-medians | old months positive | shipped |
-|---|---|---|---|---|---|---|
-| 30d | 16 | 11 | −0.46% | **+0.97%** | 8 | **11** |
-| 60d | 16 | 7 | +1.16% | +0.57% | 7 | 8 |
-| 90d | 15 | 6 | +0.89% | **+3.40%** | 6 | **8** |
-| 180d | 12 | 8 | −0.52% | **+10.19%** | 5 | **8** |
-
-At 90d the shipped model wins fewer months but wins them much larger — a fat-tailed
-improvement, not a broad one. 60d is the one horizon where it is genuinely no better.
-
-An earlier run on 2026-08-30 recorded +15.29%/+2.62% at 90d and +34.96%/+13.84% at 180d.
-**Those numbers are gone and must not be quoted.** They came from the fixed-table cutoff,
-which was replaced by the 30-day trailing reference the same day; `save_backtest_results`
-overwrote them because both ran under `run_label='scheduled'` on the same date. That the
-replaced rule scored *better* on the pooled median while scoring +4.19/−2.33 on the
-pre-registered within-month ruler (against the shipped rule's +9.92/+5.77) is the
-clearest available demonstration that the pooled median is not a model-selection metric.
-
-n differs between the runs (333 vs 388 at 90d) because the two models select different
-signals, and one day of new filings sits between them.
-
-Best single outcome under the shipped model: RLMD, which is *both* the best and the worst
-180d outcome (+541% and −91%) on different entry dates. That is the shape of the strategy.
-Deeply discounted stocks have fat tails in both directions, which is why the median and
-the hit rate are quoted beside every mean here and why `hillclimb.py` tests the median as
-a pre-registered bar.
+The old-versus-shipped backtest comparison used to be copied out here in full. It is in
+`scoring-improvement-plan.md` section 7b, once.
 
 ---
 
@@ -1007,7 +843,7 @@ a pre-registered bar.
 
 - **Never** commit `.env`, `secrets.toml`, or any credential file. The repo is public.
 - **Never** use `get_conn()` outside a `with` block — the context manager handles commit/rollback/close.
-- **Never** change the cluster threshold (14d, 3 insiders), BUY threshold (60), cluster avg (22), or cluster max_score (30) without re-running the full backfill — every signal in the DB would be stale.
+- **Never** change the cluster threshold (14d, 3 insiders), the BUY threshold (90), the cluster average (80) or the cluster max_score (85) without re-running the full backfill — every signal in the DB would be stale. These live in `src/signals/constants.py`; read them there rather than trusting a number written in prose, including this one.
 - **Never** add `ORDER BY RANDOM()` or non-deterministic queries to backfill — idempotency depends on deterministic processing order.
 - **Never** call `get_market_data()` in the backfill script — it fetches live prices which don't represent historical cap tiers. Use `tx.get("cap_tier")` from the companies join instead.
 - **Never** write to the DB from `web/` pages or `lib/` — read-only, `lib/db.ts` exposes reads only. The lone exception is `app/api/telegram/webhook/route.ts`, which owns its own write client and must not be reused elsewhere.

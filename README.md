@@ -69,15 +69,16 @@ anything is scored.
 
 ## Documentation
 
-| Document | What's In It |
+| Document | What's in it |
 |---|---|
-| [docs/setup.md](docs/setup.md) | Setup guide, bootstrap instructions, verification steps |
-| [docs/scoring.md](docs/scoring.md) | Disqualifiers, every scoring factor, signal thresholds |
-| [docs/architecture.md](docs/architecture.md) | System diagram, data flow, database schema, cost breakdown |
-| [docs/research.md](docs/research.md) | Academic basis for each factor, backtest methodology, factors deliberately not implemented |
-| [docs/faq.md](docs/faq.md) | Common questions about the system and its day-to-day operation |
-| [docs/web-migration.md](docs/web-migration.md) | How the dashboard moved from Streamlit to Next.js, and why |
-| [docs/scoring-improvement-plan.md](docs/scoring-improvement-plan.md) | Why the current weights cannot be trusted, and the staged plan to re-derive them |
+| [docs/setup.md](docs/setup.md) | Setup, bootstrap, verification |
+| [docs/scoring.md](docs/scoring.md) | Disqualifiers, the one scoring factor, signal thresholds |
+| [docs/architecture.md](docs/architecture.md) | Plain-language overview, free-tier limits, glossary |
+| [docs/research.md](docs/research.md) | What each rule rests on, and what was measured away |
+| [docs/faq.md](docs/faq.md) | Common questions about day-to-day operation |
+| [docs/web-migration.md](docs/web-migration.md) | How the dashboard moved from Streamlit to Next.js |
+| [docs/scoring-improvement-plan.md](docs/scoring-improvement-plan.md) | Round 7. How the old weight table was disproved and the price screen found. Sections 7a and 7b are the evidence the code cites |
+| [docs/beyond-price.md](docs/beyond-price.md) | Round 8, current. Why the search for non-price metrics was underpowered, and what buying power found |
 | [scripts/README.md](scripts/README.md) | When to run each script |
 | [web/README.md](web/README.md) | Local dev, environment variables, deployment |
 | [CLAUDE.md](CLAUDE.md) | Authoritative reference for AI agents working on this codebase |

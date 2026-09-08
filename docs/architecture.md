@@ -1,226 +1,82 @@
 # Architecture
 
-## System Diagram
+The plain-language overview, for a reader who has not opened the code.
+**`CLAUDE.md` owns the data flow, the project layout and the database schema.** They used
+to be repeated here as well, which meant two copies drifting apart, and this file was the
+one that went stale.
+
+## System diagram
 
 ```
 SEC EDGAR (government website, free public data)
         │
-        │  Every weekday at 6 AM ET
+        │  Every weekday at 11:00 UTC
         ▼
 GitHub Actions (free scheduled compute)
-  ├── Fetch new Form 4 filings from EDGAR API
-  ├── Filter to S&P 500 + Russell 2000 universe
+  ├── Fetch new Form 4 filings from EDGAR
+  ├── Filter to the S&P 500 + Russell 2000 universe
   ├── Parse XML → insider, role, shares, price, 10b5-1 flag
   ├── Score each open-market purchase (0–100)
   ├── Detect cluster signals (3+ buyers, 14-day window)
-  └── Send Telegram alerts for BUY / CLUSTER_BUY signals
+  └── Send Telegram alerts for BUY / CLUSTER_BUY
         │
         ▼
 Neon PostgreSQL (free cloud database)
         │
         ▼
-Next.js Dashboard on Vercel (free hosted web app, read-only)
-Telegram Bot (free, sends alerts to phone)
+Next.js dashboard on Vercel (read-only)   +   Telegram bot
 ```
 
 **Total monthly cost: $0.**
 
----
+## Free tier limits
 
-## Data Flow Detail
-
-### Daily Ingest (weekdays, 6 AM ET)
-
-1. Connect to Neon; find the most recent `filed_date` already stored
-2. Fetch all Form 4s filed since that date from EDGAR full-text search
-3. Filter to tickers in the tracked universe (`data/tickers.txt`)
-4. Fetch and parse each filing XML in parallel (ThreadPoolExecutor)
-5. Write new companies, filings, and transactions to Neon sequentially (psycopg2 is not thread-safe)
-6. For each ticker with recent purchases: fetch market cap + 52-week low via Yahoo Finance
-7. Score each open-market purchase; detect cluster signals per ticker
-8. Write signals to the `signals` table
-9. Send Telegram alerts for BUY and CLUSTER_BUY signals
-10. Commit `last_run.txt` to the repo — prevents GitHub from disabling the workflow after 60 days of no code activity
-11. On any crash: error handler sends a Telegram message immediately — failures are never silent
-
-### Weekly Backtest (Sundays, noon UTC)
-
-1. Pull all BUY / CLUSTER_BUY signals with `signal_date ≥ 1 year ago`
-2. For each signal: fetch stock price at `signal_date + 3 days` (execution lag) and at +30, +60, +90, +180 days
-3. Fetch SPY return over the same windows as benchmark
-4. Compute hit rate, avg excess return, and Sharpe per horizon
-5. Write results to `backtest_runs`; displayed on the dashboard's `/backtest` page
-
-### Cache refresh (after each successful ingest)
-
-The daily ingest job POSTs to the dashboard's `/api/revalidate` endpoint so the
-new signals appear immediately rather than after the normal 15-minute cache
-expiry. The step is optional, never fails the run, and is skipped when
-`REVALIDATE_URL` is not configured.
-
-There is no keep-alive job. Vercel does not sleep. Neon still scales to zero
-after a few minutes idle, so the first query after a quiet period is slow — a
-periodic ping would not reliably prevent that and is not worth the workflow.
-
----
-
-## Project Structure
-
-```
-insider-signal/
-├── .github/
-│   └── workflows/
-│       ├── daily_ingest.yml        # Weekdays 6 AM ET
-│       ├── weekly_backtest.yml     # Sundays noon UTC
-│       └── bootstrap.yml           # Manual only
-├── src/
-│   ├── db/
-│   │   ├── connection.py           # Neon connection (direct)
-│   │   └── schema.sql              # Table definitions
-│   ├── ingest/
-│   │   ├── common.py               # Shared logging utilities
-│   │   ├── edgar.py                # EDGAR API client (rate-limited, 8 req/sec)
-│   │   ├── parser.py               # Form 4 XML parser + role classifier
-│   │   └── store.py                # Database write logic (upserts)
-│   ├── signals/
-│   │   ├── scorer.py               # Scores each transaction 0–100
-│   │   ├── cluster.py              # Detects 3+ insider buys in 14-day window
-│   │   └── formatter.py            # Builds human-readable evidence text
-│   ├── alerts/
-│   │   └── telegram.py             # Formats and sends Telegram messages
-│   ├── market/
-│   │   └── prices.py               # Yahoo Finance: market cap + 52-week low
-│   └── backtest/
-│       └── engine.py               # Historical signal accuracy validation
-├── web/                            # Next.js dashboard on Vercel (read-only)
-│   ├── app/                        # Routes: / /backtest /clusters /sectors /ticker
-│   ├── components/                 # UI, charts, tables
-│   └── lib/queries/                # One typed query module per concern
-├── scripts/
-│   ├── bootstrap.py                # One-time historical data loader
-│   ├── run_ingest.py               # Daily ingest entrypoint
-│   ├── run_backtest.py             # Weekly backtest entrypoint
-│   ├── backfill_sic.py             # Fills industry codes from EDGAR (for /sectors)
-│   └── update_tickers.py           # Refreshes S&P 500 + Russell 2000 universe
-├── docs/
-│   ├── scoring.md                  # Scoring algorithm and factor table
-│   ├── setup.md                    # One-time setup guide
-│   ├── architecture.md             # This file
-│   ├── faq.md                      # Common questions
-│   └── research.md                 # Academic references
-├── data/
-│   └── tickers.txt                 # Tracked ticker universe (~3,500)
-├── pyproject.toml                  # Python package + pipeline deps (managed by uv)
-└── uv.lock                         # Pinned dependency lockfile
-```
-
----
-
-## Database Schema
-
-```sql
-CREATE TABLE companies (
-    cik         TEXT PRIMARY KEY,
-    ticker      TEXT,
-    name        TEXT,
-    sic_code    TEXT,
-    market_cap  BIGINT,         -- refreshed on ingest when new purchases appear
-    cap_tier    TEXT            -- 'small', 'mid', 'large'
-);
-
-CREATE TABLE form4_filings (
-    id               SERIAL PRIMARY KEY,
-    accession_number TEXT UNIQUE,
-    cik              TEXT REFERENCES companies(cik),
-    filed_date       DATE,
-    period_date      DATE,
-    fetched_at       TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE transactions (
-    id               SERIAL PRIMARY KEY,
-    filing_id        INT REFERENCES form4_filings(id),
-    insider_name     TEXT,
-    insider_role     TEXT,       -- raw title from filing
-    role_category    TEXT,       -- 'cfo','director','officer','ceo','other'
-    transaction_date DATE,
-    transaction_code TEXT,       -- P, S, A, D, V, etc.
-    shares           NUMERIC,
-    price_per_share  NUMERIC,
-    total_value      NUMERIC,
-    shares_after     NUMERIC,
-    is_10b51         BOOLEAN DEFAULT FALSE,
-    is_direct        BOOLEAN DEFAULT TRUE
-);
-
-CREATE TABLE signals (
-    id              SERIAL PRIMARY KEY,
-    ticker          TEXT,
-    signal_date     DATE,
-    score           INT,
-    signal_type     TEXT,       -- 'BUY','WATCH','CLUSTER_BUY','LOW'
-    cluster_flag    BOOLEAN DEFAULT FALSE,
-    score_breakdown JSONB,      -- factor → points breakdown
-    evidence        JSONB,      -- full evidence for dashboard display
-    alerted         BOOLEAN DEFAULT FALSE,
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE backtest_runs (
-    id           SERIAL PRIMARY KEY,
-    run_date     DATE,
-    threshold    INT,
-    horizon_days INT,
-    n_trades     INT,
-    hit_rate     NUMERIC,
-    avg_return   NUMERIC,
-    sharpe       NUMERIC,
-    metrics      JSONB,
-    created_at   TIMESTAMPTZ DEFAULT now()
-);
-```
-
----
-
-## Free Tier Limits
-
-| Component | Service | Free Limit | Actual Usage |
+| Component | Service | Free limit | Actual usage |
 |---|---|---|---|
 | Compute + scheduler | GitHub Actions | Unlimited (public repo) | ~150 min/month |
-| Database | Neon PostgreSQL | 0.5 GB | ~160 MB at steady state |
+| Database | Neon PostgreSQL | 0.5 GB | ~200 MB at 48-month retention |
 | Dashboard | Vercel Hobby | 100 GB bandwidth/month | Well under |
 | Alerts | Telegram Bot API | Unlimited | 1–5 messages/day |
-| Market data | Yahoo Finance (via yfinance) | Informal, unlimited | ~50–100 tickers/day |
-| Filing data | SEC EDGAR API | Public, unlimited | ~500 requests/day |
+| Market data | Yahoo Finance | Informal, unlimited | ~50–100 tickers/day |
+| Filing data | SEC EDGAR | Public, unlimited | ~500 requests/day |
 
-**Storage estimate:** ~400 transactions/day × 2 years × ~500 bytes/row ≈ 150 MB. Signals + backtest + companies ≈ 10 MB. A monthly pruning job in the ingest workflow removes transactions older than 2 years.
+`prune_old_data` runs inside the daily ingest and deletes filings older than
+`store.RETENTION_MONTHS`, which is 48. That window is set by the routine check's own
+three-year lookback, not by taste, and it roughly doubled storage from the 24-month era.
+Re-check the headroom above before raising it again.
 
----
+Research history reaches further back than the database does. `data/form4/` holds a local
+parquet archive built from SEC's quarterly datasets, and it is deliberately not in Neon.
 
-## Key Terms
+## Key terms
 
-**SEC** — Securities and Exchange Commission. The US government agency that requires company insiders to disclose stock trades.
+**SEC** — the US agency that requires company insiders to disclose their stock trades.
 
-**Form 4** — The SEC disclosure form that insiders must file within 2 business days of any transaction. Contains: who traded, what, how many shares, price, and whether it was a pre-arranged plan.
+**Form 4** — the disclosure an insider files within two business days of a transaction. Who
+traded, what, how many shares, at what price, and whether it was a pre-arranged plan.
 
-**EDGAR** — The SEC's public filing database. All Form 4s are freely accessible at sec.gov.
+**EDGAR** — the SEC's public filing database. Every Form 4 is free at sec.gov.
 
-**GitHub Actions** — Free scheduled compute included with every GitHub account. Runs the daily ingest and weekly backtest on a cron schedule.
+**Open-market purchase** — an insider buying through a broker at the market price with
+their own cash. Transaction code `P`, and the only type scored.
 
-**Neon** — Free cloud-hosted PostgreSQL. Scale-to-zero (spins down when idle) — all scheduling is handled by GitHub Actions, never by in-database cron.
+**10b5-1 plan** — a legal arrangement scheduling trades months ahead. Measured at zero
+predictive alpha, so these are disqualified before scoring.
 
-**Next.js / Vercel** — The dashboard is a Next.js app in `web/`, hosted free on Vercel. It reads the same Neon database over Neon's HTTP driver and never writes to it.
+**Routine vs opportunistic** — routine is an insider who buys the same calendar month year
+after year, which is mechanical. Opportunistic is a buy on a specific view. Cohen, Malloy &
+Pomorski (2012) find roughly 9.8%/yr for opportunistic and about 0% for routine.
 
-**10b5-1 Plan** — A legal arrangement where an insider pre-schedules future trades months in advance. Research shows these have zero predictive alpha — they're disqualified before scoring.
+**Cluster signal** — three or more insiders at one company buying within 14 days. Long
+treated as the strongest signal here; measured on this data it does not order returns, and
+inside the most discounted third of purchases it points the wrong way. It changes how a
+signal is classified and adds no points.
 
-**Open-market purchase** — An insider buying stock through a broker at the current market price, with their own cash. The only transaction type scored for buy signals. Transaction code `P` in Form 4.
+**Alpha** — return above what the broad market earned over the same period.
 
-**Cluster signal** — 3 or more insiders from the same company independently buying stock within a 14-day window. The strongest single classification signal in the research.
+**Basis points** — hundredths of a percent. 82 bps = 0.82%.
 
-**Alpha** — Returns above what the broad market (S&P 500 / SPY) earns over the same period.
+**Market cap tiers** — small under $2B, mid $2B–$10B, large over $10B.
 
-**Basis points** — Hundredths of a percent. 82 basis points = 0.82% per month.
-
-**Market cap tiers** — Small-cap: under $2 billion. Mid-cap: $2B–$10B. Large-cap: over $10B.
-
-**Routine vs. opportunistic trade** — Routine: an insider who buys in the same calendar month year after year (mechanical). Opportunistic: a buy triggered by a specific view of the company's value. Research (Cohen, Malloy & Pomorski 2012) shows opportunistic trades earn ~9.8%/yr; routine trades earn ~0%.
+**Neon** — free hosted PostgreSQL that scales to zero when idle, which is why all
+scheduling is GitHub Actions and never in-database cron.
