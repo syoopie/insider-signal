@@ -99,7 +99,7 @@ uv run python scripts/bootstrap.py --days 730   # seed historical filings
 See [docs/setup.md](docs/setup.md) for the full guide. At a high level:
 
 1. Push this code to a public GitHub repo.
-2. Add three GitHub Secrets: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+2. Add two GitHub Secrets: `DATABASE_URL` and `TELEGRAM_BOT_TOKEN`.
    Use Neon's **direct** URL, not the pooled one.
 3. Deploy `web/` to Vercel with **Root Directory = `web`** and its own `DATABASE_URL`.
 4. Bootstrap locally to seed history.

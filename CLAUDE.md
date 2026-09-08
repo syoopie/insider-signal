@@ -435,9 +435,11 @@ Written only by `web/app/api/telegram/webhook/route.ts` (`/subscribe`, `/start`,
 `/unsubscribe`, `/stop`, and Telegram's `my_chat_member` update for the bot being
 added to or removed from a group). Read only by
 `src/db/store.get_active_telegram_subscribers()`, which `src/alerts/telegram._send()`
-fans every alert out to. `scripts/seed_telegram_subscriber.py` inserts the legacy
-`TELEGRAM_CHAT_ID` once, so migrating off the env var doesn't go dark for the one
-person already subscribed.
+fans every alert out to. `scripts/seed_telegram_subscriber.py` inserts a
+`TELEGRAM_CHAT_ID` once, so a fresh deploy does not go dark before anyone has
+subscribed. That variable is local-only as of 2026-09-08 and is no longer a
+GitHub secret; the workflows pass `TELEGRAM_BOT_TOKEN` and nothing else, because
+`_send()` reads the token and gets every recipient from the table.
 
 ---
 

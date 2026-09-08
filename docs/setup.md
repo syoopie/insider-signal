@@ -75,17 +75,17 @@ Secrets are encrypted values injected into the running jobs as environment varia
 
 In your GitHub repository:
 1. Go to **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
-2. Add all three:
+2. Add both:
 
 | Secret Name | Value | Purpose |
 |---|---|---|
 | `DATABASE_URL` | Neon **direct** connection string | Ingest job writes to the database |
 | `TELEGRAM_BOT_TOKEN` | Token from BotFather in Step 3 | Sends alerts and error notifications |
-| `TELEGRAM_CHAT_ID` | Chat ID from `getUpdates` in Step 3 | Seeds the first row of `telegram_subscribers` — see below |
 
-Alerts fan out to everyone in the `telegram_subscribers` table, not to
-`TELEGRAM_CHAT_ID` directly. After the first `apply_schema.py` run, seed
-yourself in as the first recipient:
+Alerts fan out to everyone in the `telegram_subscribers` table. The workflows
+no longer read a chat id at all. To put yourself in as the first recipient
+before the webhook exists, set `TELEGRAM_CHAT_ID` in your local `.env` only
+and run the seeder once after the first `apply_schema.py`:
 
 ```bash
 uv run python scripts/seed_telegram_subscriber.py
@@ -137,9 +137,9 @@ refresh just means the normal 15-minute expiry catches up.
 
 ### Optional: self-serve subscribe/unsubscribe
 
-Without this, adding a recipient means editing `TELEGRAM_CHAT_ID` and
-re-seeding. With it, anyone can `/subscribe` by messaging the bot or adding
-it to a group.
+Without this, adding a recipient means setting `TELEGRAM_CHAT_ID` locally and
+re-running the seeder. With it, anyone can `/subscribe` by messaging the bot
+or adding it to a group.
 
 1. Check **Settings → Deployment Protection** is off for the production
    domain — a protected domain 401s Telegram's requests before your route
