@@ -40,7 +40,9 @@ expressed as a percentile among the purchases disclosed in the preceding 30 days
 `src/signals/discount.py` is the model. `src/market/context.py` fetches
 `pct_below_52wk_high` once at ingest and stores it on the transaction row, which is what
 lets the live path and `backfill_signals.py` read the same number. Below 120 reference
-purchases the percentile falls back to a fixed table.
+purchases the purchase is left unranked and scores 0. It does not fall back to a fixed
+table: over 18 months the four picks that came from the fallback averaged −34.07pp
+against the ranked picks' +15.59pp, so unrankable is the conservative answer.
 
 | Condition | Score |
 |---|---|

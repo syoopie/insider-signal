@@ -542,7 +542,17 @@ window and fires on 46% of the validation one, purely because of when ingest sta
 its 52-week high the stock sat on the day the insider bought, as a **percentile among
 the purchases disclosed in the preceding 30 days**
 (`store.get_discount_reference`). 0 to 100, monotone, no other term. Below 120
-reference purchases it falls back to the fixed table in `src/signals/discount.py`.
+reference purchases it is left **unranked and scores 0**, and is never alerted. It does
+*not* fall back to the fixed table: the two rules disagree, and over 18 months the four
+picks that came from the fallback averaged −34.07pp against the ranked picks' +15.59pp.
+
+This bites at the leading edge of the retained window. `prune_old_data` deletes the
+filings a purchase would be ranked against, so `get_discount_reference` returns 4 rows at
+the earliest stored filing and does not reach 120 for about a week. Those purchases
+rescore to 0 even though they scored 98 on the day they were filed.
+**`backfill_signals.py --days 730 --force` will therefore zero out the oldest week of
+signals**, which is correct behaviour and still a surprise. `verify_scoring_parity.py`
+excludes that edge for the same reason.
 
 **The reference must be relative, and this was learned the hard way.** The first
 version ranked against a fixed two-year table, and a fixed cutoff does not select a

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -37,6 +38,8 @@ from src.db.connection import get_conn
 from src.ingest.common import setup_log_tee, log, phase
 from src.market.panel import PANEL_PATH
 from src.signals.batch import window_start_for
+from src.signals.constants import BUY_SCORE, WATCH_SCORE
+from src.signals.discount import REFERENCE_DAYS
 
 setup_log_tee("verify_scoring_parity")
 
@@ -57,6 +60,17 @@ def _stored_signals() -> list[dict]:
             return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+# A percentile recomputed later can move by a point, because the trailing
+# reference it is taken against keeps growing as filings for that window arrive.
+# Anything wider than this, or any difference that moves a signal across BUY or
+# WATCH, is a real disagreement.
+TOLERANCE = 1
+
+
+def _crosses(a: int, b: int) -> bool:
+    return any((a >= t) != (b >= t) for t in (BUY_SCORE, WATCH_SCORE))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
@@ -73,14 +87,25 @@ def main():
     for ticker, filed, score in zip(scorable["ticker"], scorable["filed_date"], scorable["score"]):
         by_ticker[ticker].append((filed, score))
 
-    covered_from = frame["filed_date"].min()
+    # The leading edge of the retained window cannot be rescored. A purchase is
+    # ranked against the discounts disclosed in the REFERENCE_DAYS before it, and
+    # `prune_old_data` has deleted those, so `get_discount_reference` returns 4
+    # rows at the earliest filing and does not reach MIN_REFERENCE for about a
+    # week. `discount_score` then returns None by design rather than falling back
+    # to the fixed table, and the row scores 0.
+    #
+    # The stored signal was scored on the day it was filed, when the reference
+    # still existed. Comparing that against a rescore with the reference deleted
+    # measures pruning, not parity, so the edge is excluded and counted.
+    covered_from = frame["filed_date"].min() + timedelta(days=REFERENCE_DAYS)
     covered_to = frame["filed_date"].max()
     signals = _stored_signals()
     log(f"Stored signals with a filed_date: {len(signals):,}")
-    log(f"Dataset covers filings {covered_from} → {covered_to}")
+    log(f"Comparable filings {covered_from} → {covered_to}, "
+        f"from a dataset starting {frame['filed_date'].min()}")
 
     phase("RECONCILE")
-    matched = mismatched = 0
+    matched = mismatched = drifted = 0
     outside = no_rows = 0
     examples = []
 
@@ -96,18 +121,29 @@ def main():
             no_rows += 1
             continue
 
-        expected = max(scores)
-        if int(expected) == int(sig["score"]):
+        expected = int(max(scores))
+        stored = int(sig["score"])
+        if expected == stored:
             matched += 1
+        elif abs(expected - stored) <= TOLERANCE and not _crosses(stored, expected):
+            # A percentile against a reference that has since grown. The stored
+            # score was computed against the filings visible on the day; more
+            # were ingested for that window afterwards, and one extra row in a
+            # 400-row reference moves the percentile by a point. Irreducible,
+            # and harmless while it does not move the signal across a threshold.
+            drifted += 1
         else:
             mismatched += 1
             if len(examples) < 10:
                 examples.append((sig["ticker"], sig["signal_date"], filed,
-                                 sig["score"], int(expected), sig["signal_type"]))
+                                 stored, expected, sig["signal_type"]))
 
-    comparable = matched + mismatched
-    log(f"  comparable: {comparable:,}   matched: {matched:,}   mismatched: {mismatched:,}")
-    log(f"  outside the dataset's filing range: {outside:,}   no scorable rows in window: {no_rows:,}")
+    comparable = matched + drifted + mismatched
+    log(f"  comparable: {comparable:,}   exact: {matched:,}   "
+        f"within {TOLERANCE} and same class: {drifted:,}   mismatched: {mismatched:,}")
+    log(f"  outside the comparable range: {outside:,}   no scorable rows in window: {no_rows:,}")
+    log(f"  the first {REFERENCE_DAYS} days of the dataset are excluded: their "
+        "trailing reference was pruned away and cannot be rebuilt from the database")
 
     if examples:
         log("\n  mismatches (ticker, signal_date, filed_date, stored, dataset, type):")
@@ -120,7 +156,7 @@ def main():
         log("FAIL — nothing was comparable; the dataset and the signals table do not overlap")
         raise SystemExit(1)
 
-    agreement = matched / comparable * 100
+    agreement = (matched + drifted) / comparable * 100
     if agreement >= args.min_agreement:
         log(f"PASS — {agreement:.2f}% agreement on {comparable:,} signals "
             f"(threshold {args.min_agreement}%)")
