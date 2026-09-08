@@ -14,7 +14,8 @@ import pytest
 from src.ingest.dera import quarter_url, quarters_between, to_archive_rows
 
 
-def _tables(submission_rows, owner_rows, trans_rows, with_10b51=False):
+def _tables(submission_rows, owner_rows, trans_rows, with_10b51=False,
+            title="Common Stock"):
     submission = pd.DataFrame(submission_rows, columns=[
         "ACCESSION_NUMBER", "FILING_DATE", "PERIOD_OF_REPORT", "DOCUMENT_TYPE",
         "ISSUERCIK", "ISSUERNAME", "ISSUERTRADINGSYMBOL"])
@@ -26,10 +27,12 @@ def _tables(submission_rows, owner_rows, trans_rows, with_10b51=False):
                "VALU_OWND_FOLWNG_TRANS", "DIRECT_INDIRECT_OWNERSHIP"]
     if with_10b51:
         columns.append("AFF10B5ONE")
+    transactions = pd.DataFrame(trans_rows, columns=columns)
+    transactions.insert(1, "SECURITY_TITLE", title)
     return {
         "SUBMISSION": submission,
         "REPORTINGOWNER": owners,
-        "NONDERIV_TRANS": pd.DataFrame(trans_rows, columns=columns),
+        "NONDERIV_TRANS": transactions,
     }
 
 
@@ -189,8 +192,49 @@ def test_a_preferred_share_purchase_is_not_mistaken_for_debt():
     """The same filing's real equity leg, which reports no value owned."""
     preferred = [["0001-22-1", "18-SEP-2024", "P", "280000.0", "25.0",
                   "280000.0", "", "I"]]
-    _f, transactions = to_archive_rows(_tables(SUB, OWN, preferred), set())
+    tables = _tables(SUB, OWN, preferred,
+                     title="Series X Mandatory Redeemable Preferred Shares")
+    _f, transactions = to_archive_rows(tables, set())
     assert transactions["total_value"].tolist() == [7_000_000.0]
+
+
+def test_notes_are_debt_even_when_the_value_column_is_blank():
+    """
+    The shape the value column alone misses. MetLife's 2022Q3 filing leaves
+    VALU_OWND_FOLWNG_TRANS empty on the very row that needs it, and reports
+    3,000,000 notes at $3,000,000 each. That single row is $9 trillion.
+    """
+    notes = [["0001-22-1", "02-AUG-2022", "P", "3000000.0", "3000000.0", "", "", "I"]]
+    tables = _tables(SUB, OWN, notes,
+                     title="4.67% Series SS Senior Unsecured Notes due August 2, 2034")
+    _f, transactions = to_archive_rows(tables, set())
+    assert transactions.empty
+
+
+@pytest.mark.parametrize("title", [
+    "6.6875% Notes due 2028",
+    "3.18% Senior Notes, Series N, due December 13, 2024",
+    "Subordinated Debenture",
+    "8.00% Bonds due 2031",
+])
+def test_debt_titles_are_recognised(title):
+    rows = [["0001-22-1", "02-AUG-2022", "P", "1000.0", "1000.0", "", "", "D"]]
+    _f, transactions = to_archive_rows(_tables(SUB, OWN, rows, title=title), set())
+    assert transactions.empty
+
+
+@pytest.mark.parametrize("title", [
+    "Common Stock",
+    "Class A Common Stock",
+    "Series X Mandatory Redeemable Preferred Shares",
+    # The word appears inside another, which a substring test would catch and a
+    # word-boundary test must not.
+    "Denoted Class B Units",
+])
+def test_an_equity_title_is_not_debt(title):
+    rows = [["0001-22-1", "02-AUG-2022", "P", "100.0", "10.0", "100.0", "", "D"]]
+    _f, transactions = to_archive_rows(_tables(SUB, OWN, rows, title=title), set())
+    assert len(transactions) == 1
 
 
 def test_a_transaction_with_no_matching_filing_is_dropped():

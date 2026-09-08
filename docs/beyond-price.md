@@ -162,10 +162,37 @@ parsed**, one zip per quarter, and the whole decade took 41 requests and 50 seco
 `src/ingest/dera.py` checks equal to EDGAR's daily index on distinct accessions, and
 `verify_form4_archive.py` passes against the database on the overlap.
 
-The gate that follows is unchanged and still open: turning this parquet into research rows
-needs the purchase rollup, and writing a second pandas definition of it is exactly what
-`src/db/purchases.py` exists to prevent. Run the same SQL in DuckDB over the parquet and
-verify on the overlap.
+**The rollup gate is closed too.** `src/research/archive.py` presents the parquet as the
+three tables `PURCHASE_ROLLUP_SQL` reads and runs that query unmodified in DuckDB, so there
+is still one definition of "an insider's purchase on a day" rather than a second pandas one.
+**71,929 rolled-up purchases in 1.1 seconds**, against roughly 8,000 in the database over the
+same filing window.
+
+`scripts/verify_archive_rollup.py` is the proof, and it took four rounds to make the
+comparison mean anything. On the purchases both sides hold, the two engines agree to
+**0.0018% on shares and 0.0027% on value**. Three things that looked like archive gaps and
+were not:
+
+- **757 keys differ only in which reporting owner was kept.** A joint Form 4 names several
+  and both sides keep the first, as `parse_form4` does, but they order them differently.
+  BROADWOOD PARTNERS, L.P. on one side is BRADSHER NEAL C on the other. **Insider name is
+  not a join key between these two sources.**
+- **160 more are index membership measured at two different moments.** CIK 1755953 filed as
+  Gryphon Digital Mining (GRYP) in January 2025 and is American Bitcoin Corp (ABTC) in
+  `companies` today. The archive filters on the ticker the filing carried, which is the
+  point-in-time correct choice; filtering a decade of history by today's index membership is
+  survivorship bias.
+- **81 are decided by a tie-break the archive cannot reproduce.** Where one insider files two
+  accessions on one day for different tranches, the rollup keeps the newest by
+  `filed_date DESC, filing_id DESC`, and on a tie that is the Postgres serial, meaning
+  insertion order. Arbitrary on the database's side, not the archive's.
+
+What the archive still cannot supply is `is_routine`, `cap_tier` and `pct_below_52wk_high`,
+all computed at ingest. They come back NULL, which means **these rows cannot be scored yet**:
+`discount_score` returns None without the discount and every purchase would score 0. Joining
+the price panel is the next step, and it will also catch the 13 filer data-entry errors the
+archive inherits, where a reported price of $5,000,000 a share for KYN is plainly the trade's
+total rather than its price.
 
 `scripts/verify_form4_archive.py` is the gate and the pilot passes it. Over 2026-08-04 to
 2026-08-06: the archive is missing **0.00%** of comparable stored filings, **0 of 870** shared

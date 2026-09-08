@@ -102,6 +102,29 @@ def _numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce")
 
 
+# A title naming a debt instrument. Table I can carry notes, and a filer
+# reporting them puts the principal amount in both the share count and the
+# price, so shares times price is meaningless: one MetLife row reads 3,000,000
+# shares at $3,000,000 each, or $9 trillion.
+#
+# Two tests, because neither alone is enough. `parse_form4` keys off the holding
+# being denominated in value rather than shares, and that is the primary signal;
+# but MetLife's 2022Q3 rows leave that column blank on the very line that needs
+# it while naming "4.67% Series SS Senior Unsecured Notes" in the title. The
+# title is what a reader would use and it costs one more column to keep.
+DEBT_TITLE = r"\b(?:notes?|debentures?|bonds?)\b"
+
+
+def is_debt(trans: pd.DataFrame) -> pd.Series:
+    """Rows whose share count is really a principal amount."""
+    by_value = (trans["VALU_OWND_FOLWNG_TRANS"].str.strip() != "") \
+        if "VALU_OWND_FOLWNG_TRANS" in trans.columns \
+        else pd.Series(False, index=trans.index)
+    by_title = trans["SECURITY_TITLE"].str.contains(DEBT_TITLE, case=False,
+                                                    regex=True, na=False)
+    return by_value | by_title
+
+
 def _flag(series: pd.Series, token: str) -> pd.Series:
     """
     One relationship out of the comma-joined set DERA writes.
@@ -156,24 +179,16 @@ def to_archive_rows(tables: dict, universe: set):
 
     trans = tables["NONDERIV_TRANS"]
     trans = trans[trans["ACCESSION_NUMBER"].isin(kept)].copy()
-    # A filer reporting notes puts the principal amount in both the share count
-    # and the price, so shares times price is meaningless: one MetLife row reads
-    # 9,600,000 shares at $9,600,000 each, or $92 trillion. Those holdings are
-    # denominated in value rather than shares, and `parse_form4` skips them on
-    # that same basis.
-    #
-    # The test is the value column alone. Requiring the share count to be empty
-    # as well looks stricter and catches nothing: the same MetLife row carries
-    # both, and letting 22 rows like it through put $144 trillion of $144.5
-    # trillion of archive purchase value into a rounding error's worth of rows.
-    if "VALU_OWND_FOLWNG_TRANS" in trans.columns:
-        trans = trans[trans["VALU_OWND_FOLWNG_TRANS"].str.strip() == ""]
+    trans = trans[~is_debt(trans)]
 
     shares = _numeric(trans["TRANS_SHARES"])
     price = _numeric(trans["TRANS_PRICEPERSHARE"])
     ten_b5_one = trans["AFF10B5ONE"] if "AFF10B5ONE" in trans.columns else None
     transaction_rows = pd.DataFrame({
         "accession_number": trans["ACCESSION_NUMBER"],
+        # Kept so the debt rule above can be audited against the rows it let
+        # through, rather than only against the ones it caught.
+        "security_title": trans["SECURITY_TITLE"],
         "transaction_date": _iso(trans["TRANS_DATE"]),
         "transaction_code": trans["TRANS_CODE"].str.strip(),
         "shares": shares,

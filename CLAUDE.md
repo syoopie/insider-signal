@@ -94,6 +94,8 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 | Benchmark legs a purchase is charged against | `src/research/protocol.py` → `LABEL_FAMILIES`; `--label` on both rulers |
 | SIC code to sector fund | `src/research/sectors.py` → `SIC_RANGES` |
 | Form 4 history beyond Neon retention | `scripts/build_form4_archive.py` + `src/ingest/dera.py` → `data/form4/` |
+| Purchases out of the archive | `src/research/archive.py` → `connect()`, `purchases()`; DuckDB over the parquet |
+| Proof the archive rolls up like the DB | `scripts/verify_archive_rollup.py` |
 
 **Key thresholds (do not change without re-running full backfill + backtest):**
 - The score is `pct_below_52wk_high` as a percentile of the last 30 days of filings
@@ -213,6 +215,8 @@ src/
                         #   the daily pipeline never imports it.
     common.py           # log(), phase(), setup_log_tee(), fmt_elapsed() — shared logging utils
   research/             # Offline only. The pipeline never imports this package.
+    archive.py          # data/form4/ parquet presented as the tables PURCHASE_ROLLUP_SQL
+                        #   reads, so the archive and the DB share one rollup definition
     walkforward.py      # The frozen ruler: folds, rank_ic, selection_alpha, class_alpha,
                         #   permutation_alpha, minimum_detectable_effect
     candidates.py       # Ranking hypotheses
@@ -244,6 +248,7 @@ scripts/                # see scripts/README.md for the full when-to-run table
   gates.py              # The ruler for exclusions. Spends every row, not a decile
   build_form4_archive.py# Form 4 history into data/form4/ parquet, from DERA quarterly zips
   verify_form4_archive.py# Prove the archive matches the DB on the shared window
+  verify_archive_rollup.py# Prove DuckDB rolls purchases up the way Postgres does
   dev/start.{ps1,sh,bat}# Launch the Next.js dashboard in web/ locally
 
 tests/                  # pytest, no DB — scorer, cluster, parser, formatter

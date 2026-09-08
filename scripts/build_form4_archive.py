@@ -81,8 +81,8 @@ FILING_COLUMNS = [
 TRANSACTION_COLUMNS = [
     "accession_number", "insider_name", "insider_cik", "insider_role",
     "role_category", "is_director", "is_officer", "is_ten_percent",
-    "transaction_date", "transaction_code", "shares", "price_per_share",
-    "total_value", "shares_after", "is_10b51", "is_direct",
+    "security_title", "transaction_date", "transaction_code", "shares",
+    "price_per_share", "total_value", "shares_after", "is_10b51", "is_direct",
 ]
 
 
