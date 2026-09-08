@@ -30,3 +30,6 @@ Thumbs.db
 
 # Claude Code
 .claude/
+
+# Research archive: local parquet, rebuilt from EDGAR, never committed.
+data/form4/
