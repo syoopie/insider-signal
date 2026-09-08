@@ -88,6 +88,12 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 | Dashboard pages | `web/app/*/page.tsx`; data in `web/lib/queries/`, charts in `web/components/charts.tsx` |
 | GitHub Actions config | `.github/workflows/` — 3 workflow files |
 | Backtest lookback window | `scripts/run_backtest.py` → `LOOKBACK_DAYS = 730` |
+| The ruler for rankings | `scripts/hillclimb.py`; hypotheses in `src/research/candidates.py` |
+| The ruler for exclusions | `scripts/gates.py`; hypotheses in `src/research/gates.py` |
+| What the ruler can resolve | `walkforward.minimum_detectable_effect`; `hillclimb.py --mde` |
+| Benchmark legs a purchase is charged against | `src/research/protocol.py` → `LABEL_FAMILIES`; `--label` on both rulers |
+| SIC code to sector fund | `src/research/sectors.py` → `SIC_RANGES` |
+| Form 4 history beyond Neon's 24 months | `scripts/build_form4_archive.py` → `data/form4/` |
 
 **Key thresholds (do not change without re-running full backfill + backtest):**
 - The score is `pct_below_52wk_high` as a percentile of the last 30 days of filings
@@ -204,6 +210,13 @@ src/
     edgar.py            # EDGAR API client — rate-limited, User-Agent required, tenacity retries
     parser.py           # Form 4 XML → normalized dict; classify_role() keyword matcher
     common.py           # log(), phase(), setup_log_tee(), fmt_elapsed() — shared logging utils
+  research/             # Offline only. The pipeline never imports this package.
+    walkforward.py      # The frozen ruler: folds, rank_ic, selection_alpha, class_alpha,
+                        #   permutation_alpha, minimum_detectable_effect
+    candidates.py       # Ranking hypotheses
+    gates.py            # Exclusion hypotheses
+    protocol.py         # Splits, LABEL_FAMILIES, drift guard
+    sectors.py          # SIC code to SPDR sector fund
   signals/
     constants.py        # BUY_SCORE / WATCH_SCORE / cluster cutoffs — the classification thresholds
     scorer.py           # score_transaction(), classify_signal() — the scoring model
@@ -225,6 +238,10 @@ scripts/                # see scripts/README.md for the full when-to-run table
   update_tickers.py     # Refresh S&P500 + Russell2000 ticker universe in companies table
   backfill_sic.py       # Fill companies.sic_code/sic_description from EDGAR submissions API
   analyze_factors.py    # Factor-return correlation report (read-only)
+  hillclimb.py          # The ruler for rankings. --mde prints what it can resolve
+  gates.py              # The ruler for exclusions. Spends every row, not a decile
+  build_form4_archive.py# Form 4 history into data/form4/ parquet, resumable
+  verify_form4_archive.py# Prove the archive matches the DB on the shared window
   dev/start.{ps1,sh,bat}# Launch the Next.js dashboard in web/ locally
 
 tests/                  # pytest, no DB — scorer, cluster, parser, formatter
@@ -448,12 +465,25 @@ GitHub secret; the workflows pass `TELEGRAM_BOT_TOKEN` and nothing else, because
 **Before changing any weight in this section, read
 [`docs/scoring-improvement-plan.md`](docs/scoring-improvement-plan.md), especially section 7a.**
 
-**Before proposing a new factor, read [`docs/beyond-price.md`](docs/beyond-price.md).** It
-measures what the frozen ruler can resolve: about 5pp of selection alpha for an insider-family
-candidate and about 13pp for a price-family one. Every insider feature ever tested landed
-between +0.3pp and +3.5pp, which is below that resolution, so those runs cannot distinguish a
-real effect from zero. Adding another feature at the current power learns nothing. Buy power
-first, in the order that document sets out.
+**Before proposing a new factor, read [`docs/beyond-price.md`](docs/beyond-price.md).**
+Three things in it govern any scoring work.
+
+**The ruler resolves about 3.4 to 3.9pp of selection alpha.** `hillclimb.py --mde` prints it,
+from the spread of the same fit under labels shuffled inside each month. Every insider feature
+ever tested landed between +0.3pp and +3.5pp, so those runs could not tell a real effect from
+zero. A candidate under the resolution reports `BELOW RESOLUTION`, not a failure, and `noise`
+scoring +2.19 at t=+2.15 in the same run is why that distinction is not pedantry.
+
+**Ask about exclusions before rankings.** `scripts/gates.py` measures whether dropping a class
+raises what is left, using every row instead of a 37-row decile, so it resolves 0.2 to 0.8pp.
+That is also the shape the evidence says the Form 4 has: the placebo control says the filing
+supplies the median while insider attributes fail to order the discounted set. Hypotheses go
+in `src/research/gates.py`, never in the harness.
+
+**The research sample slides, it does not grow.** `prune_old_data(months=24)` runs inside the
+daily ingest, so Neon holds exactly two years and the ruler will sit at about 16 predictable
+months forever. `scripts/build_form4_archive.py` is the only fix, and every day it is deferred
+costs a day of history. Its long fetch has not been run yet.
 
 The weights below were set by univariate lift measured on a sample the model itself selected,
 with no holdout. The score has a *theoretical maximum of 61* against a BUY threshold of 60,
