@@ -32,7 +32,7 @@ from src.ingest.edgar import fetch_form4_index
 from src.db.store import (
     write_filing, fill_missing_price_context, get_discount_reference,
     update_company_market_data, get_last_filed_date, get_history_start,
-    save_signal, mark_signal_alerted, prune_old_data,
+    save_signal, mark_signal_alerted, prune_old_data, RETENTION_MONTHS,
 )
 from src.market.prices import get_market_data
 from src.signals.scorer import score_transaction, classify_signal, cluster_size_bonus, filing_lag_bonus
@@ -385,9 +385,9 @@ def main():
     # ── MONTHLY PRUNING ───────────────────────────────────────────────────────
     if today.day == 1:
         _phase("MONTHLY PRUNE")
-        tx_del, filing_del, sig_del = prune_old_data(months=24)
+        tx_del, filing_del, sig_del = prune_old_data()
         _log(f"Pruned {tx_del} transactions, {filing_del} filings and {sig_del} signals "
-             f"older than 2 years")
+             f"older than {RETENTION_MONTHS} months")
 
     # ── DAILY SUMMARY ─────────────────────────────────────────────────────────
     _phase("WRAP UP")

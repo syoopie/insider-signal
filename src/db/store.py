@@ -513,7 +513,29 @@ def backfill_routine_flags(batch_size: int = 500) -> int:
     return updated
 
 
-def prune_old_data(months: int = 24) -> Tuple[int, int, int]:
+# Four years, and the number is set by `_compute_is_routine`, not by taste.
+#
+# The routine disqualifier asks whether an insider bought the same calendar
+# month in 2 of the 3 prior years, and returns None rather than guess when the
+# database does not reach that far back. Under 24-month retention it structurally
+# could not: 3,603 of 13,355 stored P transactions carried a NULL flag and only
+# 517 were ever True, so the rule was firing on a thin biased slice. Measured on
+# 2026-09-08, excluding routine buyers scored -0.19pp against the months they
+# came from, at the 0th percentile of its null, which is the wrong sign for a
+# rule that deletes rows.
+#
+# 48 months is the smallest window that lets the check see its own lookback. At
+# 24 months the database sits at 103MB of Neon's 500MB, so this lands near 206MB.
+# Raise it further only after re-checking that headroom.
+#
+# It has a second effect worth knowing. `prune_old_data` is why the research
+# sample slides rather than accumulating, and why the ruler sat at 16 predictable
+# months. This does not recover what is already deleted; only
+# `scripts/build_form4_archive.py` does that.
+RETENTION_MONTHS = 48
+
+
+def prune_old_data(months: int = RETENTION_MONTHS) -> Tuple[int, int, int]:
     """
     Delete transactions, filings and signals older than `months`.
 

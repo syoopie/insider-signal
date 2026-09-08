@@ -686,8 +686,17 @@ in sync. `test_cluster.py` covers every filter above.
 
 ### is_routine Pre-computation
 `is_routine` is stored on the transaction row at ingest time so the routine check
-survives the 2-year data pruning (`prune_old_data()`). Without it, old transactions
+survives data pruning (`prune_old_data()`). Without it, old transactions
 that prove someone is routine would be deleted before the check runs.
+
+**Retention is `store.RETENTION_MONTHS`, raised from 24 to 48 on 2026-09-08.** The
+routine check looks back 3 years and returns `None` rather than guess when the
+database does not reach that far, so under a 24-month window it structurally could
+not decide: 3,603 of 13,355 stored P transactions carried NULL and only 517 were
+ever True. 48 months is the smallest window that contains the check's own lookback.
+At 24 months the database sat at 103MB of Neon's 500MB, so expect roughly 206MB.
+Re-check that headroom before raising it again. This does not recover history
+already deleted; `scripts/build_form4_archive.py` is the only thing that does.
 - `NULL` = legacy row (pre-schema); falls back to live calc from `prior_purchases`
 - `TRUE` / `FALSE` = definitive; never re-computed
 
