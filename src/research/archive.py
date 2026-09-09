@@ -102,6 +102,37 @@ def connect(archive: Path = ARCHIVE) -> duckdb.DuckDBPyConnection:
     return conn
 
 
+def with_price_context(frame: pd.DataFrame, panel: Optional[dict] = None) -> pd.DataFrame:
+    """
+    Fill the price columns the rollup leaves NULL, from the local price panel.
+
+    This calls `context_from_series`, which is the function `src/market/context.py`
+    uses at ingest. That is the whole point. A 52-week high computed a second way
+    here would be a second definition of the only factor that scores, and the
+    deleted 52-week-*low* factors are what happens then: the same purchase scored
+    up to 12 points apart depending on which path saw it.
+
+    A ticker the panel does not cover, or a date without 200 bars behind it, gets
+    None rather than a partial answer, so it scores 0 and is never alerted.
+    """
+    from src.market.context import CONTEXT_FIELDS, context_from_series
+    from src.market.panel import load_panel
+
+    if panel is None:
+        panel = load_panel()
+
+    out = frame.copy()
+    dates = pd.to_datetime(out["transaction_date"]).dt.date
+    context = [
+        context_from_series(panel.get(ticker), as_of)
+        if ticker and as_of == as_of else dict.fromkeys(CONTEXT_FIELDS)
+        for ticker, as_of in zip(out["ticker"], dates)
+    ]
+    for field in CONTEXT_FIELDS:
+        out[field] = [row.get(field) for row in context]
+    return out
+
+
 def purchases(conn: duckdb.DuckDBPyConnection, extra_where: str = "",
               params: tuple = ()) -> pd.DataFrame:
     """

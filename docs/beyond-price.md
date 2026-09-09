@@ -377,7 +377,7 @@ tilt, which is every insider feature on the list. Run it as a second label, not 
 
 ## 3. Phase A. Buy power. Done, 2026-09-08 and 09-09.
 
-**All five items shipped.** The specifications that used to sit here have been cut; what
+**All seven items shipped.** The specifications that used to sit here have been cut; what
 each one turned out to be worth is in section 0a, which is the part worth reading.
 
 | | What | Where it landed |
@@ -388,15 +388,20 @@ each one turned out to be worth is in section 0a, which is the part worth readin
 | A4 | More history, in a local research archive | `data/form4/`, 901,760 filings and 1,513,233 transactions from 2016. Built from SEC DERA quarterly datasets in 50 seconds after the per-filing fetch was rate-limited |
 | A5 | Re-run the existing candidate set at the new power | Done. `ridge tier1` crosses its resolution for the first time, +4.47 at t=+1.77 |
 | A6 | Roll the archive up through the shared SQL | `src/research/archive.py` runs `PURCHASE_ROLLUP_SQL` unmodified in DuckDB. 71,929 purchases; the two engines agree to 0.003%. Added after the fact: the archive is inert without it |
+| A7 | Price context for the archive rows | `archive.with_price_context()` calls `market.context.context_from_series`, the ingest path's own function, over a panel widened to 2,260 symbols and 2014-12-01. **65,201 of 71,930 purchases (90.6%) carry a 52-week discount**, and on the 8,909 that overlap the database, 8,907 agree with what ingest stored to 0.01pp |
 
 **Phase A exit, met.** The ruler now reports what it can resolve, measures exclusions as
 well as rankings, offers a label whose variance does not swamp the effect, and reads a
 decade instead of sixteen months. The sample is no longer the binding constraint, which is
 the one thing section 2.3 said had to change.
 
-What is still missing before the archive can be scored: `pct_below_52wk_high`, `cap_tier`
-and `is_routine` are all computed at ingest and come back NULL out of the archive. The
-price panel supplies the first and is the next step.
+**The scoreable research sample is now 65,201 purchases against the database's ~10,300.**
+Two columns are still NULL out of the archive and both are facts about the ingest window
+rather than the filing: `cap_tier`, refreshed weekly from EDGAR, and `is_routine`, computed
+against whatever history the database held at the time. `is_routine` is the more
+interesting of the two, because section 0a found the routine disqualifier pointing the
+wrong way and blamed the 24-month window for it. A decade of archive can decide that rule
+properly for the first time.
 
 ## 4. Phase B. The non-price metric inventory
 

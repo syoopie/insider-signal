@@ -109,3 +109,77 @@ def test_only_purchases_come_back(tmp_path):
     archive = _archive(tmp_path, [FILING], [_fill(100.0, 10.0), sale])
     got = purchases(connect(archive))
     assert got["transaction_code"].tolist() == ["P"]
+
+
+# ── price context ───────────────────────────────────────────────────────────
+
+def test_price_context_is_filled_from_the_panel(tmp_path):
+    """
+    The archive rollup leaves the price columns NULL because they are computed at
+    ingest. This fills them by calling `context_from_series`, the same function
+    the ingest path calls, so there is one definition of the 52-week high rather
+    than two. Measured against what ingest actually stored, 8,907 of 8,909
+    overlapping purchases agree to 0.01pp.
+    """
+    import numpy as np
+
+    from src.market.panel import PanelSeries
+    from src.research.archive import with_price_context
+
+    # Flat at 50, with two spikes. The 200 sits far outside the trailing
+    # 52 weeks and the 80 sits well inside it, so a window that reached back
+    # over all available history would answer 200 and this answers 80.
+    days = pd.date_range("2023-01-02", periods=400, freq="B")
+    close = np.full(400, 50.0)
+    close[10] = 200.0
+    close[300] = 80.0
+    series = PanelSeries(symbol="DDD", dates=days.to_numpy(dtype="datetime64[D]"),
+                         close=close, adj_close=close,
+                         volume=np.full(400, 1e6))
+
+    archive = _archive(tmp_path, [FILING], [_fill(100.0, 10.0)])
+    frame = purchases(connect(archive))
+    frame["transaction_date"] = [days[350].date()]
+    got = with_price_context(frame, {"DDD": series})
+
+    assert got["price_context_bars"][0] >= 200
+    assert got["px_close_at_tx"][0] == pytest.approx(50.0)
+    assert got["px_52wk_high"][0] == pytest.approx(80.0)
+    assert got["pct_below_52wk_high"][0] == pytest.approx(37.5)
+
+
+def test_a_ticker_the_panel_does_not_cover_stays_null(tmp_path):
+    """
+    None rather than a partial answer. An unrankable purchase scores 0 and is
+    never alerted, which is the conservative failure; a substituted median would
+    place it in WATCH on no evidence.
+    """
+    from src.research.archive import with_price_context
+
+    frame = purchases(connect(_archive(tmp_path, [FILING], [_fill(100.0, 10.0)])))
+    got = with_price_context(frame, {})
+    assert got["pct_below_52wk_high"].isna().all()
+    assert got["px_52wk_high"].isna().all()
+
+
+def test_too_little_history_before_the_date_stays_null(tmp_path):
+    """
+    A 52-week high needs a year behind it. Over 40 bars it is the high of the
+    last two months wearing the wrong name.
+    """
+    import numpy as np
+
+    from src.market.panel import PanelSeries
+    from src.research.archive import with_price_context
+
+    days = pd.date_range("2024-02-01", periods=40, freq="B")
+    series = PanelSeries(symbol="DDD", dates=days.to_numpy(dtype="datetime64[D]"),
+                         close=np.linspace(100.0, 90.0, 40),
+                         adj_close=np.linspace(100.0, 90.0, 40),
+                         volume=np.full(40, 1e6))
+
+    frame = purchases(connect(_archive(tmp_path, [FILING], [_fill(100.0, 10.0)])))
+    frame["transaction_date"] = [days[-1].date()]
+    got = with_price_context(frame, {"DDD": series})
+    assert got["pct_below_52wk_high"].isna().all()
+    assert got["price_context_bars"][0] < 200

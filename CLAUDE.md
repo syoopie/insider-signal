@@ -95,6 +95,7 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 | SIC code to sector fund | `src/research/sectors.py` → `SIC_RANGES` |
 | Form 4 history beyond Neon retention | `scripts/build_form4_archive.py` + `src/ingest/dera.py` → `data/form4/` |
 | Purchases out of the archive | `src/research/archive.py` → `connect()`, `purchases()`; DuckDB over the parquet |
+| Price context for archive rows | `archive.with_price_context()`; calls `market.context.context_from_series`, the ingest path's own function |
 | Proof the archive rolls up like the DB | `scripts/verify_archive_rollup.py` |
 
 **Key thresholds (do not change without re-running full backfill + backtest):**
