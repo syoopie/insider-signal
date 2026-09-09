@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from src.research.archive import connect, purchases
+from tests.conftest import SCRIPTS, load_script
 
 
 def _archive(tmp_path, filings, transactions):
@@ -183,3 +184,76 @@ def test_too_little_history_before_the_date_stays_null(tmp_path):
     got = with_price_context(frame, {"DDD": series})
     assert got["pct_below_52wk_high"].isna().all()
     assert got["price_context_bars"][0] < 200
+
+
+# ── the discount reference ──────────────────────────────────────────────────
+
+def _priced(rows):
+    return pd.DataFrame(
+        {"filed_date": [r[0] for r in rows],
+         "pct_below_52wk_high": [r[1] for r in rows],
+         "total_value": [r[2] for r in rows],
+         "is_10b51": pd.array([r[3] for r in rows], dtype="boolean")},
+    )
+
+
+def test_a_row_whose_10b51_flag_is_unknown_stays_in_the_reference():
+    """
+    The one place the archive deliberately diverges from the database. DERA
+    carries the 10b5-1 checkbox only from 2023q1, so every earlier row is NULL,
+    and the database's `is_10b51 = FALSE` would silently throw seven of the
+    archive's ten years of reference away.
+    """
+    from src.research.archive import discount_series
+
+    _dates, values = discount_series(_priced([
+        (date(2018, 5, 1), 10.0, 50_000.0, None),
+        (date(2024, 5, 1), 20.0, 50_000.0, False),
+        (date(2024, 5, 2), 30.0, 50_000.0, True),
+    ]))
+    assert values.tolist() == [10.0, 20.0]
+
+
+def test_the_reference_drops_unpriced_and_sub_threshold_rows():
+    """Mirrors store._load_discount_series: DRIP noise must not rank real purchases."""
+    from src.research.archive import discount_series
+
+    _dates, values = discount_series(_priced([
+        (date(2024, 5, 1), None, 50_000.0, False),
+        (date(2024, 5, 2), 20.0, 1_999.0, False),
+        (date(2024, 5, 3), 30.0, 50_000.0, False),
+    ]))
+    assert values.tolist() == [30.0]
+
+
+def test_the_reference_is_ordered_by_filing_date():
+    """`reference_window` binary-searches the dates, so unordered input is silently wrong."""
+    from src.research.archive import discount_series
+
+    dates, values = discount_series(_priced([
+        (date(2024, 5, 3), 30.0, 50_000.0, False),
+        (date(2024, 5, 1), 10.0, 50_000.0, False),
+    ]))
+    assert dates.tolist() == sorted(dates.tolist())
+    assert values.tolist() == [10.0, 30.0]
+
+
+# ── crossing into the dataset builder ───────────────────────────────────────
+
+def test_records_hand_back_plain_dates_and_none(tmp_path):
+    """
+    Two archive-only hazards, both of which kill the build rather than degrade it.
+    `pd.Timestamp > datetime.date` raises instead of comparing, and the scoring
+    loop asks that of every row; `bool(pd.NA)` raises, and `_eligible` asks that
+    of is_10b51 and is_routine, which the archive leaves nullable.
+    """
+    builder = load_script(SCRIPTS / "build_research_dataset.py")
+    frame = purchases(connect(_archive(tmp_path, [FILING], [_fill(1000.0, 10.0)])))
+    frame["is_routine"] = pd.array([pd.NA], dtype="boolean")
+
+    row = builder._records(frame)[0]
+    assert type(row["transaction_date"]) is date
+    assert type(row["filed_date"]) is date
+    assert row["is_10b51"] is None and row["is_routine"] is None
+    assert row["cap_tier"] is None
+    assert builder._eligible(row) is True

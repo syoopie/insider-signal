@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional, Tuple, List
 from src.db.connection import get_conn
 from src.signals.discount import REFERENCE_DAYS as DISCOUNT_REFERENCE_DAYS
+from src.signals.discount import reference_window
 from src.ingest.common import _clean_ticker
 
 _SIGNAL_COOLDOWN_DAYS = 7   # suppress follow-up signals within this window
@@ -720,16 +721,7 @@ def get_discount_reference(as_of, days: int = DISCOUNT_REFERENCE_DAYS):
     it was scored. That is what makes rescoring stable: a filing that arrives
     next year cannot change a score written today.
     """
-    import numpy as np
-
-    dates, values = _load_discount_series()
-    if len(dates) == 0:
-        return np.array([])
-
-    as_of = np.datetime64(as_of, "D")
-    lo = np.searchsorted(dates, as_of - np.timedelta64(days, "D"), side="right")
-    hi = np.searchsorted(dates, as_of, side="right")
-    return np.sort(values[lo:hi])
+    return reference_window(_load_discount_series(), as_of, days)
 
 
 def clear_discount_reference_cache() -> None:

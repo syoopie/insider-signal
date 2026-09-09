@@ -17,9 +17,14 @@ volatility at the trade date. The last two exist because the raw label is
 heteroscedastic and because industry is the confound the placebo control could
 not remove. `src/research/protocol.LABEL_FAMILIES` names them.
 
+Neon retains 48 months, which is less history than the research needs, so the
+same dataset builds from `data/form4/` — the DERA archive, back to 2016 — under
+`--source archive`. Only the four database-coupled inputs differ; the scoring
+loop, the labels and the features are one implementation either way.
+
 Usage:
   python3 scripts/build_research_dataset.py
-  python3 scripts/build_research_dataset.py --days 730
+  python3 scripts/build_research_dataset.py --source archive
   python3 scripts/build_research_dataset.py --out data/prices/dataset.parquet
 """
 
@@ -27,8 +32,11 @@ from __future__ import annotations
 
 import argparse
 import time
+from dataclasses import dataclass
 from datetime import date, timedelta
+from functools import partial
 from pathlib import Path
+from typing import Callable, Optional, Sequence
 
 import pandas as pd
 
@@ -41,6 +49,7 @@ from src.db.store import get_discount_reference, get_history_start
 from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.market.features import price_context, price_on, window_return
 from src.market.panel import PANEL_PATH, load_panel
+from src.research import archive
 from src.research.protocol import PRIMARY_HORIZON, label_column
 from src.research.sectors import sector_etf
 from src.research.tier1 import (
@@ -52,11 +61,12 @@ from src.research.tier1 import (
     value_vs_own_history,
 )
 from src.signals.batch import priors_before_window, score_purchase
+from src.signals.discount import reference_window
 
 setup_log_tee("build_research_dataset")
 
 DEFAULT_OUT = PANEL_PATH.parent / "research_dataset.parquet"
-DEFAULT_DAYS = 730
+ARCHIVE_OUT = PANEL_PATH.parent / "research_dataset_archive.parquet"
 
 SPY, IWM = "SPY", "IWM"
 
@@ -115,6 +125,77 @@ def _load_sic() -> dict[str, str]:
             return dict(cur.fetchall())
 
 
+@dataclass(frozen=True)
+class Inputs:
+    """
+    Everything the build needs that depends on where the rows came from.
+
+    Four things are coupled to the database and nothing else is. Naming them as
+    one structure keeps `main()` identical under both sources, which is the
+    point: a `if source == "archive"` threaded through the scoring loop would be
+    a second implementation of how a purchase is scored, and the archive exists
+    to be compared against the database, not to disagree with it.
+    """
+    purchases: list[dict]
+    sales: pd.DataFrame
+    sic: dict[str, str]
+    history_start: Optional[date]
+    discount_reference: Callable[[date], Sequence[float]]
+
+
+def _from_db() -> Inputs:
+    return Inputs(
+        purchases=_load_purchases(),
+        sales=_load_sales(),
+        sic=_load_sic(),
+        history_start=get_history_start(),
+        discount_reference=get_discount_reference,
+    )
+
+
+def _from_archive(panel: dict) -> Inputs:
+    """
+    The same five inputs out of `data/form4/`, with `companies` still supplying SIC.
+
+    SIC is not in the archive and the `companies` table is the only source of
+    it, so it stays a database read in both modes. It is a property of the
+    issuer rather than of the filing, so reading today's value for a 2016
+    purchase is the same approximation the database build already makes.
+    """
+    conn = archive.connect()
+    priced = archive.priced_purchases(conn, panel)
+    return Inputs(
+        purchases=_records(priced),
+        sales=archive.sales(conn),
+        sic=_load_sic(),
+        history_start=archive.history_start(conn),
+        discount_reference=partial(reference_window, archive.discount_series(priced)),
+    )
+
+
+def _records(frame: pd.DataFrame) -> list[dict]:
+    """
+    Rollup rows as the dicts the scoring loop expects, with two archive-only
+    hazards removed at the boundary.
+
+    DuckDB returns dates as datetime64, and `pd.Timestamp > datetime.date`
+    raises instead of comparing, which is what the exit-in-future check asks of
+    every row. And `is_10b51` and `is_routine` are nullable booleans out of the
+    archive, so `_eligible`'s `not` would raise on pd.NA rather than read as
+    "undetermined, so not disqualifying".
+    """
+    frame = frame.copy()
+    for column in ("transaction_date", "filed_date"):
+        frame[column] = pd.to_datetime(frame[column]).dt.date
+
+    records = frame.to_dict("records")
+    for row in records:
+        for key, value in row.items():
+            if pd.isna(value):
+                row[key] = None
+    return records
+
+
 def _eligible(row: dict) -> bool:
     value = row.get("total_value")
     return (
@@ -127,10 +208,20 @@ def _eligible(row: dict) -> bool:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--days", type=int, default=DEFAULT_DAYS)
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--source", choices=("db", "archive"), default="db")
+    parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--panel", type=Path, default=PANEL_PATH)
     args = parser.parse_args()
+
+    from_archive = args.source == "archive"
+    if args.out is None:
+        args.out = ARCHIVE_OUT if from_archive else DEFAULT_OUT
+    if from_archive and args.out.resolve() == DEFAULT_OUT.resolve():
+        raise SystemExit(
+            f"Refusing to write {DEFAULT_OUT} from the archive: every published "
+            f"number rests on that file being the database's build. Leave --out "
+            f"unset for {ARCHIVE_OUT}."
+        )
 
     t0 = time.time()
 
@@ -141,23 +232,23 @@ def main():
         if bench not in panel:
             raise SystemExit(f"Panel is missing {bench}; excess returns cannot be computed.")
 
-    purchases = _load_purchases()
-    all_purchases = purchases
-    log(f"Purchases: {len(purchases):,} insider-days stored")
+    inputs = _from_archive(panel) if from_archive else _from_db()
+    purchases = inputs.purchases
+    log(f"Purchases: {len(purchases):,} insider-days from the {args.source}")
 
-    # `first_purchase_12mo` is only meaningful where the database covers the
-    # whole year before the trade, so the scorer needs to know where coverage
-    # starts. Omitting it charged the penalty for the ingest start date.
-    history_start = get_history_start()
+    # `first_purchase_12mo` is only meaningful where the source covers the whole
+    # year before the trade, so the scorer needs to know where coverage starts.
+    # Omitting it charged the penalty for the ingest start date.
+    history_start = inputs.history_start
     log(f"History starts {history_start}")
 
-    sic_by_cik = _load_sic()
+    sic_by_cik = inputs.sic
     log(f"SIC codes: {len(sic_by_cik):,} companies")
 
     # Keyed off every stored purchase, not just the window, so timing factors
     # can see a full year behind a trade at the window's leading edge.
     by_ticker: dict[str, list[dict]] = defaultdict(list)
-    for p in all_purchases:
+    for p in purchases:
         by_ticker[p["ticker"]].append(p)
 
     phase("SCORE AND LABEL")
@@ -214,7 +305,7 @@ def main():
         # with the stored signal, which is precisely what
         # verify_scoring_parity.py exists to catch.
         result = score_purchase(p, priors, history_start,
-                                get_discount_reference(filed))
+                                inputs.discount_reference(filed))
         if result is None:
             row["score"] = None
             row["scorer_disqualified"] = None
@@ -279,7 +370,7 @@ def main():
     frame = _explode_breakdown(pd.DataFrame(rows))
 
     phase("TIER 1 FEATURES")
-    sales = _load_sales()
+    sales = inputs.sales
     log(f"Sale rows for net-demand: {len(sales):,} across {sales['cik'].nunique():,} issuers")
     label = f"excess_spy_{PRIMARY_HORIZON}d"
     for name, block in (
@@ -307,6 +398,9 @@ def main():
         f"ticker missing from panel: {n_no_panel:,}")
     log(f"  distinct tickers: {frame['ticker'].nunique():,}   "
         f"distinct insiders: {frame['insider_name'].nunique():,}")
+    n_sic = int(frame["sic_code"].notna().sum())
+    log(f"  with a SIC code: {n_sic:,} of {len(frame):,} rows "
+        f"({n_sic / len(frame) * 100:.1f}%)")
     log(f"  transaction_date range: {frame['transaction_date'].min()} → "
         f"{frame['transaction_date'].max()}")
 

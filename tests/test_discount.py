@@ -8,6 +8,9 @@ old 52-week factors were deleted precisely for disagreeing. And it must refuse
 to answer rather than guess, because a purchase scored at the median on no
 evidence lands in WATCH.
 """
+from datetime import date
+
+import numpy as np
 import pytest
 
 from src.signals.constants import BUY_SCORE, WATCH_SCORE
@@ -16,6 +19,7 @@ from src.signals.discount import (
     KNOTS,
     MIN_REFERENCE,
     discount_score,
+    reference_window,
 )
 
 
@@ -138,3 +142,41 @@ def test_the_reference_keeps_the_score_monotone():
 
 def test_a_missing_discount_is_still_none_with_a_reference():
     assert discount_score(None, list(range(200))) is None
+
+
+# ── the reference window ────────────────────────────────────────────────────
+#
+# One function cuts this window for both the database and the archive. The
+# guarantee it carries is point-in-time: a filing that arrives after a purchase
+# cannot change the score that purchase already got.
+
+def _series(*pairs):
+    dates = np.array([d for d, _ in pairs], dtype="datetime64[D]")
+    return dates, np.array([v for _, v in pairs], dtype="float64")
+
+
+def test_a_filing_after_the_scoring_date_is_not_in_the_reference():
+    series = _series((date(2026, 1, 10), 10.0), (date(2026, 1, 12), 99.0))
+    assert reference_window(series, date(2026, 1, 11), days=30).tolist() == [10.0]
+
+
+def test_a_filing_on_the_scoring_date_is_in_the_reference():
+    series = _series((date(2026, 1, 11), 10.0))
+    assert reference_window(series, date(2026, 1, 11), days=30).tolist() == [10.0]
+
+
+def test_a_filing_older_than_the_window_falls_out():
+    series = _series((date(2025, 12, 1), 99.0), (date(2026, 1, 10), 10.0))
+    assert reference_window(series, date(2026, 1, 11), days=30).tolist() == [10.0]
+
+
+def test_an_empty_series_gives_an_empty_reference():
+    empty = _series()
+    assert len(reference_window(empty, date(2026, 1, 11))) == 0
+
+
+def test_the_reference_comes_back_sorted():
+    """`discount_score` binary-searches it, so unsorted input is silently wrong."""
+    series = _series((date(2026, 1, 2), 40.0), (date(2026, 1, 3), 5.0),
+                     (date(2026, 1, 4), 20.0))
+    assert reference_window(series, date(2026, 1, 5), days=30).tolist() == [5.0, 20.0, 40.0]

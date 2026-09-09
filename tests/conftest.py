@@ -1,8 +1,34 @@
 """Shared fixtures. Nothing here touches the database."""
 
+import importlib.util
+import sys
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
+
+SCRIPTS = Path(__file__).parent.parent / "scripts"
+
+
+def load_script(path: Path):
+    """
+    Execute a file in scripts/ as a module and hand it back.
+
+    Registering it in `sys.modules` first is not optional: a dataclass resolves
+    its annotations through `sys.modules[cls.__module__]`, so a module executed
+    without being registered raises AttributeError on the `@dataclass` line
+    rather than on anything the script got wrong.
+    """
+    name = f"_script_{path.stem}"
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[name]
+        raise
+    return module
 
 
 @pytest.fixture

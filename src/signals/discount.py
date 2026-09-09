@@ -111,6 +111,29 @@ MIN_REFERENCE = 120
 REFERENCE_DAYS = 30
 
 
+def reference_window(series: tuple[np.ndarray, np.ndarray], as_of,
+                     days: int = REFERENCE_DAYS) -> np.ndarray:
+    """
+    The discounts in `series` disclosed in the `days` before `as_of`, sorted.
+
+    `series` is (filed dates ascending, discounts). Only filings dated on or
+    before `as_of` survive, so the reference a purchase is ranked against holds
+    nothing that had not been disclosed when it was scored.
+
+    The database and the archive build the series from their own rows and then
+    cut the window here, so exactly one function knows what "the preceding
+    thirty days of filings" means.
+    """
+    dates, values = series
+    if len(dates) == 0:
+        return np.array([])
+
+    as_of = np.datetime64(as_of, "D")
+    lo = np.searchsorted(dates, as_of - np.timedelta64(days, "D"), side="right")
+    hi = np.searchsorted(dates, as_of, side="right")
+    return np.sort(values[lo:hi])
+
+
 def discount_score(pct_below_52wk_high: Optional[float],
                    reference: Optional[Sequence[float]] = None) -> Optional[int]:
     """
