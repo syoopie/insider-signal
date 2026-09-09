@@ -16,18 +16,19 @@ from src.ingest.dera import quarter_url, quarters_between, to_archive_rows
 
 def _tables(submission_rows, owner_rows, trans_rows, with_10b51=False,
             title="Common Stock"):
-    submission = pd.DataFrame(submission_rows, columns=[
+    submission_columns = [
         "ACCESSION_NUMBER", "FILING_DATE", "PERIOD_OF_REPORT", "DOCUMENT_TYPE",
-        "ISSUERCIK", "ISSUERNAME", "ISSUERTRADINGSYMBOL"])
+        "ISSUERCIK", "ISSUERNAME", "ISSUERTRADINGSYMBOL"]
+    if with_10b51:
+        submission_columns.append("AFF10B5ONE")
+    submission = pd.DataFrame(submission_rows, columns=submission_columns)
     owners = pd.DataFrame(owner_rows, columns=[
         "ACCESSION_NUMBER", "RPTOWNERCIK", "RPTOWNERNAME",
         "RPTOWNER_RELATIONSHIP", "RPTOWNER_TITLE"])
-    columns = ["ACCESSION_NUMBER", "TRANS_DATE", "TRANS_CODE", "TRANS_SHARES",
-               "TRANS_PRICEPERSHARE", "SHRS_OWND_FOLWNG_TRANS",
-               "VALU_OWND_FOLWNG_TRANS", "DIRECT_INDIRECT_OWNERSHIP"]
-    if with_10b51:
-        columns.append("AFF10B5ONE")
-    transactions = pd.DataFrame(trans_rows, columns=columns)
+    transactions = pd.DataFrame(trans_rows, columns=[
+        "ACCESSION_NUMBER", "TRANS_DATE", "TRANS_CODE", "TRANS_SHARES",
+        "TRANS_PRICEPERSHARE", "SHRS_OWND_FOLWNG_TRANS",
+        "VALU_OWND_FOLWNG_TRANS", "DIRECT_INDIRECT_OWNERSHIP"])
     transactions.insert(1, "SECURITY_TITLE", title)
     return {
         "SUBMISSION": submission,
@@ -40,6 +41,8 @@ SUB = [["0001-22-1", "31-AUG-2022", "29-AUG-2022", "4", "0000910638",
         "3D SYSTEMS CORP", "DDD"]]
 OWN = [["0001-22-1", "0001879982", "Nordstrom Phyllis B", "Director", "Director"]]
 TRX = [["0001-22-1", "29-AUG-2022", "P", "1000.0", "12.50", "5000.0", "", "D"]]
+# The same filing as SUB, in a quarter whose SUBMISSION carries the checkbox.
+CHECKED = [SUB[0] + ["1"]]
 
 
 def test_quarters_span_a_year_boundary():
@@ -149,17 +152,62 @@ def test_the_10b5_1_column_has_one_type_either_side_of_2023():
     degrades the whole column to object without complaining.
     """
     _f, before = to_archive_rows(_tables(SUB, OWN, TRX), set())
-    after_rows = [["0001-22-1", "29-AUG-2022", "P", "1000.0", "12.50", "5000.0",
-                   "", "D", "1"]]
-    _f2, after = to_archive_rows(_tables(SUB, OWN, after_rows, with_10b51=True), set())
+    _f2, after = to_archive_rows(
+        _tables(CHECKED, OWN, TRX, with_10b51=True), set())
     assert before["is_10b51"].dtype == after["is_10b51"].dtype
 
 
-def test_from_2023_the_10b5_1_checkbox_is_read():
-    rows = [["0001-22-1", "29-AUG-2022", "P", "1000.0", "12.50", "5000.0", "", "D", "1"],
-            ["0001-22-1", "29-AUG-2022", "P", "500.0", "12.50", "5500.0", "", "D", "0"]]
-    _f, transactions = to_archive_rows(_tables(SUB, OWN, rows, with_10b51=True), set())
-    assert list(transactions["is_10b51"]) == [True, False]
+@pytest.mark.parametrize("raw,expected", [
+    ("1", True),
+    ("true", True),
+    ("0", False),
+    ("false", False),
+    # 2024Q1 writes all five, blanks included, and a blank is not a checked box.
+    ("", False),
+])
+def test_from_2023_the_10b5_1_checkbox_is_read(raw, expected):
+    submission = [SUB[0] + [raw]]
+    _f, transactions = to_archive_rows(
+        _tables(submission, OWN, TRX, with_10b51=True), set())
+    assert list(transactions["is_10b51"]) == [expected]
+
+
+def test_the_checkbox_is_filing_wide_and_per_filing():
+    """
+    One box on the form covers every transaction it reports, and the next
+    filing in the quarter answers for itself. The flag used to be read off
+    NONDERIV_TRANS, where the column has never existed, so every row in the
+    archive came back unknown.
+    """
+    submission = CHECKED + [["0002-22-1", "31-AUG-2022", "29-AUG-2022", "4",
+                             "0000910638", "3D SYSTEMS CORP", "DDD", "0"]]
+    owners = OWN + [["0002-22-1", "0002", "Second Owner", "Officer", "CFO"]]
+    rows = TRX + [
+        ["0001-22-1", "30-AUG-2022", "P", "500.0", "12.75", "5500.0", "", "D"],
+        ["0002-22-1", "29-AUG-2022", "P", "800.0", "9.00", "800.0", "", "D"]]
+    _f, transactions = to_archive_rows(
+        _tables(submission, owners, rows, with_10b51=True), set())
+    assert list(zip(transactions["accession_number"],
+                    transactions["is_10b51"])) == [
+        ("0001-22-1", True), ("0001-22-1", True), ("0002-22-1", False)]
+
+
+def test_a_dropped_row_does_not_hand_its_flag_to_the_next_one():
+    """
+    The debt filter runs before the flag is attached, and the column lands
+    positionally. Build the map from the unfiltered frame and the surviving row
+    silently inherits the answer belonging to the row above it.
+    """
+    submission = CHECKED + [["0002-22-1", "31-AUG-2022", "29-AUG-2022", "4",
+                             "0000910638", "3D SYSTEMS CORP", "DDD", "0"]]
+    owners = OWN + [["0002-22-1", "0002", "Second Owner", "Officer", "CFO"]]
+    rows = [["0001-22-1", "29-AUG-2022", "P", "9600000.0", "9600000.0",
+             "280000.0", "9600000.0", "D"],
+            ["0002-22-1", "29-AUG-2022", "P", "1000.0", "12.50", "5000.0", "", "D"]]
+    _f, transactions = to_archive_rows(
+        _tables(submission, owners, rows, with_10b51=True), set())
+    assert transactions["accession_number"].tolist() == ["0002-22-1"]
+    assert list(transactions["is_10b51"]) == [False]
 
 
 def test_a_debt_filing_is_not_a_share_purchase():

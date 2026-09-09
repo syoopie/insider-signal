@@ -18,10 +18,12 @@ distinct Form 4 and 4/A accessions, so this is the complete record and not a
 sample of it.
 
 What it does not carry is `is_10b51` before 2023. The checkbox did not exist
-until the SEC amended Rule 10b5-1 effective February 2023, so `AFF10B5ONE` is a
-column in the 2023 quarters onward and absent from the earlier ones. Older rows
-get None, which is the honest answer and the same one `is_routine` gives when
-the history cannot decide.
+until the SEC amended Rule 10b5-1 effective February 2023, so `AFF10B5ONE`
+appears on the SUBMISSION table from 2023q1 onward and on no table before it.
+It is filing-wide there, one box per Form 4 rather than one per transaction,
+which is the grain `parse_form4` reads it at too. Older rows get None, which is
+the honest answer and the same one `is_routine` gives when the history cannot
+decide.
 
 Publication lags the quarter by a month or so. That is irrelevant here: the
 database retains 48 months and this exists to reach further back than that.
@@ -181,9 +183,19 @@ def to_archive_rows(tables: dict, universe: set):
     trans = trans[trans["ACCESSION_NUMBER"].isin(kept)].copy()
     trans = trans[~is_debt(trans)]
 
+    # The checkbox is one box on the form and DERA puts it on SUBMISSION, so it
+    # is read there and spread over the filing's rows. Every accession in
+    # `trans` came from `kept`, so every lookup hits.
+    if "AFF10B5ONE" in filings.columns:
+        checkbox = filings.drop_duplicates("ACCESSION_NUMBER") \
+            .set_index("ACCESSION_NUMBER")["AFF10B5ONE"]
+        ten_b5_one = trans["ACCESSION_NUMBER"].map(
+            checkbox.str.strip().str.lower().isin(["1", "true", "y"]))
+    else:
+        ten_b5_one = [None] * len(trans)
+
     shares = _numeric(trans["TRANS_SHARES"])
     price = _numeric(trans["TRANS_PRICEPERSHARE"])
-    ten_b5_one = trans["AFF10B5ONE"] if "AFF10B5ONE" in trans.columns else None
     transaction_rows = pd.DataFrame({
         "accession_number": trans["ACCESSION_NUMBER"],
         # Kept so the debt rule above can be audited against the rows it let
@@ -200,10 +212,7 @@ def to_archive_rows(tables: dict, universe: set):
         # existed and the ones after it write the same parquet type. Left as
         # object, an all-None column lands as a null-typed field and reading a
         # decade of parts back together silently degrades the whole column.
-        "is_10b51": pd.array(
-            ten_b5_one.str.strip().str.lower().isin(["1", "true", "y"])
-            if ten_b5_one is not None else [None] * len(trans),
-            dtype="boolean"),
+        "is_10b51": pd.array(ten_b5_one, dtype="boolean"),
     })
     transaction_rows = transaction_rows.merge(owners, on="accession_number",
                                               how="left")
