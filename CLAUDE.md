@@ -39,10 +39,17 @@ exist for exactly this reason).
 
 Example:
 ```bash
+uv run ruff check src scripts tests   # CI lints before it tests; a stray import fails the run
+uv run pytest -q
 git add scripts/run_backtest.py
 git commit -m "Increase LOOKBACK_DAYS from 365 to 730 for 2-year backtest window"
 git push
 ```
+
+`tests.yml` runs `ruff check src scripts tests` and *then* `pytest`, so an unused
+import fails the workflow with the suite never having run. `.git/hooks/pre-push`
+runs both locally for the same reason. It is not version controlled, so a fresh
+clone needs it reinstalled or the two commands run by hand.
 
 ---
 
@@ -86,7 +93,7 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 | Form 4 XML parser | `src/ingest/parser.py` → `parse_form4()` |
 | Role classification | `src/ingest/parser.py` → `classify_role()` |
 | Dashboard pages | `web/app/*/page.tsx`; data in `web/lib/queries/`, charts in `web/components/charts.tsx` |
-| GitHub Actions config | `.github/workflows/` — 3 workflow files |
+| GitHub Actions config | `.github/workflows/` — 4 workflow files |
 | Backtest lookback window | `scripts/run_backtest.py` → `LOOKBACK_DAYS = 730` |
 | The ruler for rankings | `scripts/hillclimb.py`; hypotheses in `src/research/candidates.py` |
 | The ruler for exclusions | `scripts/gates.py`; hypotheses in `src/research/gates.py` |
@@ -251,6 +258,7 @@ web/                    # Next.js 16 dashboard (Vercel). See web/README.md and w
   daily_ingest.yml      # Weekdays 11am UTC + workflow_dispatch; busts the web cache after
   weekly_backtest.yml   # Sundays 12pm UTC — refresh_market_caps then run_backtest
   bootstrap.yml         # Manual only — workflow_dispatch triggers bootstrap.py
+  tests.yml             # Every push to main and every PR — ruff, then pytest
 ```
 
 ---
@@ -743,6 +751,7 @@ uv run python scripts/run_backtest.py --label adjclose-check
 | `daily_ingest.yml` | Weekdays 11am UTC | Runs `run_ingest.py`; commits `last_run.txt` to keep repo active |
 | `weekly_backtest.yml` | Sundays 12pm UTC | `refresh_market_caps.py` then `run_backtest.py` |
 | `bootstrap.yml` | Manual only | `workflow_dispatch` triggers `bootstrap.py` with configurable date range |
+| `tests.yml` | Every push to `main`, every PR | `ruff check src scripts tests`, then `pytest -q`. Lint runs first, so a lint error means the suite never ran |
 
 **GitHub Actions gotchas:**
 - Workflows **disable after 60 days of no repo activity**. `run_ingest.py` commits `last_run.txt` each day to keep the repo live. If disabled, re-enable from the Actions tab on GitHub.

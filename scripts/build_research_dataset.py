@@ -50,7 +50,7 @@ from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
 from src.market.features import price_context, price_on, window_return
 from src.market.panel import PANEL_PATH, load_panel
 from src.research import archive
-from src.research.protocol import PRIMARY_HORIZON, label_column
+from src.research.protocol import PRIMARY_HORIZON
 from src.research.sectors import sector_etf
 from src.research.tier1 import (
     averaging_down,
