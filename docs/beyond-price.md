@@ -311,26 +311,47 @@ decade instead and finds 7,626 routine buyers where the database holds 414.
 **Recomputing the production column from the archive is the follow-up.** It changes a hard
 disqualifier, so it needs the full backfill and backtest, and it is not done here.
 
-### The 10b5-1 number is an artifact of our own flag
+### The 10b5-1 number is not yet readable, and the first reason I gave for that was wrong
 
-It reads −0.265 at the 0th percentile, above its resolution, on the 40 months where the flag
-exists. Do not act on it.
+It reads −0.265 at the 0th percentile, above its resolution, on the 40 months where the
+checkbox exists. Do not act on it yet. The reason is not the one first written here.
 
-DERA carries the 10b5-1 checkbox on `SUBMISSION`, filing-wide. `parse_form4` narrows the same
-checkbox to the individual transaction through that transaction's own footnote references,
-which is the fix that stopped an open-market buy being disqualified for sharing a filing with
-a plan sale. The archive reproduces the pre-fix behaviour.
+**The retracted claim.** This section first said the archive over-flags because `parse_form4`
+narrows the filing-wide checkbox to the individual transaction and the archive does not. Read
+`_tx_is_10b51` again: when `<aff10b5One>` is set it returns True for *every* transaction in
+the filing, exactly as the archive does. The narrowing only ever *adds* flags, in the branches
+where the checkbox is clear or absent. Production can never be narrower than the archive here,
+so footnote narrowing cannot explain a single one of the 67 rows.
+
+**What the 67 actually are.** They are stale database values. `_tx_is_10b51` landed on
+2026-08-29 in commit `301ef74`. Before it, the parser read `transactionFormType` and
+`transactionTimeliness`, neither of which carries the value, so the only working mechanism was
+a substring scan of the whole document. Every row ingested before that date holds a pre-fix
+answer, and the database has not re-parsed one.
+
+Adjudicated against the raw filing: accession `0001140361-24-043157`, ANGO, a single `P`
+purchase on 2024-10-07, ingested 2024-10-08. Its EDGAR XML carries
+`<aff10b5One>true</aff10b5One>`. DERA agrees. The database stores `False`, because the
+substring scan found nothing: the document's one footnote is about weighted average price, and
+the element name `aff10b5One` does not match the `10b5[\s-]?1` pattern.
 
 | flag on 6,732 overlapping purchases, 2023q1 on | rows |
 |---|---|
 | agree | 6,646 |
-| archive flags, production does not | 67 |
-| production flags, archive does not | 19 |
+| archive flags, database does not | 67 |
+| database flags, archive does not | 19 |
 
-67 of the 394 the archive flags is 17% of the class, against a dropped class of 1,334 in the
-gate run. That is more than enough to produce the number. DERA ships a `FOOTNOTES` table that
-nothing reads yet; wiring it into `to_archive_rows` is the fix, and until then no archive
-result that keys on `is_10b51` means anything.
+So the archive is the more correct source on this column too, and the database's `is_10b51`
+joins `is_routine` as a stored field that records what the code believed at ingest rather than
+what the filing says. That is now two of the three shipped disqualifiers resting on a fossil.
+
+**What is still missing before the gate can be read.** The archive implements only the first
+of `_tx_is_10b51`'s four branches. It maps an absent checkbox to False where production maps
+it to None and then falls back to the filing's footnotes, so it decides nothing before 2023
+and loses the per-transaction footnote branch after it. DERA carries what is needed: a
+`FOOTNOTES` table keyed by filing and id, and twelve `_FN` columns on `NONDERIV_TRANS` that
+are its flattening of `tx_el.findall(".//footnoteId")`. Wiring those in is the work, and the
+gate gets re-run after it.
 
 ### Where the power actually landed
 
