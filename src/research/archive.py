@@ -200,8 +200,13 @@ def discount_series(priced: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     and is built from the same priced frame the scored purchases come from, so
     a purchase and the reference it is ranked against agree by construction.
     """
-    # DERA only carries the 10b5-1 checkbox from 2023q1, so `is_10b51` is NULL
-    # for every earlier row. `== False` would discard seven years of reference.
+    # This used to discard seven years: DERA carries the 10b5-1 checkbox only
+    # from 2023q1, so every earlier row was NULL and `== False` threw them all
+    # away. `dera._ten_b5_one` now reproduces `parser._tx_is_10b51` in full, and
+    # its footnote branches reach as far back as the datasets do, so no archived
+    # row is NULL any more. The fillna stays for a quarter that ships no
+    # FOOTNOTES.tsv, where unknown is again the honest answer and a purchase
+    # nobody can rule out still belongs in the reference.
     not_10b51 = ~priced["is_10b51"].fillna(False).astype(bool)
 
     keep = (

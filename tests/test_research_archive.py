@@ -199,10 +199,11 @@ def _priced(rows):
 
 def test_a_row_whose_10b51_flag_is_unknown_stays_in_the_reference():
     """
-    The one place the archive deliberately diverges from the database. DERA
-    carries the 10b5-1 checkbox only from 2023q1, so every earlier row is NULL,
-    and the database's `is_10b51 = FALSE` would silently throw seven of the
-    archive's ten years of reference away.
+    The one place the archive deliberately diverges from the database, which
+    filters on `is_10b51 = FALSE`. No archived row is unknown today, because
+    `dera._ten_b5_one` decides every one of them from the checkbox or the
+    footnotes; a quarter shipping no FOOTNOTES.tsv would bring the case back,
+    and a purchase nobody can rule out belongs in the reference either way.
     """
     from src.research.archive import discount_series
 

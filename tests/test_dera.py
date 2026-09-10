@@ -11,11 +11,24 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from src.ingest.dera import quarter_url, quarters_between, to_archive_rows
+from src.ingest.dera import (
+    FOOTNOTE_ID_COLUMNS,
+    quarter_url,
+    quarters_between,
+    to_archive_rows,
+)
 
 
 def _tables(submission_rows, owner_rows, trans_rows, with_10b51=False,
-            title="Common Stock"):
+            title="Common Stock", footnote_rows=None, refs=None):
+    """
+    One quarter of DERA tables.
+
+    `refs` is one footnote-id cell per transaction row, dropped into
+    TRANS_SHARES_FN; one of the twelve is enough, because the rule reads their
+    union. `footnote_rows` is FOOTNOTES.tsv, omitted entirely when None so the
+    absent-table path is exercised too.
+    """
     submission_columns = [
         "ACCESSION_NUMBER", "FILING_DATE", "PERIOD_OF_REPORT", "DOCUMENT_TYPE",
         "ISSUERCIK", "ISSUERNAME", "ISSUERTRADINGSYMBOL"]
@@ -30,11 +43,18 @@ def _tables(submission_rows, owner_rows, trans_rows, with_10b51=False,
         "TRANS_PRICEPERSHARE", "SHRS_OWND_FOLWNG_TRANS",
         "VALU_OWND_FOLWNG_TRANS", "DIRECT_INDIRECT_OWNERSHIP"])
     transactions.insert(1, "SECURITY_TITLE", title)
-    return {
+    tables = {
         "SUBMISSION": submission,
         "REPORTINGOWNER": owners,
         "NONDERIV_TRANS": transactions,
     }
+    if footnote_rows is not None:
+        for column in FOOTNOTE_ID_COLUMNS:
+            transactions[column] = ""
+        transactions["TRANS_SHARES_FN"] = refs or ""
+        tables["FOOTNOTES"] = pd.DataFrame(footnote_rows, columns=[
+            "ACCESSION_NUMBER", "FOOTNOTE_ID", "FOOTNOTE_TXT"])
+    return tables
 
 
 SUB = [["0001-22-1", "31-AUG-2022", "29-AUG-2022", "4", "0000910638",
@@ -134,15 +154,127 @@ def test_only_the_first_reporting_owner_is_kept():
     assert list(transactions["insider_name"]) == ["Nordstrom Phyllis B"]
 
 
-def test_before_2023_there_is_no_10b5_1_column_and_the_answer_is_unknown():
+def test_with_neither_checkbox_nor_footnotes_the_answer_is_unknown():
     """
-    The checkbox did not exist until the SEC amended Rule 10b5-1 effective
-    February 2023. None is the honest answer for older filings; False would
-    assert every pre-2023 trade was opportunistic.
+    Nothing to read from. The checkbox postdates February 2023 and this quarter
+    ships no FOOTNOTES.tsv, so both of `_tx_is_10b51`'s inputs are missing and
+    None is the honest answer. False would assert the trade was opportunistic on
+    no evidence at all.
     """
     _f, transactions = to_archive_rows(_tables(SUB, OWN, TRX), set())
     assert transactions["is_10b51"].isna().all()
     assert transactions["is_10b51"].dtype.name == "boolean"
+
+
+def test_a_clear_checkbox_without_footnotes_still_cannot_decide():
+    """
+    The branch a clear box does not close. `_tx_is_10b51` overrules a clear box
+    when a footnote the transaction references names the rule, so with the
+    footnotes unreadable the answer is unknown rather than False.
+    """
+    submission = [SUB[0] + ["0"]]
+    _f, transactions = to_archive_rows(
+        _tables(submission, OWN, TRX, with_10b51=True), set())
+    assert transactions["is_10b51"].isna().all()
+
+
+PLAN_FOOTNOTE = "Shares sold pursuant to a Rule 10b5-1 trading plan."
+OTHER_FOOTNOTE = "Shares held in a family trust."
+
+
+def test_a_set_checkbox_disqualifies_the_transaction():
+    """Branch one: the box is filing-wide, so nothing else is consulted."""
+    submission = [SUB[0] + ["1"]]
+    _f, transactions = to_archive_rows(
+        _tables(submission, OWN, TRX, with_10b51=True,
+                footnote_rows=[], refs=[""]), set())
+    assert list(transactions["is_10b51"]) == [True]
+
+
+def test_a_clear_checkbox_yields_to_this_transaction_s_own_footnote():
+    """
+    Branch two. A filing can mix a plan sale with an ordinary open-market buy
+    under one clear box, and only the leg whose own footnote names the rule is
+    disqualified.
+    """
+    submission = [SUB[0] + ["0"]]
+    rows = TRX + [["0001-22-1", "29-AUG-2022", "S", "400.0", "13.00", "4600.0",
+                   "", "D"]]
+    _f, transactions = to_archive_rows(
+        _tables(submission, OWN, rows, with_10b51=True,
+                footnote_rows=[["0001-22-1", "F1", PLAN_FOOTNOTE]],
+                refs=["", "F2, F1"]), set())
+    assert list(zip(transactions["transaction_code"],
+                    transactions["is_10b51"])) == [("P", False), ("S", True)]
+
+
+def test_an_absent_checkbox_falls_back_to_every_footnote_in_the_filing():
+    """
+    Branch three, and the reason an empty AFF10B5ONE cell must not read as a
+    clear box. With no checkbox the filing's footnote set as a whole is the only
+    evidence, so a plan footnote attached to another row still disqualifies this
+    one.
+    """
+    submission = [SUB[0] + [""]]
+    _f, transactions = to_archive_rows(
+        _tables(submission, OWN, TRX, with_10b51=True,
+                footnote_rows=[["0001-22-1", "F1", PLAN_FOOTNOTE]],
+                refs=[""]), set())
+    assert list(transactions["is_10b51"]) == [True]
+
+
+def test_a_clear_checkbox_and_no_matching_footnote_is_false():
+    """Branch four. Every input was readable and every one of them said no."""
+    submission = [SUB[0] + ["false"]]
+    _f, transactions = to_archive_rows(
+        _tables(submission, OWN, TRX, with_10b51=True,
+                footnote_rows=[["0001-22-1", "F1", OTHER_FOOTNOTE]],
+                refs=["F1"]), set())
+    assert list(transactions["is_10b51"]) == [False]
+
+
+def test_a_plan_footnote_decides_a_filing_that_predates_the_checkbox():
+    """
+    What the fix is for. Before February 2023 there is no box at all, and the
+    footnotes are the whole of the evidence: seven years of rows that used to
+    come back unknown are decided the way production decides them.
+    """
+    _f, transactions = to_archive_rows(
+        _tables(SUB, OWN, TRX,
+                footnote_rows=[["0001-22-1", "F1", PLAN_FOOTNOTE]],
+                refs=["F1"]), set())
+    assert list(transactions["is_10b51"]) == [True]
+
+
+def test_a_footnote_belonging_to_another_filing_decides_nothing():
+    """
+    The filing-wide fallback is filing-wide, not quarter-wide. FOOTNOTES.tsv is
+    one table for the whole quarter, so an id is only meaningful next to its
+    accession number.
+    """
+    _f, transactions = to_archive_rows(
+        _tables(SUB, OWN, TRX,
+                footnote_rows=[["9999-22-9", "F1", PLAN_FOOTNOTE]],
+                refs=["F1"]), set())
+    assert list(transactions["is_10b51"]) == [False]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Sold under a Rule 10b5-1 plan", True),
+    ("Sold under a Rule 10b5 1 plan", True),
+    ("Sold under a 10b5-1 plan", True),
+    ("Purchased under a 10B5-1 plan", True),
+    ("Sold under a Rule 10b-5 plan", False),
+])
+def test_the_footnote_pattern_is_the_parser_s_own(text, expected):
+    """
+    Imported from `parser._10B51_RE`, never retyped. Two copies of what counts
+    as naming the rule is how the archive and the pipeline come to disagree.
+    """
+    _f, transactions = to_archive_rows(
+        _tables(SUB, OWN, TRX, footnote_rows=[["0001-22-1", "F1", text]],
+                refs=["F1"]), set())
+    assert list(transactions["is_10b51"]) == [expected]
 
 
 def test_the_10b5_1_column_has_one_type_either_side_of_2023():
@@ -162,13 +294,16 @@ def test_the_10b5_1_column_has_one_type_either_side_of_2023():
     ("true", True),
     ("0", False),
     ("false", False),
-    # 2024Q1 writes all five, blanks included, and a blank is not a checked box.
+    # 2024Q1 writes all five. A blank is an absent element, so it falls through
+    # to the footnotes, and this filing's footnotes name nothing.
     ("", False),
 ])
 def test_from_2023_the_10b5_1_checkbox_is_read(raw, expected):
     submission = [SUB[0] + [raw]]
     _f, transactions = to_archive_rows(
-        _tables(submission, OWN, TRX, with_10b51=True), set())
+        _tables(submission, OWN, TRX, with_10b51=True,
+                footnote_rows=[["0001-22-1", "F1", OTHER_FOOTNOTE]],
+                refs=["F1"]), set())
     assert list(transactions["is_10b51"]) == [expected]
 
 
@@ -186,7 +321,8 @@ def test_the_checkbox_is_filing_wide_and_per_filing():
         ["0001-22-1", "30-AUG-2022", "P", "500.0", "12.75", "5500.0", "", "D"],
         ["0002-22-1", "29-AUG-2022", "P", "800.0", "9.00", "800.0", "", "D"]]
     _f, transactions = to_archive_rows(
-        _tables(submission, owners, rows, with_10b51=True), set())
+        _tables(submission, owners, rows, with_10b51=True, footnote_rows=[],
+                refs=["", "", ""]), set())
     assert list(zip(transactions["accession_number"],
                     transactions["is_10b51"])) == [
         ("0001-22-1", True), ("0001-22-1", True), ("0002-22-1", False)]
@@ -205,7 +341,8 @@ def test_a_dropped_row_does_not_hand_its_flag_to_the_next_one():
              "280000.0", "9600000.0", "D"],
             ["0002-22-1", "29-AUG-2022", "P", "1000.0", "12.50", "5000.0", "", "D"]]
     _f, transactions = to_archive_rows(
-        _tables(submission, owners, rows, with_10b51=True), set())
+        _tables(submission, owners, rows, with_10b51=True, footnote_rows=[],
+                refs=["", ""]), set())
     assert transactions["accession_number"].tolist() == ["0002-22-1"]
     assert list(transactions["is_10b51"]) == [False]
 
