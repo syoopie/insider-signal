@@ -77,11 +77,12 @@ setup_log_tee("repair_transaction_flags")
 
 CACHE = Path("data/repair/form4_reparse.jsonl")
 
-# 8 req/sec is the ingest budget; a filing aged out of the submissions API costs
-# three requests, so the pool has to be wide enough to keep that budget spent at
-# EDGAR's several-hundred-millisecond latency.
-RATE = 8.0
-WORKERS = 12
+# 8 req/sec is the ingest budget and EDGAR 429'd this script at it, 794 filings
+# into the first full pass. A filing aged out of the submissions API costs three
+# requests, so a sustained 5.4 filings/sec sat exactly on the ceiling for half an
+# hour, which daily ingest never does. 5 leaves headroom; `--rate` overrides it.
+RATE = 5.0
+WORKERS = 8
 
 SAMPLE_ROWS = 10
 
@@ -251,13 +252,13 @@ def load_cache(path: Path) -> dict:
     return cached
 
 
-def _reparse(filing: Filing) -> Optional[list]:
+def _reparse(filing: Filing, rate: float) -> Optional[list]:
     """This filing's Table I as EDGAR serves it today, or None if unreachable.
 
     The issuer CIK is what `form4_filings` stores and EDGAR serves an accession
     under every CIK on it, so the archive path resolves without the filer's.
     """
-    xml = fetch_filing_xml(filing.accession, filing.cik, req_per_sec=RATE)
+    xml = fetch_filing_xml(filing.accession, filing.cik, req_per_sec=rate)
     if not xml:
         return None
     parsed = parse_form4(xml, {"accession_number": filing.accession})
@@ -266,7 +267,8 @@ def _reparse(filing: Filing) -> Optional[list]:
     return parsed.get("transactions", [])
 
 
-def fetch_missing(filings: list, cached: dict, limit: Optional[int]) -> tuple:
+def fetch_missing(filings: list, cached: dict, limit: Optional[int],
+                  rate: float = RATE) -> tuple:
     """
     Re-parse every filing not already cached. Returns (cached, aborted, failed).
 
@@ -290,7 +292,7 @@ def fetch_missing(filings: list, cached: dict, limit: Optional[int]) -> tuple:
 
     with CACHE.open("a", encoding="utf-8") as sink:
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-            futures = {pool.submit(_reparse, f): f for f in todo}
+            futures = {pool.submit(_reparse, f, rate): f for f in todo}
             for future in as_completed(futures):
                 filing = futures[future]
                 try:
@@ -598,6 +600,8 @@ def main() -> None:
                         help="discard the re-parse cache and fetch every filing again")
     parser.add_argument("--limit", type=int,
                         help="fetch at most this many filings this pass")
+    parser.add_argument("--rate", type=float, default=RATE,
+                        help=f"EDGAR requests per second (default {RATE})")
     args = parser.parse_args()
 
     if args.refetch and CACHE.exists():
@@ -610,7 +614,8 @@ def main() -> None:
         f"{sum(len(f.rows) for f in filings):,} Table I rows")
 
     phase("EDGAR")
-    cached, aborted, unreachable = fetch_missing(filings, load_cache(CACHE), args.limit)
+    cached, aborted, unreachable = fetch_missing(filings, load_cache(CACHE),
+                                                 args.limit, args.rate)
 
     phase("IS_10B51 FROM THE SOURCE")
     flags_10b51, matched, unmatched = repair_10b51(filings, cached)
