@@ -15,7 +15,8 @@ GitHub Actions secret in CI).
 
 | Script | When to run it |
 | --- | --- |
-| `bootstrap.py` | First-time history load, or to fill a coverage gap. `--start` / `--end` / `--days`, `--force`. |
+| `bootstrap.py` | First-time history load, or to fill a coverage gap. `--start` / `--end` / `--days`, `--force`. `--force` re-fetches the XML but does **not** rewrite stored rows: `write_filing` returns early on a duplicate accession, so it cannot repair a stored transaction. Use `repair_transaction_flags.py` for that. |
+| `repair_transaction_flags.py` | When `transactions.is_10b51` or `is_routine` is stale. Re-parses every stored filing holding a purchase through the production parser, and re-decides the routine rule over `data/form4/` plus the database. Dry run by default; `--apply` writes. Resumable, `--limit` caps a pass, `--refetch` discards the cache. ~35 min on a cold cache. |
 | `backfill_signals.py` | After any change to `src/signals/` — rescores every stored P transaction. `--days 730 --force`. |
 | `refresh_market_caps.py` | Weekly before the backtest (the workflow does this); or manually after adding companies. |
 | `update_tickers.py` | Quarterly — refreshes the S&P 500 + Russell 2000 universe in `companies`. |

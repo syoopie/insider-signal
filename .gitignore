@@ -33,3 +33,6 @@ Thumbs.db
 
 # Research archive: local parquet, rebuilt from EDGAR, never committed.
 data/form4/
+
+# repair_transaction_flags.py's re-parse cache, refetchable from EDGAR.
+data/repair/

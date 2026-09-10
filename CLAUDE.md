@@ -104,6 +104,7 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 | Purchases out of the archive | `src/research/archive.py` → `connect()`, `purchases()`; DuckDB over the parquet |
 | Price context for archive rows | `archive.with_price_context()`; calls `market.context.context_from_series`, the ingest path's own function |
 | Proof the archive rolls up like the DB | `scripts/verify_archive_rollup.py` |
+| Repairing stale `is_10b51` / `is_routine` | `scripts/repair_transaction_flags.py`; dry run by default, `--apply` writes |
 | Archive rows, rolled up, priced and routine-flagged | `archive.priced_purchases()` |
 | The routine rule over the archive's decade | `src/research/routine.py` → `routine_flags()` |
 | The labelled research dataset from the archive | `scripts/build_research_dataset.py --source archive` |
@@ -237,6 +238,8 @@ scripts/                # see scripts/README.md for the full when-to-run table
   refresh_market_caps.py# 3-pass cap refresh: EDGAR us-gaap → DEI → per-company API → YF price
   update_tickers.py     # Refresh S&P500 + Russell2000 ticker universe in companies table
   backfill_sic.py       # Fill companies.sic_code/sic_description from EDGAR submissions API
+  repair_transaction_flags.py # Re-derive is_10b51 from EDGAR and is_routine from the
+                        #   archive. Dry run by default; --apply writes. Resumable.
   analyze_factors.py    # Factor-return correlation report (read-only)
   hillclimb.py          # The ruler for rankings. --mde prints what it can resolve
   gates.py              # The ruler for exclusions. Spends every row, not a decile
@@ -728,11 +731,30 @@ git push
 ### To fill a historical gap:
 ```bash
 uv run python scripts/bootstrap.py --start YYYY-MM-DD --end YYYY-MM-DD --force
-# --force re-fetches XML for filings already stored (fixes corrupted/missing data)
+# --force re-fetches XML for filings already stored — but it CANNOT repair them.
+# write_filing runs INSERT ... ON CONFLICT (accession_number) DO NOTHING RETURNING id
+# and returns (0, 0) on a duplicate, so the re-fetched XML is parsed and thrown away
+# without a transaction row being touched. --force only bypasses the per-window
+# duplicate check, which matters when a window was ingested with missing filings.
 git add .  # bootstrap updates last_run.txt
 git commit -m "Bootstrap gap fill YYYY-MM-DD to YYYY-MM-DD"
 git push
 ```
+
+### To repair a stale flag on stored transactions:
+```bash
+uv run python scripts/repair_transaction_flags.py           # dry run, prints the delta
+uv run python scripts/repair_transaction_flags.py --apply   # writes it
+```
+`is_10b51` and `is_routine` are written once at ingest and never revisited, so both
+describe the pipeline as it stood that day rather than the filing.
+`parser._tx_is_10b51` only landed on 2026-08-29, and `store._compute_is_routine`
+answers against history `prune_old_data` later deletes. This re-parses every stored
+filing holding a purchase through the production parser and re-decides the routine
+rule over `data/form4/` plus the database. Nothing is written without `--apply`, and
+the routine flag is merged rather than replaced: the rule is monotone in the
+purchases you can see, so a determination is never downgraded to NULL. Follow an
+`--apply` with `backfill_signals.py --days 730 --force`, since eligibility moved.
 
 ### To refresh market caps:
 ```bash
@@ -798,7 +820,7 @@ The old-versus-shipped backtest comparison used to be copied out here in full. I
 - Single fund (e.g. "Resolute Compo Holdings LLC") files separately for each partner. All buy identical shares same day. Caught by `is_direct=FALSE` exclusion + identical-block filter.
 
 **is_routine NULL rows:**
-- ~2,917 P transactions have `is_routine=NULL` (pre-schema legacy rows). These fall back to live routine calculation. Correct behavior — run `backfill_routine_flags()` in store.py to pre-populate in bulk.
+- A large share of P transactions carry `is_routine=NULL`, and they fall back to the live routine calculation. `store.backfill_routine_flags()` will not fix them: it asks `_compute_is_routine` again, against the same pruned history that returned NULL the first time. `scripts/repair_transaction_flags.py` decides the rule over `data/form4/` instead, which reaches back to 2016.
 
 **Large-cap CLUSTER_BUY:**
 - Automatically downgraded to WATCH. Empirical: 0% hit rate at 90d, −16% avg excess return.
