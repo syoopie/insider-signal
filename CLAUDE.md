@@ -104,6 +104,9 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 | Purchases out of the archive | `src/research/archive.py` → `connect()`, `purchases()`; DuckDB over the parquet |
 | Price context for archive rows | `archive.with_price_context()`; calls `market.context.context_from_series`, the ingest path's own function |
 | Proof the archive rolls up like the DB | `scripts/verify_archive_rollup.py` |
+| Archive rows, rolled up, priced and routine-flagged | `archive.priced_purchases()` |
+| The routine rule over the archive's decade | `src/research/routine.py` → `routine_flags()` |
+| The labelled research dataset from the archive | `scripts/build_research_dataset.py --source archive` |
 
 **Key thresholds (do not change without re-running full backfill + backtest):**
 - The score is `pct_below_52wk_high` as a percentile of the last 30 days of filings
@@ -618,6 +621,16 @@ Re-check that headroom before raising it again. This does not recover history
 already deleted; `scripts/build_form4_archive.py` is the only thing that does.
 - `NULL` = legacy row (pre-schema); falls back to live calc from `prior_purchases`
 - `TRUE` / `FALSE` = definitive; never re-computed
+
+**"Definitive" is wrong, and measurably so.** The flag is written at ingest against whatever
+history the database held then, and `prune_old_data` later deletes that history. Sixty stored
+`False` values sampled on 2026-09-10 were re-run through `_compute_is_routine` and all sixty
+now return `None`. They were decided against a window that no longer exists, so an unknown
+share of the 9,260 stored `False` values on P transactions are fossils. Treat the column as a
+record of what the database could see at ingest, not as a fact about the filing.
+`src/research/routine.py` computes the rule over `data/form4/`, which does reach three years
+back, and finds 7,626 routine buyers against this column's 414. Recomputing the production
+column from it is a hard-disqualifier change and needs the full backfill and backtest.
 
 ---
 

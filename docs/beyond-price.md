@@ -107,6 +107,12 @@ percentile of the null, with t=−1.34. Nothing here is conclusive at q=0.28, bu
 the opposite of what Cohen, Malloy and Pomorski support and the rule is currently deleting
 289 purchases on that authority. This is the first rule to re-test when the sample grows.
 
+> **Superseded by section 0b, 2026-09-10.** The sample grew to 124 months and the routine
+> result did not replicate: +0.039 against a resolution of 0.146. Both rows in this table
+> were measured on a flag the database computes once and never revisits, and 60 of 60 sampled
+> `False` values now return None from the database's own function. The 10b5-1 row cannot be
+> re-tested on the archive yet, for a reason 0b gives.
+
 ### Four labels, and the coin flip only reads as a coin flip under one of them
 
 `excess_sector_{h}d` and `excess_vol_{h}d` now exist alongside SPY and IWM;
@@ -247,6 +253,118 @@ be closed either way.
 Nothing new ships. The scoring model is unchanged, and B1 has retired six free hypotheses on
 evidence rather than on silence. The one item that would move the result is A4, and the
 pruning finding makes it urgent rather than merely valuable.
+
+---
+
+## 0b. What the archive decided, 2026-09-10
+
+Section 0a ended with one instruction: re-test the routine disqualifier when the sample grows.
+The sample grew from 22 months to 124. Here is what it said.
+
+### The routine disqualifier measures as zero
+
+`scripts/build_research_dataset.py --source archive` builds the same labelled parquet from
+`data/form4/` instead of Neon. Same scoring, same four label families, same tier-1 block, so
+`scripts/gates.py --dataset data/prices/research_dataset_archive.parquet` runs unmodified.
+
+| routine gate | dropped | months | alpha | t | MDE | percentile |
+|---|---|---|---|---|---|---|
+| database, SPY | 289 | 22 | −0.187 | −1.34 | 0.158 | 0 |
+| archive, SPY | 7,522 | 124 | **+0.039** | +0.40 | 0.146 | 82 |
+| archive, SPY, 2023q1 on | 3,365 | 40 | −0.136 | −0.49 | 0.336 | 14 |
+| archive, vol | 7,486 | 124 | −0.0005 | −0.19 | 0.0030 | 33 |
+
+**Every archive reading is below its own resolution, and they straddle zero.** The −0.19pp
+wrong-direction result does not replicate on 26 times the routine rows. Excluding routine
+buyers neither earns nor costs anything measurable. It removes 10.6% of the sample.
+
+Keep the rule. It rests on Cohen, Malloy and Pomorski, it now points the right way on the
+largest sample, and nothing here is evidence to delete it. What this does retire is the
+section 0a claim that it was actively costing money.
+
+### A gate's resolution does not improve with months alone
+
+Section 0a said the standard error falls as one over the square root of months, and it does.
+It is not the only term. The MDE for the routine gate went from 0.158 to 0.146, a 7%
+improvement on 5.6 times the months, because a gate's null spread also grows with the size of
+the class it drops. At 289 rows the gate perturbed 3.2% of the sample and both its estimate
+and its null were tiny. At 7,522 rows it perturbs 10.6% and both grew.
+
+The old reading cleared its resolution because the class was small, not because the effect
+was large. **Read `dropped` before `MDE` on any gate table.**
+
+### The stored `is_routine` is a fossil, and the archive is why we know
+
+`_compute_is_routine` returns None rather than guess when the database does not reach three
+years back. The flag is written once at ingest and never recomputed, and `prune_old_data`
+then deletes the history it read.
+
+Sixty stored `False` values were sampled and re-run through the database's own function.
+**All sixty now return None.** They were decided against a window that no longer exists. Of
+9,260 stored `False` values on P transactions, an unknown share are fossils of this kind, on
+top of 3,645 NULLs.
+
+So the 289 rows the gate dropped were not the routine class. They were whatever survived a
+window that had already moved. `src/research/routine.py` computes the flag over the archive's
+decade instead and finds 7,626 routine buyers where the database holds 414.
+
+**Recomputing the production column from the archive is the follow-up.** It changes a hard
+disqualifier, so it needs the full backfill and backtest, and it is not done here.
+
+### The 10b5-1 number is an artifact of our own flag
+
+It reads −0.265 at the 0th percentile, above its resolution, on the 40 months where the flag
+exists. Do not act on it.
+
+DERA carries the 10b5-1 checkbox on `SUBMISSION`, filing-wide. `parse_form4` narrows the same
+checkbox to the individual transaction through that transaction's own footnote references,
+which is the fix that stopped an open-market buy being disqualified for sharing a filing with
+a plan sale. The archive reproduces the pre-fix behaviour.
+
+| flag on 6,732 overlapping purchases, 2023q1 on | rows |
+|---|---|
+| agree | 6,646 |
+| archive flags, production does not | 67 |
+| production flags, archive does not | 19 |
+
+67 of the 394 the archive flags is 17% of the class, against a dropped class of 1,334 in the
+gate run. That is more than enough to produce the number. DERA ships a `FOOTNOTES` table that
+nothing reads yet; wiring it into `to_archive_rows` is the fix, and until then no archive
+result that keys on `is_10b51` means anything.
+
+### Where the power actually landed
+
+| gate | SPY alpha | MDE | vol alpha | MDE | percentile, both |
+|---|---|---|---|---|---|
+| buyers are 25% of the roster | **+1.021** | 0.604 | **+0.0156** | 0.0139 | 100 |
+| an officer, not a plain director | −0.167 | 0.662 | **−0.0182** | 0.0132 | 22 / 0 |
+| direct only | +0.214 | 0.289 | +0.0031 | 0.0061 | 98 / 94 |
+| not averaging down | +0.179 | 0.270 | +0.0032 | 0.0054 | 96 / 94 |
+| coin flip (control) | +0.086 | 0.191 | +0.0024 | 0.0043 | 90 / 94 |
+
+`buyers are 25% of the roster` is the one hypothesis the extra months converted from
+unmeasurable to resolved. It clears its resolution under both labels, keeps its sign, and sits
+at the 100th percentile of the null in both. It still fails Benjamini-Hochberg at 5%
+(q=0.41 and q=0.37), so it is a lead and not a result. It is now the strongest lead on the
+board, and roster size was already the named suspect for cluster count pointing the wrong way.
+
+`an officer, not a plain director` is the mirror image. Below resolution under SPY, and under
+the better-behaved vol label it clears resolution pointing the wrong way at t=−2.02, 0th
+percentile. Dropping plain directors would cost money. The literature's manager-versus-
+shareholder cut does not survive here, and section 0a's note that the sharper officer-and-
+director cut needs three columns and a re-parse still stands. The archive already stores
+`is_director`, `is_officer` and `is_ten_percent`, which the database does not.
+
+The control behaves under both labels, at +0.086 against 0.191 and +0.0024 against 0.0043.
+That matters, because under the ranking metric a random ranking scored t=+2.15. The gate
+estimand does not have that failure.
+
+### What this leaves
+
+The routine question is closed as a measured zero. The archive works and `gates.py` did not
+have to change to use it. Two things are now worth more than any item in Phase B: narrowing
+the archive's 10b5-1 flag through `FOOTNOTES`, and pushing the roster-share gate at the
+FDR bar it currently misses.
 
 ---
 
