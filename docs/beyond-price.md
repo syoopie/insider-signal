@@ -389,6 +389,107 @@ FDR bar it currently misses.
 
 ---
 
+## 0c. What reached production, 2026-09-12
+
+Sections 0a and 0b measured. This is the first thing from that work that changed what the
+system does, and it is a correctness fix rather than a model change. **No new alpha shipped,
+because none was found.** The discount screen remains the only factor that measures.
+
+### Two disqualifiers were running on fossils
+
+`is_10b51` and `is_routine` are written once at ingest and never revisited, so both recorded
+what the pipeline believed that day rather than what the filing says.
+
+`parser._tx_is_10b51` only landed on 2026-08-29. Before it the parser read two elements that
+never carried the value, leaving a substring scan of the document as the only mechanism.
+`store._compute_is_routine` answers against history `prune_old_data` later deletes, and the
+column is never recomputed: sixty sampled `False` values all returned `None` when re-run
+through the database's own function.
+
+`scripts/repair_transaction_flags.py` re-parses every stored filing holding a purchase
+through the production parser, and re-decides the routine rule over `data/form4/` plus the
+database. What it changed:
+
+| | before | after |
+|---|---|---|
+| `is_10b51` corrected | | 94 of 13,464 rows |
+| `is_routine` corrected | | 2,851 rows |
+| known-routine purchases | 528 | 2,188 |
+| eligible purchases | 10,715 | 10,040 |
+| stored signals after rescore | 1,292 | 1,241 |
+
+BUY fell 14, CLUSTER_BUY 3, WATCH 34. Nine alert-eligible signals sat on a purchase whose
+eligibility moved and **none had ever been sent**.
+
+The 10b5-1 half is smaller than expected: 93 rows gained the flag and 1 lost it. The old
+substring scan approximates the branch of `_tx_is_10b51` that fires when the checkbox is
+absent, so it was accidentally right most of the time. The routine half is the real movement.
+
+**This buys no measured return.** Section 0b measured all three shipped disqualifiers as
+zeros on the decade. The argument for the repair is that the system claimed to exclude plan
+trades and routine buyers while in fact excluding an arbitrary subset, which also corrupts
+any future measurement that conditions on those columns.
+
+### `--force` had been re-arming every alert it had already sent
+
+Found by watching `alerted` go from 11 to 0 during the rescore. `backfill_signals --force`
+deletes the range before rebuilding, which is correct because `signal_date` moves when
+eligibility changes and an upsert alone orphans the old row. But `alerted` lives on the row
+it drops, and the golden rule tells you to run that command after any scoring change.
+
+Nothing scans the table for unalerted signals in bulk, and `run_ingest` only alerts what it
+just built from the last week of filings, so the blast radius is a few duplicate messages
+rather than the whole table. The keys are now captured before the delete and restored after
+the rebuild.
+
+### Stop-losses are settled, and the answer is no
+
+The shipped backtest shows a 90-day mean of +13.46% against a median of −1.68%, which is the
+signature of a few winners carrying the result. The obvious response is a stop. Measured on
+4,996 top-decile purchases across 124 months, each charged against SPY over its own shortened
+holding window:
+
+| stop | mean | median | hit rate | p25 | monthly t |
+|---|---|---|---|---|---|
+| none | +11.29 | +1.35 | 51.7% | −17.91 | 4.29 |
+| −10% | +5.65 | −9.58 | 30.8% | −13.12 | 3.42 |
+| −15% | +6.58 | −10.09 | 37.9% | −17.40 | 3.38 |
+| −20% | +7.12 | −7.02 | 42.4% | −21.31 | 3.53 |
+| −25% | +8.56 | −3.50 | 45.9% | −23.24 | 3.87 |
+| −30% | +9.57 | −1.27 | 48.6% | −23.66 | 4.13 |
+
+**Every level makes every number worse, and tighter is worse than looser.** The screen buys
+volatile stocks near their lows by construction, so a 10% drawdown inside 90 days is ordinary
+and the stop books the loss just before the recovery the thesis is betting on. The hit rate
+falling from 51.7% to 30.8% is that happening a thousand times.
+
+It does not even buy downside protection. The 25th percentile improves from −17.9 to −13.1
+while the worst case moves only from −103 to −86, because the genuinely bad outcomes gap
+through a stop rather than sliding to it. Daily closes are used, so an intraday stop would
+fire more often and the direction is safe.
+
+That removes the most obvious item from Phase D. Position sizing and concentration limits
+remain untested.
+
+### 90 days is the right hold, and the negative median on the dashboard is noise
+
+| horizon | top-decile mean | median | hit rate | edge over all eligible | monthly t |
+|---|---|---|---|---|---|
+| 30d | +3.42 | +0.23 | 50.8% | +2.84 | 3.36 |
+| 60d | +6.14 | +1.00 | 51.9% | +4.83 | 3.47 |
+| 90d | +9.36 | +1.35 | 51.7% | +7.47 | **4.29** |
+| 180d | +16.69 | **−0.84** | 49.2% | +13.95 | 4.15 |
+
+Months weighted equally so a busy month cannot dominate. The edge peaks at 90 days on both
+significance and median. Past that the mean keeps climbing while the median turns negative,
+meaning everything after 90 days is a handful of large winners.
+
+**The shipped backtest's −1.68% median at 90 days does not survive the decade**, where the
+same horizon reads +1.35%. That number came from 386 trades over 22 months. It is the same
+small-sample problem as the routine gate, appearing somewhere a user can see it.
+
+---
+
 ## 1. The scoreboard
 
 What each round actually established, stripped of narrative.
