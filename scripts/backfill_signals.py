@@ -109,6 +109,43 @@ def _bulk_load_transactions(tickers: list[str]) -> dict[str, list[dict]]:
     return by_ticker
 
 
+def _alerted_keys_in_range(start: date, end: date) -> set:
+    """
+    The (ticker, signal_date) keys already sent to Telegram, before --force drops them.
+
+    `alerted` is what stops a signal being sent twice, and the rebuild below
+    deletes the rows carrying it, so every past alert comes back armed. The
+    daily ingest only ever alerts signals it just built from the last week of
+    filings, so the blast radius is small, but it is not zero and it recurs on
+    every run of the golden rule.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT ticker, signal_date FROM signals "
+                "WHERE alerted AND signal_date BETWEEN %s AND %s",
+                (start, end),
+            )
+            return set(cur.fetchall())
+
+
+def _restore_alerted(keys: set) -> int:
+    """
+    Re-arm nothing that was already sent. A key that survives the rebuild is the
+    same signal; one whose `signal_date` moved is a new one and stays unalerted.
+    """
+    if not keys:
+        return 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE signals SET alerted = TRUE "
+                "WHERE (ticker, signal_date) IN %s",
+                (tuple(keys),),
+            )
+            return cur.rowcount
+
+
 def _delete_signals_in_range(start: date, end: date) -> int:
     """
     Clear the range so --force rebuilds it rather than layering on top.
@@ -242,9 +279,12 @@ def main():
 
     # A filing at the start edge can report a purchase a little earlier, so the
     # clear window reaches back past `start` to catch those keys too.
+    alerted_keys: set = set()
     if args.force and not args.dry_run:
+        alerted_keys = _alerted_keys_in_range(start - timedelta(days=30), end)
         removed = _delete_signals_in_range(start - timedelta(days=30), end)
-        log(f"Force rebuild: cleared {removed} existing signal(s) in range")
+        log(f"Force rebuild: cleared {removed} existing signal(s) in range, "
+            f"holding {len(alerted_keys)} alerted key(s) to restore")
 
     if not work_items:
         log("Nothing to process. Run bootstrap.py first to load transaction data.")
@@ -418,6 +458,10 @@ def main():
         n_removed = dedup_suppressed_signals(since=start, until=end)
         if n_removed:
             log(f"  Dedup: removed {n_removed} signals suppressed by cooldown logic")
+        restored = _restore_alerted(alerted_keys)
+        if alerted_keys:
+            log(f"  Re-armed nothing already sent: {restored} of {len(alerted_keys)} "
+                f"alerted key(s) survived the rebuild")
 
     # ── SUMMARY ───────────────────────────────────────────────────────────────
     phase("SUMMARY")
