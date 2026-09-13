@@ -430,6 +430,22 @@ zeros on the decade. The argument for the repair is that the system claimed to e
 trades and routine buyers while in fact excluding an arbitrary subset, which also corrupts
 any future measurement that conditions on those columns.
 
+The backtest agrees. `run_backtest.py --label flag-repair` on 2026-09-13, against the
+scheduled run of 2026-09-06:
+
+| horizon | trades | hit rate | mean | median | information ratio |
+|---|---|---|---|---|---|
+| 30d | 397 → 385 | 53.9 → 53.8 | +4.31 → +3.95 | +1.28 → +1.28 | 0.59 → 0.55 |
+| 60d | 394 → 379 | 52.0 → 52.2 | +8.62 → +8.75 | +0.90 → +1.01 | 0.51 → 0.52 |
+| 90d | 386 → 373 | 47.9 → 47.7 | +13.46 → +12.80 | −1.68 → −1.62 | 0.45 → 0.47 |
+| 180d | 327 → 328 | 54.4 → 53.4 | +29.25 → +26.37 | +6.28 → +5.26 | 0.47 → 0.45 |
+
+Two horizons tick up and two tick down, by amounts a few trades can move. The comparison is
+not clean: the second run is a week later, so more holds have closed, and it follows a full
+`--force` rebuild rather than the incrementally built table the first one read. Neither
+confound can hide an effect large enough to matter, because 0b already bounded it below
+0.15pp on 124 months.
+
 ### `--force` had been re-arming every alert it had already sent
 
 Found by watching `alerted` go from 11 to 0 during the rescore. `backfill_signals --force`
