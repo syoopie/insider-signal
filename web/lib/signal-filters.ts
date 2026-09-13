@@ -26,7 +26,7 @@ export const MIN_SCORE_OPTIONS = [0, 45, 50, 60, 70] as const;
 export const DEFAULT_LOOKBACK = 14;
 export const DEFAULT_MIN_SCORE = 50;
 export const DEFAULT_TYPES: SignalType[] = ["CLUSTER_BUY", "BUY"];
-/** Large-cap is off by default: 0% hit rate at 90d, −16% avg excess return. */
+/** Large-cap is off by default. Whether that helps is unmeasured; see docs/findings.md. */
 export const DEFAULT_CAPS: CapTier[] = ["small", "mid", "unknown"];
 
 export const signalFilterParsers = {

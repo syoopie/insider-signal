@@ -100,6 +100,7 @@ Measured with `gates.py` on the database (22 months) and on the archive (124 mon
 | Not a routine buyer | +0.039pp against 0.146 on the archive, a measured zero. Kept on the literature |
 | Not a 10b5-1 plan trade | not yet readable on the archive, which lacks the footnote branch of the production flag |
 | Not a large-cap cluster | below resolution, see below |
+| Not large cap at all | below resolution, see below |
 
 ([history/beyond-price.md](history/beyond-price.md), sections 0a and 0b.)
 
@@ -115,6 +116,22 @@ rest of that zone. Excluding them measures +0.095pp at t=1.59 against a resoluti
 The archive cannot add power, because it has no point-in-time cap tier.
 
 The rule stays, and `research/gates.py` carries it as `not a large-cap cluster`.
+
+### Hiding large caps on the dashboard, 2026-09-13
+
+The dashboard's cap filter leaves large caps out by default. The reason it cited, a 0% hit rate
+and −16% average excess return at 90 days, was measured under the retired factor model.
+
+`research/gates.py` now carries `not large cap`. On the database sample it drops 623 of 7,677
+eligible purchases and measures +0.013pp on the mean against a resolution of 0.31pp. On the
+median it moves the result by −0.02pp from keeping everything. The volatility label agrees on
+both. Excluding large caps is unmeasured, not a measured gain.
+
+The two narrower readings point in opposite directions. The 26 large-cap purchases scoring 90 or
+more returned a 90-day mean of −9.4pp, a median of −7.1pp and a 31% hit rate, against +14.2pp,
++1.1pp and 50% for small caps. But restricting the discount ranking to purchases that are not
+large cap lowers its matched alpha from +12.84pp to +8.46pp (`hillclimb.py`, 2026-09-08). The
+cap tier is today's, not the tier at the trade.
 
 ---
 

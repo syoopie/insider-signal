@@ -152,6 +152,17 @@ def not_large_cap_cluster(frame: pd.DataFrame) -> pd.Series:
     return ~((tier == "large") & (_num(frame, "cluster_n_buyers") >= 3))
 
 
+def not_large_cap(frame: pd.DataFrame) -> pd.Series:
+    """
+    Drop every large-cap purchase, the dashboard's default cap filter.
+
+    `cap_tier` is today's tier, not the tier at the trade, which is also what the
+    dashboard filters on.
+    """
+    tier = frame.get("cap_tier", pd.Series("", index=frame.index)).fillna("")
+    return tier != "large"
+
+
 # Gates over the purchases the pipeline already scores. These are proposals.
 GATES: dict[str, Mask] = {
     "keep everything": keep_everything,
@@ -163,6 +174,7 @@ GATES: dict[str, Mask] = {
     "buyers are 25% of the roster": small_roster,
     "not averaging down": not_averaging_down,
     "not a large-cap cluster": not_large_cap_cluster,
+    "not large cap": not_large_cap,
 }
 
 # Gates the pipeline already applies, measured on the purchases it throws away.
