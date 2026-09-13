@@ -7,7 +7,8 @@ import { CapTierBadge, ConvictionBadge, SignalTypeBadge, convictionFor } from "@
 import { ClusterWindow } from "@/components/cluster-window";
 import { InsiderTable } from "@/components/insider-table";
 import { ScoreBar } from "@/components/score-bar";
-import { fmtCurrency, fmtDate, fmtRelative } from "@/lib/format";
+import { DEEP_DISCOUNT_PCT } from "@/lib/discount";
+import { fmtCurrency, fmtDate, fmtPct, fmtRelative } from "@/lib/format";
 import type { Signal } from "@/lib/queries/signals";
 import { cn } from "@/lib/utils";
 
@@ -26,6 +27,11 @@ export function SignalCard({ signal, isNew = false }: { signal: Signal; isNew?: 
   // badge beside it already says. Only show it when it adds something.
   const showConviction =
     conviction !== null && (signal.signalType === "CLUSTER_BUY" || conviction === "HIGH");
+
+  const discounts = (signal.evidence.insiders ?? [])
+    .map((i) => i.pct_below_52wk_high)
+    .filter((v): v is number => v != null);
+  const deepest = discounts.length > 0 ? Math.max(...discounts) : null;
 
   const tags: string[] = [];
   if (cluster?.tight_cluster) tags.push("tight window");
@@ -81,10 +87,18 @@ export function SignalCard({ signal, isNew = false }: { signal: Signal; isNew?: 
                   {signal.insiderCount} insiders
                 </span>
               )}
-              {signal.evidence.near_52wk_low && (
-                <span className="inline-flex items-center gap-1 rounded-full border border-watch/30 bg-watch/10 px-2 py-0.5 text-xs text-watch">
+              {deepest != null && (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs",
+                    deepest >= DEEP_DISCOUNT_PCT
+                      ? "border-watch/30 bg-watch/10 text-watch"
+                      : "border-border text-muted-foreground",
+                  )}
+                  title="How far below its 52-week high the stock sat on the day of the purchase"
+                >
                   <TrendingDown className="size-3" aria-hidden />
-                  Near 52wk low
+                  {fmtPct(deepest)} below 52wk high
                 </span>
               )}
               {tags.length > 0 && (
@@ -139,21 +153,12 @@ export function SignalCard({ signal, isNew = false }: { signal: Signal; isNew?: 
                   <p className="mb-3 text-sm text-muted-foreground text-pretty">
                     {cluster.insider_count ?? 0} insiders bought within the same 14-day window
                     {cluster.tight_cluster && ", at least 3 of them inside 5 days"}
-                    {cluster.executive_cluster && ", including a CFO, CEO, COO or Chairman"}. Three
-                    or more insiders buying together historically carries about twice the alpha of a
-                    single buy.
+                    {cluster.executive_cluster && ", including a CFO, CEO, COO or Chairman"}. A
+                    cluster decides the signal type and adds no points: measured on this data, the
+                    number of buyers does not order returns.
                   </p>
                   <ClusterWindow cluster={cluster} />
                 </section>
-              )}
-
-              {signal.evidence.near_52wk_low && (
-                <p className="rounded-lg border border-watch/30 bg-watch/5 px-3 py-2 text-sm">
-                  Trading near its 52-week low
-                  {signal.evidence.price_52wk_low != null &&
-                    ` — ${(signal.evidence.pct_above_52wk_low ?? 0).toFixed(0)}% above $${signal.evidence.price_52wk_low.toFixed(2)}`}
-                  . Buying into weakness scores higher than buying strength.
-                </p>
               )}
             </div>
 

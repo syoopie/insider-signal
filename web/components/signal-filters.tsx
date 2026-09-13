@@ -24,16 +24,15 @@ const TYPE_LABELS: Record<Exclude<SignalType, "LOW">, string> = {
 };
 
 const CAP_LABELS: Record<CapTier, { label: string; title: string }> = {
-  small: { label: "Small", title: "Under $2B — where the research finds the most alpha" },
+  small: { label: "Small", title: "Under $2B" },
   mid: { label: "Mid", title: "$2B–$10B" },
-  large: { label: "Large", title: "Over $10B — 0% hit rate at 90d in this system's backtest" },
-  unknown: { label: "Unknown", title: "Market cap not resolvable from EDGAR; scored conservatively" },
+  large: { label: "Large", title: "Over $10B. A large-cap cluster is a WATCH, not a CLUSTER_BUY" },
+  unknown: { label: "Unknown", title: "Market cap not resolvable from EDGAR" },
 };
 
 /**
  * The triage filter bar. Every control writes to the URL, so a filtered view is
- * a link. Chips rather than sliders: the score is a sum of fixed integer
- * factors, so a continuous control would imply precision the model doesn't have.
+ * a link.
  */
 export function SignalFilters() {
   const [filters, setFilters] = useQueryStates(signalFilterParsers, {

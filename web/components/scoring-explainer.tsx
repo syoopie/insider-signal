@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { SignalTypeBadge } from "@/components/badges";
 import { FilterChip, FilterGroup } from "@/components/filter-chip";
 import { DEEP_DISCOUNT_PCT, DISCOUNT_EVIDENCE, discountScore } from "@/lib/discount";
-import { factorMeta } from "@/lib/scoring-factors";
+import { CAP_LABELS, ROLE_LABELS } from "@/lib/scoring-factors";
 import { THRESHOLDS, classifySignal } from "@/lib/scoring-model";
 import { cn } from "@/lib/utils";
 
@@ -78,9 +78,9 @@ export function ScoringExplainer() {
               key={r}
               selected={role === r}
               onClick={() => setRole(r)}
-              title={factorMeta(`role_${r}`).reason}
+              title={`A ${ROLE_LABELS[r]} filed this purchase.`}
             >
-              {factorMeta(`role_${r}`).label.replace(" purchase", "")}
+              {ROLE_LABELS[r]}
             </FilterChip>
           ))}
         </FilterGroup>
@@ -91,9 +91,9 @@ export function ScoringExplainer() {
               key={c}
               selected={cap === c}
               onClick={() => setCap(c)}
-              title={factorMeta(`cap_${c}`).reason}
+              title={CAP_LABELS[c].reason}
             >
-              {factorMeta(`cap_${c}`).label}
+              {CAP_LABELS[c].label}
             </FilterChip>
           ))}
         </FilterGroup>

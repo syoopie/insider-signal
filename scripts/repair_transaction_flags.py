@@ -184,7 +184,7 @@ def is_eligible(row: StoredRow) -> bool:
             "is_routine": row.is_routine,
             "pct_below_52wk_high": None,
         },
-        owner={}, company={}, market_data={}, prior_purchases=[],
+        owner={}, prior_purchases=[],
     )
     return verdict is not None and not verdict["disqualified"]
 

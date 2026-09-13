@@ -23,6 +23,9 @@ remains. Direct and indirect purchases stay separate rows because they are
 different holdings, not tranches of one order.
 """
 
+from collections import defaultdict
+from datetime import date
+
 # Callers append their own WHERE clauses via {extra_where} and choose the
 # columns they need. Placeholders are positional, so {extra_where} must use %s
 # in the same order the caller passes them.
@@ -88,3 +91,51 @@ GROUP BY ticker, cik, cap_tier, company_name, insider_name,
 def purchase_rollup(extra_where: str = "") -> str:
     """The rollup query with caller-supplied filters spliced into the CTE."""
     return PURCHASE_ROLLUP_SQL.format(extra_where=extra_where)
+
+
+def work_items(start: date, end: date) -> list[tuple[date, str]]:
+    """Distinct (filed_date, ticker) with a non-plan purchase disclosed in [start, end], oldest first."""
+    from src.db.connection import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT f.filed_date, c.ticker
+                FROM transactions t
+                JOIN form4_filings f ON f.id = t.filing_id
+                JOIN companies c ON c.cik = f.cik
+                WHERE t.transaction_code = 'P'
+                  AND t.is_10b51 = FALSE
+                  AND f.filed_date BETWEEN %s AND %s
+                  AND c.ticker IS NOT NULL
+                  AND c.ticker NOT IN ('', 'NONE', 'NA', 'N/A', 'NULL')
+                ORDER BY f.filed_date, c.ticker
+                """,
+                (start, end),
+            )
+            return cur.fetchall()
+
+
+def purchases_by_ticker(tickers: list[str]) -> dict[str, list[dict]]:
+    """Every rolled-up non-plan purchase for `tickers`, newest transaction first."""
+    from psycopg2.extras import RealDictCursor
+
+    from src.db.connection import get_conn
+
+    if not tickers:
+        return {}
+    sql = f"""
+        SELECT * FROM ({purchase_rollup('AND c.ticker = ANY(%s)')}) rolled
+        WHERE is_10b51 IS NOT TRUE
+        ORDER BY ticker, transaction_date DESC
+    """
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, (tickers,))
+            rows = [dict(r) for r in cur.fetchall()]
+
+    by_ticker: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        by_ticker[row["ticker"]].append(row)
+    return dict(by_ticker)

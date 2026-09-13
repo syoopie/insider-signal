@@ -61,6 +61,12 @@ from research.tier1 import (
     value_vs_own_history,
 )
 from src.signals.batch import priors_before_window, score_purchase
+from src.signals.scorer import (
+    TIMING_FIRST,
+    TIMING_PRIOR_YEAR,
+    TIMING_SEQUENCED,
+    TIMING_UNVERIFIABLE,
+)
 from src.signals.discount import reference_window
 
 setup_log_tee("build_research_dataset")
@@ -310,15 +316,14 @@ def main():
             row["score"] = None
             row["scorer_disqualified"] = None
             row["disqualify_reason"] = "not_a_purchase"
-            row["breakdown"] = {}
+            row["factors"] = set()
         else:
             row["score"] = result["score"]
             row["scorer_disqualified"] = bool(result["disqualified"])
-            breakdown = result["breakdown"]
             row["disqualify_reason"] = (
-                next(iter(breakdown), None) if result["disqualified"] else None
+                next(iter(result["breakdown"]), None) if result["disqualified"] else None
             )
-            row["breakdown"] = breakdown if not result["disqualified"] else {}
+            row["factors"] = set() if result["disqualified"] else _factors_fired(p, result)
 
         ctx = price_context(series, tx_date)
         row.update({f"tx_{k}": v for k, v in ctx.items()})
@@ -367,7 +372,7 @@ def main():
 
         rows.append(row)
 
-    frame = _explode_breakdown(pd.DataFrame(rows))
+    frame = _explode_factors(pd.DataFrame(rows))
 
     phase("TIER 1 FEATURES")
     sales = inputs.sales
@@ -448,24 +453,45 @@ def main():
     log(f"\nCompleted in {fmt_elapsed(time.time() - t0)}")
 
 
-def _explode_breakdown(frame: pd.DataFrame) -> pd.DataFrame:
-    """
-    One `f_<factor>` indicator column per scoring factor: 1 if it fired, else 0.
+_TIMING_FACTOR = {
+    TIMING_SEQUENCED: "sequenced_buying_30d",
+    TIMING_PRIOR_YEAR: "prior_purchase_31_365d",
+    TIMING_FIRST: "first_purchase_12mo",
+    TIMING_UNVERIFIABLE: "first_purchase_unverifiable",
+}
 
-    Indicators, not the signed point values. A factor worth -10 points takes the
-    value -10 when it fires and 0 when it does not, so "higher" means "did not
-    fire" and every coefficient on a penalty reads backwards. That inverts the
-    interpretation of `indirect_purchase`, `role_ceo` and `first_purchase_12mo`
-    at once. The points are already in the scorer's weight table; what the
-    regression needs is whether the factor applied.
 
-    The factor set is discovered from the data rather than hard-coded, which is
-    how analyze_factors.py's ALL_FACTORS list went stale.
+def _factors_fired(purchase: dict, result: dict) -> set[str]:
     """
-    names = sorted({k for bd in frame["breakdown"] for k in bd})
+    The retired factor table's names, from the scorer's facts about the purchase.
+
+    The scorer no longer emits them as zero-point breakdown keys. The names stay,
+    because every candidate in research/candidates.py was measured on these columns.
+    """
+    facts = result["facts"]
+    fired = set(result["breakdown"])
+    fired.add(f"role_{facts['role_category']}")
+    fired.add(f"cap_{purchase.get('cap_tier') or 'unknown'}")
+    fired.add(_TIMING_FACTOR[facts["timing"]])
+    if not facts["is_direct"]:
+        fired.add("indirect_purchase")
+    if (facts["holdings_increase_pct"] or 0) >= 5:
+        fired.add("holdings_increase_5pct")
+    return fired
+
+
+def _explode_factors(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    One `f_<factor>` indicator column per factor: 1 if it fired, else 0.
+
+    The set is discovered from the data rather than hard-coded, so a source that
+    never produces a name, such as the archive's missing cap tiers, has no column
+    for it.
+    """
+    names = sorted({name for fired in frame["factors"] for name in fired})
     for name in names:
-        frame[f"f_{name}"] = [1.0 if name in bd else 0.0 for bd in frame["breakdown"]]
-    return frame.drop(columns=["breakdown"])
+        frame[f"f_{name}"] = [1.0 if name in fired else 0.0 for fired in frame["factors"]]
+    return frame.drop(columns=["factors"])
 
 
 def _f(v):

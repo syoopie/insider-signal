@@ -1,37 +1,24 @@
 """
-Cluster signal detector.
+Cluster detection: 3 or more distinct insiders buying one company inside 14 days.
 
-A cluster signal fires when 3 or more distinct insiders purchase shares
-in the same company within a 14-day rolling window. Research shows cluster
-signals generate approximately double the alpha of single-insider buys.
+A cluster changes how a signal is classified and adds no points. Measured on
+this data, cluster size does not order returns, and inside the most discounted
+third of purchases the number of buyers points the wrong way.
 
-Sub-flags added to the returned dict:
-  executive_cluster: True if any participant is CFO, CEO, COO, or Chairman.
-    Per Kang/Kim/Wang research, executive+director clusters are more informative
-    than director-only clusters.
-  tight_cluster: True if 3+ distinct insiders bought within a 5-day window.
-    Tighter temporal clustering has stronger signal per empirical studies.
+Sub-flags on the returned dict:
+  executive_cluster: a CFO, CEO, COO or Chairman is among the participants.
+  tight_cluster: 3+ distinct insiders bought within a 5-day sub-window.
 
-`cluster_from_transactions` is the one definition of a cluster. Both the live
-path (`detect_clusters_for_ticker`, which loads rows from the DB) and the
-historical backfill (`scripts/backfill_signals.py`, which pre-loads rows in
-bulk) call it, so the eligibility rules can't drift between the two.
-
-(Cohen, Malloy & Pomorski 2012; multiple empirical studies on cluster buys)
+`cluster_from_transactions` is the one definition of a cluster, and
+`src/signals/batch.py` is its only production caller.
 """
 
 from collections import Counter
 from datetime import date, timedelta
-from typing import List
-
-from psycopg2.extras import RealDictCursor
-
-from src.db.connection import get_conn
-from src.db.purchases import purchase_rollup
 
 CLUSTER_WINDOW_DAYS = 14
 CLUSTER_MIN_INSIDERS = 3
-TIGHT_CLUSTER_DAYS = 5  # sub-window for the tight_cluster flag
+TIGHT_CLUSTER_DAYS = 5
 
 # Minimum purchase value to count toward the cluster threshold.
 # Filters out DRIP/401k noise (tiny automatic contributions).
@@ -79,7 +66,8 @@ def cluster_from_transactions(txs: list, as_of_date: date) -> dict:
     Each dict needs: insider_name, role_category, transaction_date, total_value,
     price_per_share, shares, is_direct, and optionally is_10b51. Rows should be
     ordered newest-first; when an insider bought more than once, the newest row
-    is kept.
+    is kept. The caller is responsible for passing only rows already disclosed
+    by `as_of_date`.
 
     Returns:
         {
@@ -131,61 +119,3 @@ def cluster_from_transactions(txs: list, as_of_date: date) -> dict:
         "executive_cluster": executive_cluster,
         "tight_cluster": tight_cluster,
     }
-
-
-def detect_clusters_for_ticker(ticker: str, as_of_date: date) -> dict:
-    """
-    Cluster verdict for `ticker` as of `as_of_date`, reading the last
-    CLUSTER_WINDOW_DAYS days of open-market purchases from the database.
-    """
-    window_start = as_of_date - timedelta(days=CLUSTER_WINDOW_DAYS)
-
-    # The $25k floor is applied to the rolled-up day total, not to individual
-    # broker fills, so an insider who bought $40k across three tranches still
-    # counts toward the cluster.
-    sql = f"""
-        SELECT DISTINCT ON (insider_name)
-            insider_name, role_category, transaction_date,
-            total_value, price_per_share, shares, is_direct
-        FROM ({purchase_rollup('''
-              AND c.ticker = %s
-              AND t.transaction_date BETWEEN %s AND %s
-              AND t.is_direct = TRUE
-        ''')}) rolled
-        WHERE is_10b51 IS NOT TRUE
-          AND COALESCE(total_value, 0) >= %s
-        ORDER BY insider_name, transaction_date DESC
-    """
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(sql, (ticker.upper(), window_start, as_of_date, CLUSTER_MIN_VALUE))
-            rows = [dict(r) for r in cur.fetchall()]
-
-    return cluster_from_transactions(rows, as_of_date)
-
-
-def get_tickers_with_recent_purchases(since_date: date) -> List[str]:
-    """
-    Tickers with at least one open-market purchase *disclosed* since since_date.
-
-    Keyed off filed_date rather than transaction_date so a Form 4 reporting an
-    older trade still puts its ticker in the scoring queue on the day it lands.
-    """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT c.ticker
-                FROM transactions t
-                JOIN form4_filings f ON f.id = t.filing_id
-                JOIN companies c ON c.cik = f.cik
-                WHERE t.transaction_code = 'P'
-                  AND t.is_10b51 = FALSE
-                  AND f.filed_date >= %s
-                  AND c.ticker IS NOT NULL
-                  AND c.ticker NOT IN ('NONE', 'NA', 'N/A', 'NULL', '')
-                """,
-                (since_date,),
-            )
-            rows = cur.fetchall()
-    return [r[0] for r in rows if r[0]]

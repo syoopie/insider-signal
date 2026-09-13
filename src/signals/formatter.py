@@ -1,7 +1,10 @@
 """
-Builds the human-readable evidence block for each signal.
-Every signal surfaced to the user includes full reasoning — no signal
-appears without the evidence that generated it.
+The evidence blob stored on every signal: who bought, what, and why it scored.
+
+Telegram renders it and the dashboard reads it. It holds only what can be
+computed from stored data, so a signal carries the same evidence whichever
+entrypoint built it. Today's price is not stored data, which is why there is no
+"near its 52-week low right now" field here any more.
 """
 
 from collections import defaultdict
@@ -12,35 +15,18 @@ _ROLE_PRIORITY = {"cfo": 0, "ceo": 1, "chairman": 2, "director": 3, "coo": 4, "o
 
 
 RESEARCH_REFS = {
-    "discount_rank":       ("Bought this far below the stock's 52-week high: +11.13pp above "
-                            "same-month, same-volatility peers at the top decile, median +7.39pp, "
-                            "18 months out of sample. The same screen without an insider buying "
-                            "has a median of -1.30pp."),
+    "discount_rank": ("Bought this far below the stock's 52-week high: +11.13pp above "
+                      "same-month, same-volatility peers at the top decile, median +7.39pp, "
+                      "18 months out of sample. The same screen without an insider buying "
+                      "has a median of -1.30pp."),
     "price_context_missing": ("Under a year of trading history, so there is no 52-week high to "
                               "measure against. Not ranked, and never alerted."),
-    # The rest describe the filing. They are recorded on every signal and score
-    # nothing, because measured out of sample none of them ranked purchases
-    # better than chance. The citations are what the weights used to rest on.
-    "role_cfo":            "CFO: 21.5% avg annual return (highest of any role) — TipRanks/ResearchGate",
-    "role_ceo":            "CEO: 19.3% avg annual return — TipRanks/ResearchGate",
-    "role_director":       "Director: 20.7% avg annual return — TipRanks/ResearchGate",
-    "role_coo":            "COO (officer): 19.8% avg annual return — TipRanks/ResearchGate",
-    "role_officer":        "Named officer: 19.8% avg annual return — TipRanks/ResearchGate",
-    "role_chairman":       "Chairman: strong operational visibility, similar to director",
-    "role_other":          "Insider with company ownership stake",
-    "cap_small":           "Small-cap: +7.4% abnormal return at 12 months — Lakonishok & Lee (2001)",
-    "cap_mid":             "Mid-cap: moderate information asymmetry advantage",
-    "cap_large":           "Large-cap: minimal alpha from insider signals in research",
-    "cap_unknown":         "Market cap unknown; moderate uncertainty",
-    "value_500k_plus":     "Transaction ≥$500K: high-conviction capital commitment",
-    "value_100k_plus":     "Transaction ≥$100K: meaningful capital commitment",
-    "first_purchase_12mo": "First purchase in 12+ months: non-routine, discretionary signal",
-    "sequenced_buying_30d":"Sequenced buying: 2nd purchase within 30 days — extended informational advantage",
-    "near_52wk_low":       "Purchasing within 10% of 52-week low: insider buying into weakness",
-    "cluster":             "Cluster signal (3+ insiders, 14-day window): ~2× alpha vs single buy — multiple empirical studies",
 }
 
-HOLD_HORIZON = "60–90 days (Jeng, Metrick & Zeckhauser 2003 optimal window for opportunistic purchases)"
+CLUSTER_NOTE = ("Cluster (3+ insiders inside 14 days): decides the signal type and adds no "
+                "points. Measured here, the number of buyers does not order returns.")
+
+HOLD_HORIZON = "90 days, the horizon every published result here is measured on"
 
 
 def fmt_currency(val: Optional[float]) -> str:
@@ -59,6 +45,49 @@ def fmt_pct(val: Optional[float]) -> str:
     return f"{val:+.1f}%"
 
 
+def _float(value) -> Optional[float]:
+    return float(value) if value is not None else None
+
+
+def _insider_summary(name: str, scored: list) -> dict:
+    """One buyer, aggregated across every purchase they made in the window."""
+    best_role = min(
+        (s["owner"].get("role_category") or "other" for s in scored),
+        key=lambda r: _ROLE_PRIORITY.get(r, 99),
+    )
+    role_raw = next((s["owner"]["role_raw"] for s in scored if s["owner"].get("role_raw")), "")
+    txs = [s["transaction"] for s in scored]
+    total_shares = sum(float(t.get("shares") or 0) for t in txs)
+    total_value = sum(float(t.get("total_value") or 0) for t in txs)
+    weighted = [(float(t.get("price_per_share") or 0), float(t.get("shares") or 0)) for t in txs]
+    weighted = [(p, s) for p, s in weighted if p > 0 and s > 0]
+    avg_price = sum(p * s for p, s in weighted) / sum(s for _, s in weighted) if weighted else None
+
+    latest = max(scored, key=lambda s: str(s["transaction"].get("transaction_date") or ""))
+    latest_tx = latest["transaction"]
+    shares_after = latest_tx.get("shares_after")
+    shares_before = float(shares_after or 0) - total_shares
+    dates = sorted(str(t["transaction_date"]) for t in txs if t.get("transaction_date"))
+    return {
+        "name": name,
+        "role": best_role.upper(),
+        "role_category": best_role,
+        "role_raw": role_raw,
+        "shares_bought": total_shares,
+        "price": avg_price,
+        "total_value": total_value,
+        "shares_after": _float(shares_after),
+        "pct_increase": (total_shares / shares_before * 100) if shares_before > 0 else None,
+        "pct_below_52wk_high": _float(latest_tx.get("pct_below_52wk_high")),
+        "is_direct": all(t.get("is_direct") is not False for t in txs),
+        "timing": latest["score_result"]["facts"]["timing"],
+        "transaction_date": latest_tx.get("transaction_date"),
+        "in_scoring_window": True,
+        "purchase_count": len(scored),
+        "date_range": (dates[0], dates[-1]) if len(dates) > 1 else None,
+    }
+
+
 def build_evidence(
     ticker: str,
     company_name: str,
@@ -66,95 +95,48 @@ def build_evidence(
     signal_type: str,
     score_breakdown: dict,
     cluster_info: dict,
-    transactions: list,   # list of scored transactions with owner info
-    market_data: dict,
-    filed_date: str,
+    transactions: list,
+    cap_tier: str,
+    filed_date: date,
     signal_date: date,
 ) -> dict:
     """
-    Builds the full evidence dict stored in the signals table and
-    used for both Telegram messages and the web dashboard.
+    `transactions` is `ScoredWindow.scored_txs`: {"owner", "transaction",
+    "score_result"} per eligible purchase in the scoring window.
     """
-    # Collect research citations for factors that fired
-    research_basis = []
-    for factor in score_breakdown:
-        if factor in RESEARCH_REFS:
-            research_basis.append(RESEARCH_REFS[factor])
+    research_basis = [RESEARCH_REFS[k] for k in score_breakdown if k in RESEARCH_REFS]
     if cluster_info.get("is_cluster"):
-        research_basis.append(RESEARCH_REFS["cluster"])
+        research_basis.append(CLUSTER_NOTE)
 
-    # Build per-insider summary — aggregate multiple purchases by same person
     by_name = defaultdict(list)
-    for tx in transactions:
-        by_name[tx.get("owner", {}).get("name", "Unknown")].append(tx)
+    for scored in transactions:
+        by_name[scored["owner"].get("name") or "Unknown"].append(scored)
+    insiders = [_insider_summary(name, scored) for name, scored in by_name.items()]
 
-    insider_summaries = []
-    scored_names = set()
-    for name, txs in by_name.items():
-        scored_names.add(name)
-        best_role = min(
-            (tx.get("owner", {}).get("role_category", "other") for tx in txs),
-            key=lambda r: _ROLE_PRIORITY.get(r, 99),
-        )
-        role_raw = next(
-            (tx.get("owner", {}).get("role_raw", "") for tx in txs if tx.get("owner", {}).get("role_raw")),
-            "",
-        )
-        t_list = [tx.get("transaction", {}) for tx in txs]
-        total_shares = sum(float(t.get("shares") or 0) for t in t_list)
-        total_value  = sum(float(t.get("total_value") or 0) for t in t_list)
-        pw = [(float(t.get("price_per_share") or 0), float(t.get("shares") or 0)) for t in t_list]
-        pw = [(p, s) for p, s in pw if p > 0 and s > 0]
-        avg_price = sum(p * s for p, s in pw) / sum(s for _, s in pw) if pw else None
-        most_recent = max(t_list, key=lambda t: str(t.get("transaction_date") or ""))
-        shares_after = most_recent.get("shares_after")
-        shares_before = float(shares_after or 0) - total_shares
-        pct_increase = (total_shares / shares_before * 100) if shares_before > 0 else None
-        dates = sorted(str(t.get("transaction_date") or "") for t in t_list if t.get("transaction_date"))
-        insider_summaries.append({
-            "name": name,
-            "role": best_role.upper(),
-            "role_raw": role_raw,
-            "shares_bought": total_shares,
-            "price": avg_price,
-            "total_value": total_value,
-            "shares_after": shares_after,
-            "pct_increase": pct_increase,
-            "transaction_date": most_recent.get("transaction_date"),
-            "is_10b51": False,
-            "in_scoring_window": True,
-            "purchase_count": len(txs),
-            "date_range": (dates[0], dates[-1]) if len(dates) > 1 else None,
-        })
-
-    # For cluster signals: also include buyers from the 14-day window who
-    # didn't appear in the 7-day scoring window so the display matches the cluster count
+    # A cluster reaches back 14 days and the scoring window 7, so a cluster can
+    # hold buyers the window did not score. List them, or the count and the
+    # table disagree.
     if cluster_info.get("is_cluster"):
         for ci in cluster_info.get("insiders", []):
-            name = ci.get("insider_name", "Unknown")
-            if name in scored_names:
+            name = ci.get("insider_name") or "Unknown"
+            if name in by_name:
                 continue
-            insider_summaries.append({
+            insiders.append({
                 "name": name,
                 "role": (ci.get("role_category") or "other").upper(),
+                "role_category": ci.get("role_category") or "other",
                 "role_raw": ci.get("role_category") or "",
-                "shares_bought": float(ci["shares"]) if ci.get("shares") else None,
-                "price": float(ci["price_per_share"]) if ci.get("price_per_share") else None,
-                "total_value": float(ci["total_value"]) if ci.get("total_value") else None,
+                "shares_bought": _float(ci.get("shares")),
+                "price": _float(ci.get("price_per_share")),
+                "total_value": _float(ci.get("total_value")),
                 "shares_after": None,
                 "pct_increase": None,
+                "pct_below_52wk_high": _float(ci.get("pct_below_52wk_high")),
+                "is_direct": True,
+                "timing": None,
                 "transaction_date": ci.get("transaction_date"),
-                "is_10b51": False,
                 "in_scoring_window": False,
             })
-
-    current_price = market_data.get("current_price")
-    low_52wk = market_data.get("price_52wk_low")
-    near_low = False
-    pct_above_low = None
-    if current_price and low_52wk and low_52wk > 0:
-        pct_above_low = (current_price - low_52wk) / low_52wk * 100
-        near_low = pct_above_low <= 10
 
     return {
         "ticker": ticker,
@@ -162,16 +144,11 @@ def build_evidence(
         "score": score,
         "signal_type": signal_type,
         "score_breakdown": score_breakdown,
-        "insiders": insider_summaries,
+        "insiders": insiders,
         "cluster": cluster_info,
-        "market_cap": market_data.get("market_cap"),
-        "cap_tier": market_data.get("cap_tier"),
-        "current_price": current_price,
-        "price_52wk_low": low_52wk,
-        "pct_above_52wk_low": pct_above_low,
-        "near_52wk_low": near_low,
-        "filed_date": filed_date,
-        "signal_date": signal_date.isoformat() if hasattr(signal_date, "isoformat") else str(signal_date),
+        "cap_tier": cap_tier,
+        "filed_date": filed_date.isoformat(),
+        "signal_date": signal_date.isoformat(),
         "research_basis": research_basis,
         "suggested_hold_horizon": HOLD_HORIZON,
     }
@@ -206,7 +183,6 @@ def format_telegram_message(evidence: dict) -> str:
         except Exception:
             return str(d)[:10]
 
-    # Cluster header
     insiders = e.get("insiders", [])
     if cluster.get("is_cluster"):
         n = cluster.get("insider_count", 0)
@@ -220,7 +196,6 @@ def format_telegram_message(evidence: dict) -> str:
     else:
         lines.append("<b>👤 Insider purchase</b>")
 
-    # Buyer list
     for ins in insiders:
         name = ins.get("name", "Unknown")
         role = (ins.get("role_raw") or ins.get("role") or "").title()
@@ -240,29 +215,18 @@ def format_telegram_message(evidence: dict) -> str:
 
     lines.append("")
 
-    # Key context
     ctx = []
     cap = e.get("cap_tier")
-    if cap and cap not in ("unknown", None):
+    if cap and cap != "unknown":
         ctx.append(f"{cap.title()}-cap")
-    if e.get("near_52wk_low"):
-        pct = e.get("pct_above_52wk_low", 0)
-        ctx.append(f"{pct:.0f}% above 52-wk low")
+    discounts = [ins["pct_below_52wk_high"] for ins in insiders
+                 if ins.get("pct_below_52wk_high") is not None]
+    if discounts:
+        ctx.append(f"{max(discounts):.0f}% below 52-wk high")
     if ctx:
         lines.append("📍 " + " · ".join(ctx))
-
-    # Score factors — one per line, compact
-    breakdown = e.get("score_breakdown", {})
-    if breakdown:
-        factor_parts = []
-        for factor, pts in breakdown.items():
-            if isinstance(pts, int):
-                label_str = factor.replace("_", " ").title()
-                factor_parts.append(f"{label_str} (+{pts})")
-        lines.append("📊 " + " · ".join(factor_parts))
 
     lines.append("")
     lines.append(f"📅 Filed {e.get('filed_date')}")
 
     return "\n".join(lines)
-

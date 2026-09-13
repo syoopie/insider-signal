@@ -1,22 +1,16 @@
 "use client";
 
-import { useMemo } from "react";
 import { Info } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { factorMeta, isScoringKey } from "@/lib/scoring-factors";
+import { SCORING_FACTORS } from "@/lib/scoring-factors";
 import { THRESHOLDS } from "@/lib/scoring-model";
 import type { ScoreBreakdown } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /**
- * What the score is, and what the filing said.
- *
- * This used to be a diverging bar chart of an additive factor table, which was
- * the right picture of the model at the time. There is one factor now, so a
- * chart of contributions would be a single full-width bar. The score renders as
- * a position on the scale it actually is, a percentile, with the BUY cutoff
- * marked; everything else the filing recorded is listed underneath as what it
- * is, context that does not move the number.
+ * What the score is: a position on the scale it actually is, a percentile, with
+ * the BUY cutoff marked. There is one factor, so a chart of contributions would
+ * be a single full-width bar.
  */
 export function ScoreBar({
   breakdown,
@@ -27,15 +21,8 @@ export function ScoreBar({
   score: number;
   className?: string;
 }) {
-  const { ranked, context } = useMemo(() => {
-    const keys = Object.keys(breakdown);
-    return {
-      ranked: keys.some(isScoringKey),
-      context: keys.filter((k) => !isScoringKey(k)),
-    };
-  }, [breakdown]);
-
-  const meta = factorMeta("discount_rank");
+  const ranked = "discount_rank" in breakdown;
+  const meta = SCORING_FACTORS.discount_rank;
   const buyPct = THRESHOLDS.buy;
 
   return (
@@ -78,51 +65,16 @@ export function ScoreBar({
           <PopoverContent align="start" className="w-72">
             <p className="font-medium">{meta.label}</p>
             <p className="text-xs text-muted-foreground">{meta.reason}</p>
-            {meta.research && (
-              <p className="mt-2 border-t pt-2 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">Measured: </span>
-                {meta.research}
-              </p>
-            )}
+            <p className="mt-2 border-t pt-2 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Measured: </span>
+              {meta.research}
+            </p>
           </PopoverContent>
         </Popover>
       ) : (
         <p className="text-sm text-muted-foreground text-pretty">
-          {factorMeta("price_context_missing").reason}
+          {SCORING_FACTORS.price_context_missing.reason}
         </p>
-      )}
-
-      {context.length > 0 && (
-        <div className="space-y-1.5 border-t pt-2">
-          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-            On the filing, not in the score
-          </p>
-          <div className="flex flex-wrap gap-1">
-            {context.map((key) => {
-              const item = factorMeta(key);
-              return (
-                <Popover key={key}>
-                  <PopoverTrigger
-                    className={cn(
-                      "rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground",
-                      "hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring",
-                    )}
-                  >
-                    {item.label}
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="w-72">
-                    <p className="font-medium">{item.label}</p>
-                    <p className="text-xs text-muted-foreground">{item.reason}</p>
-                    <p className="mt-2 border-t pt-2 text-xs text-muted-foreground text-pretty">
-                      Recorded, not scored. Measured out of sample, none of the filing
-                      attributes ranked purchases better than chance.
-                    </p>
-                  </PopoverContent>
-                </Popover>
-              );
-            })}
-          </div>
-        </div>
       )}
     </div>
   );

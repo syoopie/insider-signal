@@ -35,14 +35,7 @@ const MOCK_CLUSTER: Cluster = {
   ],
 };
 
-const MOCK_BREAKDOWN = {
-  role_director: 16,
-  cap_small: 15,
-  holdings_increase_5pct: 15,
-  sequenced_buying_30d: 10,
-  role_ceo: -5,
-  indirect_purchase: -15,
-};
+const MOCK_BREAKDOWN = { discount_rank: 93 };
 
 const ROLLING = Array.from({ length: 12 }, (_, i) => ({
   x: `M${i + 1}`,

@@ -5,8 +5,8 @@ Flow:
   1. Get last stored filing date from DB
   2. Fetch new Form 4s from EDGAR since that date
   3. Filter to ticker universe
-  4. Parse, score, detect clusters
-  5. Save signals + send Telegram alerts
+  4. Rebuild the signals for every filing in the window (src/signals/rebuild.py)
+  5. Send Telegram alerts for BUY / CLUSTER_BUY carrying a filing from this run
   6. Prune old data on 1st of month
 
 Entire script is wrapped in try/except — any failure sends a Telegram
@@ -16,25 +16,22 @@ error notification so pipeline issues are never silent.
 import sys
 import os
 import time
+from collections import Counter
 from datetime import date, timedelta, datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from psycopg2.extras import RealDictCursor
 
 from src.log import setup_log_tee, log as _log, phase as _phase, fmt_elapsed
 from src.tickers import load_ticker_universe, in_universe, resolve_ticker
 from src.ingest.fetch import load_cik_map, fetch_and_parse, DERIV_ONLY, XML_MISSING, PARSE_ERROR
-from src.db.connection import apply_schema, get_conn
-from src.db.purchases import purchase_rollup
 from src.ingest.edgar import EdgarBlockedError, EdgarRateLimitError, EdgarServerError, fetch_form4_index
+from src.db.connection import apply_schema, get_conn
+from src.db.signals import mark_signal_alerted, unsent_alerts_filed_since
 from src.db.store import (
-    write_filing, fill_missing_price_context, get_discount_reference,
-    update_company_market_data, get_last_filed_date, get_history_start,
-    save_signal, mark_signal_alerted, prune_old_data, RETENTION_MONTHS,
+    write_filing, fill_missing_price_context, get_last_filed_date, prune_old_data,
+    RETENTION_MONTHS,
 )
-from src.market.prices import get_market_data
-from src.signals.scorer import score_transaction, classify_signal
-from src.signals.cluster import detect_clusters_for_ticker, get_tickers_with_recent_purchases
-from src.signals.formatter import build_evidence
+from src.signals.batch import SCORING_WINDOW_DAYS
+from src.signals.rebuild import rebuild_signals
 from src.alerts.telegram import send_signal, send_error, send_daily_summary
 
 setup_log_tee("ingest")
@@ -185,171 +182,42 @@ def main():
     _log(f"  Skipped: {n_skipped_universe} not-in-universe, {n_skipped_deriv} deriv-only, "
          f"{n_xml_missing} no-xml, {n_parse_error} parse-errors, {n_duplicate} duplicate")
 
-    # ── SIGNAL SCORING ────────────────────────────────────────────────────────
-    _phase("SIGNAL SCORING")
+    # ── SIGNALS ───────────────────────────────────────────────────────────────
+    _phase("SIGNALS")
     t0 = time.time()
 
-    # Window on filed_date, not transaction_date. A Form 4 may disclose a trade
-    # made months earlier; keying off the trade date meant those filings were
-    # stored and then never scored by anything. 4.8% of purchases were landing
-    # in that hole, 178 of them direct and over $25k.
-    recent_date = today - timedelta(days=7)
+    # Every filing from this run's fetch window, and at least one scoring window,
+    # rebuilt by the same function the backfill uses.
+    rebuild_start = min(start_date, today - timedelta(days=SCORING_WINDOW_DAYS - 1))
 
-    # The scorer ranks a purchase by how far below its 52-week high the stock
-    # sat on the day it was bought, and that number lives on the transaction
-    # row. Fill it before scoring, or every filing written today scores zero.
-    attempted, ranked = fill_missing_price_context(recent_date)
+    # The score is built on price context stored on the transaction row. Fill it
+    # before scoring, or every filing written today scores zero.
+    attempted, ranked = fill_missing_price_context(rebuild_start)
     if attempted:
         _log(f"Price context: {ranked}/{attempted} purchases rankable")
         if ranked < attempted:
             _log(f"  {attempted - ranked} have under 200 bars of history and "
                  f"will score 0 rather than be ranked on a partial year")
 
-    history_start = get_history_start()
-    tickers_to_score = get_tickers_with_recent_purchases(recent_date)
-    _log(f"Tickers with purchases filed in past 7 days: {len(tickers_to_score)}")
-    _log(f"History floor for first-purchase checks: {history_start or 'unknown'}")
+    rebuild = rebuild_signals(rebuild_start, today)
+    counts = rebuild.counts()
+    replaced = rebuild.replaced
+    _log(f"Rebuilt filings {rebuild_start} → {today} in {time.time() - t0:.1f}s")
+    _log(f"  CLUSTER_BUY: {counts['CLUSTER_BUY']}  BUY: {counts['BUY']}  "
+         f"WATCH: {counts['WATCH']}  LOW: {counts['LOW']}  ineligible: {rebuild.ineligible}")
+    _log(f"  stored {replaced.written}, {replaced.suppressed} suppressed by the cooldown, "
+         f"{replaced.deduped} deduplicated, {replaced.alerts_kept} already sent")
 
-    n_buy = n_cluster = n_watch = 0
-    n_low = n_no_eligible = 0
+    # A signal whose filings all predate this run's fetch window was evaluated,
+    # and alerted if it qualified, by an earlier run. Only the rest can be news.
+    for alert in unsent_alerts_filed_since(start_date):
+        sent = send_signal(alert["evidence"])
+        _log(f"  {alert['ticker']:<6}  {alert['signal_type']:<11}  "
+             f"Telegram alert {'SENT' if sent else 'FAILED'}")
+        if sent:
+            mark_signal_alerted(alert["id"])
 
-    for ticker in tickers_to_score:
-        cluster_info = detect_clusters_for_ticker(ticker, today)
-        mdata = get_market_data(ticker) if ticker else {}
-
-        window_sql = f"""
-            SELECT * FROM ({purchase_rollup('AND c.ticker = %s AND f.filed_date >= %s')}) rolled
-            WHERE is_10b51 IS NOT TRUE
-            ORDER BY transaction_date DESC
-        """
-        prior_sql = f"""
-            SELECT insider_name, transaction_date
-            FROM ({purchase_rollup('AND c.ticker = %s')}) rolled
-            WHERE is_10b51 IS NOT TRUE
-            ORDER BY transaction_date DESC
-        """
-        with get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(window_sql, (ticker, recent_date))
-                tx_rows = [dict(r) for r in cur.fetchall()]
-
-                cur.execute(prior_sql, (ticker,))
-                all_prior = [dict(r) for r in cur.fetchall()]
-
-        if not tx_rows:
-            continue
-
-        if mdata:
-            update_company_market_data(tx_rows[0].get("cik"), mdata.get("market_cap"), mdata.get("cap_tier"))
-        else:
-            _log(f"  {ticker:<6}  market data unavailable (cap=unknown)")
-
-        scored_txs = []
-        aggregate_score = 0
-        breakdown_combined = {}
-
-        for tx_row in tx_rows:
-            owner = {
-                "name": tx_row.get("insider_name"),
-                "role_raw": tx_row.get("insider_role"),
-                "role_category": tx_row.get("role_category"),
-            }
-            prior_for_insider = [p for p in all_prior if p.get("insider_name") == owner["name"]]
-            company = {"cap_tier": tx_row.get("cap_tier") or (mdata.get("cap_tier") if mdata else None)}
-
-            # Ranked against everything disclosed in the 60 days before this
-            # filing, not before today. A purchase filed five days ago is scored
-            # on what was known then. The series is loaded once and sliced.
-            result = score_transaction(
-                tx_row, owner, company, mdata, prior_for_insider,
-                history_start=history_start,
-                discount_reference=get_discount_reference(tx_row["filed_date"]),
-            )
-            if result and result.get("eligible"):
-                scored_txs.append({"owner": owner, "transaction": tx_row, "score_result": result})
-                if result["score"] > aggregate_score:
-                    aggregate_score = result["score"]
-                    breakdown_combined = result["breakdown"]
-
-        if not scored_txs:
-            n_no_eligible += 1
-            _log(f"  {ticker:<6}  score=n/a  (all transactions ineligible — 10b5-1 or non-P)")
-            continue
-
-        participant_scores = [stx["score_result"]["score"] for stx in scored_txs]
-        is_cluster    = cluster_info.get("is_cluster", False)
-        tight_cluster = cluster_info.get("tight_cluster", False)
-        cluster_n     = cluster_info.get("insider_count", 0)
-
-        signal_type   = classify_signal(aggregate_score, is_cluster, participant_scores, tight_cluster)
-
-        effective_cap = (tx_rows[0].get("cap_tier") or mdata.get("cap_tier") or "unknown") if mdata else (tx_rows[0].get("cap_tier") or "unknown")
-        # Large-cap clusters have near-zero alpha (0% hit at 90d, -16% avg excess).
-        if signal_type == "CLUSTER_BUY" and effective_cap == "large":
-            signal_type = "WATCH"
-        cluster_tag = f"(n={cluster_n})" if is_cluster else ""
-        _log(f"  {ticker:<6}  score={aggregate_score:>3}  {signal_type}{cluster_tag}  "
-             f"cap={effective_cap}  buyers={len(scored_txs)}")
-
-        if signal_type == "LOW":
-            n_low += 1
-            continue
-
-        company_name = tx_rows[0].get("company_name", ticker)
-        filed_date = tx_rows[0].get("filed_date", "")
-        # tx_rows sorted DESC by transaction_date; row 0 is the latest purchase
-        signal_date = tx_rows[0].get("transaction_date") or today
-
-        evidence = build_evidence(
-            ticker=ticker,
-            company_name=company_name,
-            score=aggregate_score,
-            signal_type=signal_type,
-            score_breakdown=breakdown_combined,
-            cluster_info=cluster_info,
-            transactions=scored_txs,
-            market_data=mdata,
-            filed_date=str(filed_date) if filed_date else "",
-            signal_date=signal_date,
-        )
-
-        signal_id, already_alerted = save_signal(
-            ticker=ticker,
-            signal_date=signal_date,
-            score=aggregate_score,
-            signal_type=signal_type,
-            cluster_flag=is_cluster,
-            score_breakdown=breakdown_combined,
-            evidence=evidence,
-        )
-        if signal_id == 0:
-            _log(f"  {ticker:<6}  signal suppressed (cooldown)")
-        else:
-            _log(f"  {ticker:<6}  signal saved (id={signal_id})"
-                 + (" [already alerted]" if already_alerted else ""))
-
-        # BUY alerts as well as CLUSTER_BUY. Only CLUSTER_BUY ever notified,
-        # despite both the stack table and the alerting docs promising both, so
-        # every BUY the pipeline has ever produced went unannounced.
-        if signal_type in ("CLUSTER_BUY", "BUY"):
-            if signal_id != 0 and not already_alerted:
-                sent = send_signal(evidence)
-                _log(f"  {ticker:<6}  Telegram alert {'SENT' if sent else 'FAILED'}")
-                if sent:
-                    mark_signal_alerted(signal_id)
-            elif already_alerted:
-                _log(f"  {ticker:<6}  Telegram alert SKIPPED (already sent)")
-            if signal_type == "CLUSTER_BUY":
-                n_cluster += 1
-            else:
-                n_buy += 1
-        else:
-            n_watch += 1
-
-    elapsed_score = time.time() - t0
-    _log(f"Scoring complete in {elapsed_score:.1f}s")
-    _log(f"  CLUSTER_BUY: {n_cluster}  BUY: {n_buy}  WATCH: {n_watch}  "
-         f"LOW: {n_low}  ineligible: {n_no_eligible}")
+    new = Counter(s.signal_type for s in rebuild.signals if s.filed_date >= start_date)
 
     # ── MONTHLY PRUNING ───────────────────────────────────────────────────────
     if today.day == 1:
@@ -360,8 +228,8 @@ def main():
 
     # ── DAILY SUMMARY ─────────────────────────────────────────────────────────
     _phase("WRAP UP")
-    total = n_cluster + n_buy + n_watch
-    sent = send_daily_summary(total, n_buy, n_cluster, n_watch)
+    total = new["CLUSTER_BUY"] + new["BUY"] + new["WATCH"]
+    sent = send_daily_summary(total, new["BUY"], new["CLUSTER_BUY"], new["WATCH"])
     _log(f"Daily summary Telegram {'SENT' if sent else 'FAILED (not configured or error)'}")
 
     ts_path = os.path.join(os.path.dirname(__file__), "..", "last_run.txt")

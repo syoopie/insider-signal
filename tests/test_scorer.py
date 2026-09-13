@@ -1,14 +1,19 @@
 from datetime import date
 
-from src.signals.scorer import classify_signal, score_transaction
+from src.signals.scorer import (
+    TIMING_FIRST,
+    TIMING_PRIOR_YEAR,
+    TIMING_SEQUENCED,
+    TIMING_UNVERIFIABLE,
+    classify_signal,
+    score_transaction,
+)
 
 DIRECTOR = {"role_category": "director"}
-SMALL = {"cap_tier": "small"}
-NO_MKT = {}
 
 
-def score(tx, owner=DIRECTOR, company=SMALL, market=NO_MKT, priors=None):
-    return score_transaction(tx, owner, company, market, priors or [])
+def score(tx, owner=DIRECTOR, priors=None, history_start=None):
+    return score_transaction(tx, owner, priors or [], history_start=history_start)
 
 
 # ── Eligibility / disqualifiers ──────────────────────────────────────────────
@@ -50,6 +55,17 @@ def test_computed_routine_disqualifies_when_flag_is_null(make_tx):
     assert r["breakdown"] == {"routine_trader": "DISQUALIFIED"}
 
 
+def test_purchase_with_no_price_is_disqualified(make_tx):
+    """
+    EDGAR lets a filer defer transactionPricePerShare to a footnote, which
+    leaves total_value NULL. Every observed case is a private placement, a
+    trust-to-trust transfer, or an award miscoded as P — never a market buy.
+    """
+    result = score(make_tx(price_per_share=None, total_value=None))
+    assert result["disqualified"] is True
+    assert result["breakdown"] == {"trivial_value": "DISQUALIFIED"}
+
+
 # ── The ranking ─────────────────────────────────────────────────────────────
 
 def test_the_score_is_the_discount_percentile(make_tx):
@@ -73,6 +89,16 @@ def test_the_score_is_monotone_in_the_discount(make_tx):
     assert len(set(scores)) > 5
 
 
+def test_the_score_stays_inside_zero_to_one_hundred(make_tx):
+    for value in (-5.0, 0.0, 50.0, 99.15, 250.0):
+        assert 0 <= score(make_tx(pct_below_52wk_high=value))["score"] <= 100
+
+
+def test_the_breakdown_holds_only_what_moved_the_score(make_tx):
+    result = score(make_tx(pct_below_52wk_high=60.12))
+    assert result["breakdown"] == {"discount_rank": 90}
+
+
 def test_a_purchase_with_no_price_context_is_never_alerted(make_tx):
     """
     Unrankable is not average. Scoring a purchase we cannot measure at the
@@ -82,109 +108,70 @@ def test_a_purchase_with_no_price_context_is_never_alerted(make_tx):
     assert result["score"] == 0
     assert result["eligible"] is True
     assert result["unranked"] is True
-    assert result["breakdown"]["price_context_missing"] == 0
+    assert result["breakdown"] == {"price_context_missing": 0}
 
 
-def test_the_filing_factors_are_recorded_but_score_nothing(make_tx):
+# ── What the filing says, recorded and not scored ───────────────────────────
+
+def test_the_filing_facts_are_recorded_but_score_nothing(make_tx):
     """
-    Every weight in the old table was set by univariate lift on a sample the
-    model had selected. Measured walk-forward the whole table returns +0.78pp at
-    a permutation p of 0.27, and adding it back as a tiebreak drops the result
-    from +11.13 to +7.62. It stays as description, not as points.
+    Every weight in the old factor table was set by univariate lift on a sample
+    the model had selected. Measured walk-forward it ranked no better than
+    chance, so role, ownership form and position size describe the purchase and
+    move nothing.
     """
     plain = score(make_tx(pct_below_52wk_high=30.0))
     loaded = score(make_tx(pct_below_52wk_high=30.0, is_direct=False,
                            shares=50, shares_after=1050),
-                   owner={"role_category": "cfo"},
-                   company={"cap_tier": "large"})
+                   owner={"role_category": "cfo"})
     assert plain["score"] == loaded["score"]
-    assert loaded["breakdown"]["indirect_purchase"] == 0
-    assert loaded["breakdown"]["role_cfo"] == 0
-    assert loaded["breakdown"]["cap_large"] == 0
-    assert loaded["breakdown"]["holdings_increase_5pct"] == 0
+    assert plain["breakdown"] == loaded["breakdown"]
+    assert loaded["facts"]["role_category"] == "cfo"
+    assert loaded["facts"]["is_direct"] is False
+    assert loaded["facts"]["holdings_increase_pct"] == 5.0
+    assert plain["facts"]["is_direct"] is True
+    assert plain["facts"]["holdings_increase_pct"] is None
 
 
-def test_timing_factors_are_still_mutually_exclusive(make_tx):
+def test_timing_is_one_of_four_mutually_exclusive_values(make_tx):
     ref = "2026-06-15"
-    seq = score(make_tx(transaction_date=ref, pct_below_52wk_high=30.0),
-                priors=[{"transaction_date": "2026-06-01"}])
-    assert "sequenced_buying_30d" in seq["breakdown"]
-    assert "prior_purchase_31_365d" not in seq["breakdown"]
-    assert "first_purchase_12mo" not in seq["breakdown"]
-
-    sustained = score(make_tx(transaction_date=ref, pct_below_52wk_high=30.0),
-                      priors=[{"transaction_date": "2026-01-15"}])
-    assert "prior_purchase_31_365d" in sustained["breakdown"]
-    assert "sequenced_buying_30d" not in sustained["breakdown"]
-
-    first = score(make_tx(transaction_date=ref, pct_below_52wk_high=30.0), priors=[])
-    assert "first_purchase_12mo" in first["breakdown"]
+    tx = make_tx(transaction_date=ref, pct_below_52wk_high=30.0)
+    assert score(tx, priors=[{"transaction_date": "2026-06-01"}])["facts"]["timing"] == TIMING_SEQUENCED
+    assert score(tx, priors=[{"transaction_date": "2026-01-15"}])["facts"]["timing"] == TIMING_PRIOR_YEAR
+    assert score(tx, priors=[])["facts"]["timing"] == TIMING_FIRST
 
 
 def test_transaction_date_may_be_a_date_object(make_tx):
     """
     psycopg2 returns DATE columns as date objects, so every row scored from the
-    database arrived this way. Slicing one raises TypeError, and the old parse
-    swallowed it and fell back to date.today() — silently measuring every timing
-    factor from today instead of from the trade.
+    database arrives this way. Slicing one raises TypeError, and an old parse
+    swallowed it and fell back to date.today(), measuring every timing fact from
+    today instead of from the trade.
     """
     as_obj = score(make_tx(transaction_date=date(2024, 9, 1), pct_below_52wk_high=30.0))
     as_str = score(make_tx(transaction_date="2024-09-01", pct_below_52wk_high=30.0))
-    assert as_obj["breakdown"] == as_str["breakdown"]
-    assert as_obj["score"] == as_str["score"]
+    assert as_obj == as_str
 
-    # A prior buy 40 days before the trade is sustained conviction, not a first
-    # purchase. Reading the date as today would place it inside the 30d window.
-    priors = [{"transaction_date": "2024-07-23"}]
+    # A prior buy 40 days before the trade is inside the year, not inside 30 days.
     scored = score(make_tx(transaction_date=date(2024, 9, 1), pct_below_52wk_high=30.0),
-                   priors=priors)
-    assert "prior_purchase_31_365d" in scored["breakdown"]
+                   priors=[{"transaction_date": "2024-07-23"}])
+    assert scored["facts"]["timing"] == TIMING_PRIOR_YEAR
 
 
-def test_first_purchase_flag_needs_a_full_year_of_history(make_tx):
+def test_first_purchase_needs_a_full_year_of_history(make_tx):
     """
-    "No prior purchase in 365 days" is only meaningful when the database
-    actually covers those 365 days. It did not for the first year of ingest, so
-    87% of signals before 2025-04-03 carried the flag against 32% after, which
-    is a fact about the ingest start date rather than about insiders. The flag
-    no longer moves the score, but it still has to describe the filing honestly.
+    "No prior purchase in 365 days" is only meaningful when the data actually
+    covers those 365 days. It did not for the first year of ingest, so the flag
+    fired on 87% of early signals against 32% later, a fact about the ingest
+    start date rather than about insiders.
     """
     tx = make_tx(transaction_date="2026-06-15", pct_below_52wk_high=30.0)
-
-    covered = score_transaction(tx, {"role_category": "director"}, {}, {}, [],
-                                history_start=date(2024, 1, 1))
-    assert "first_purchase_12mo" in covered["breakdown"]
-
-    cold = score_transaction(tx, {"role_category": "director"}, {}, {}, [],
-                             history_start=date(2026, 1, 1))
-    assert "first_purchase_12mo" not in cold["breakdown"]
-    assert "first_purchase_unverifiable" in cold["breakdown"]
+    covered = score(tx, history_start=date(2024, 1, 1))
+    cold = score(tx, history_start=date(2026, 1, 1))
+    assert covered["facts"]["timing"] == TIMING_FIRST
+    assert cold["facts"]["timing"] == TIMING_UNVERIFIABLE
     assert cold["score"] == covered["score"]
-
-    assert "first_purchase_12mo" in score_transaction(
-        tx, {"role_category": "director"}, {}, {}, [],
-        history_start=None)["breakdown"]
-
-
-def test_live_price_data_cannot_change_the_score(make_tx):
-    """
-    The score must depend only on stored filing data.
-
-    The 52-week-low factor broke this: it fired in live ingest, which has a
-    Yahoo quote, and never in the historical backfill, which does not. The same
-    purchase scored up to 12 points apart depending on which path saw it, and a
-    --force backfill silently reclassified signals the live path had written.
-    """
-    at_low = score(make_tx(price_per_share=10, pct_below_52wk_high=30.0),
-                   market={"price_52wk_low": 10})
-    no_market = score(make_tx(price_per_share=10, pct_below_52wk_high=30.0), market={})
-    assert at_low["score"] == no_market["score"]
-    assert not any("52wk_low" in f for f in at_low["breakdown"])
-
-
-def test_the_score_stays_inside_zero_to_one_hundred(make_tx):
-    for value in (-5.0, 0.0, 50.0, 99.15, 250.0):
-        assert 0 <= score(make_tx(pct_below_52wk_high=value))["score"] <= 100
+    assert score(tx, history_start=None)["facts"]["timing"] == TIMING_FIRST
 
 
 # ── classify_signal ─────────────────────────────────────────────────────────
@@ -213,12 +200,7 @@ def test_a_cluster_in_a_stock_near_its_high_is_not_an_alert():
     assert classify_signal(30, True, [28, 30, 32], tight_cluster=False) == "WATCH"
 
 
-def test_purchase_with_no_price_is_disqualified(make_tx):
-    """
-    EDGAR lets a filer defer transactionPricePerShare to a footnote, which
-    leaves total_value NULL. Every observed case is a private placement, a
-    trust-to-trust transfer, or an award miscoded as P — never a market buy.
-    """
-    result = score(make_tx(price_per_share=None, total_value=None))
-    assert result["disqualified"] is True
-    assert result["breakdown"] == {"trivial_value": "DISQUALIFIED"}
+def test_a_large_cap_cluster_is_a_watch():
+    assert classify_signal(95, True, [90, 92, 95], True, cap_tier="small") == "CLUSTER_BUY"
+    assert classify_signal(95, True, [90, 92, 95], True, cap_tier="large") == "WATCH"
+    assert classify_signal(95, False, cap_tier="large") == "BUY"

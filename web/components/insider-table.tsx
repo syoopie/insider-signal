@@ -3,7 +3,8 @@
 import { DataTable, type Column } from "@/components/data-table";
 import { Money } from "@/components/money";
 import type { Insider } from "@/lib/types";
-import { fmtDate, fmtInt, fmtPctSigned, titleCase } from "@/lib/format";
+import { fmtDate, fmtInt, fmtPct, fmtPctSigned, titleCase } from "@/lib/format";
+import { TIMING_LABELS } from "@/lib/scoring-factors";
 
 const columns: Column<Insider>[] = [
   {
@@ -11,7 +12,7 @@ const columns: Column<Insider>[] = [
     header: "Insider",
     width: "minmax(0, 1.6fr)",
     cell: (r) => (
-      <span className="truncate" title={r.name}>
+      <span className="truncate" title={r.timing ? `${r.name} · ${TIMING_LABELS[r.timing] ?? r.timing}` : r.name}>
         {r.name}
       </span>
     ),
@@ -22,7 +23,10 @@ const columns: Column<Insider>[] = [
     header: "Role",
     width: "minmax(0, 1fr)",
     cell: (r) => (
-      <span className="text-muted-foreground">{titleCase(r.role_raw ?? r.role ?? "")}</span>
+      <span className="truncate text-muted-foreground">
+        {titleCase(r.role_raw ?? r.role ?? "")}
+        {r.is_direct === false && " · indirect"}
+      </span>
     ),
     sortValue: (r) => r.role ?? "",
   },
@@ -60,6 +64,18 @@ const columns: Column<Insider>[] = [
     align: "end",
     cell: (r) => <Money value={r.total_value} emphasizeAbove={250_000} />,
     sortValue: (r) => r.total_value ?? 0,
+  },
+  {
+    key: "discount",
+    header: "Below high",
+    width: "84px",
+    align: "end",
+    cell: (r) => (
+      <span className="tabular-nums text-muted-foreground" title="Below its 52-week high on the day of the trade">
+        {r.pct_below_52wk_high != null ? fmtPct(r.pct_below_52wk_high) : "—"}
+      </span>
+    ),
+    sortValue: (r) => r.pct_below_52wk_high ?? 0,
   },
   {
     key: "increase",

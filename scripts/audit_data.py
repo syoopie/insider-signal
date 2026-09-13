@@ -117,16 +117,15 @@ CHECKS = [
           SELECT 1 FROM companies c WHERE c.ticker=s.ticker AND c.cap_tier='large')"""),
     ("signals: alerted=true but type not BUY/CLUSTER_BUY",
      "SELECT count(*) v FROM signals WHERE alerted=true AND signal_type NOT IN ('BUY','CLUSTER_BUY')"),
-    # A signal older than the last backfill window keeps whatever model scored it.
-    # These rows carry factors the current scorer cannot emit, so they are not
-    # comparable to the rest of the table and must not reach factor analysis.
-    # Clear them by widening the window: backfill_signals.py --days 900 --force.
-    ("signals: score_breakdown carries factors the current model cannot produce",
-     """SELECT count(*) v FROM signals WHERE score_breakdown ?| ARRAY[
-          'value_500k_plus','value_100k_plus','holdings_increase_30pct',
-          'holdings_increase_15pct','fast_filing_0_1d','fast_filing_2d',
-          'near_52wk_low_5pct','near_52wk_low_10pct',
-          'cluster_size_4plus','cluster_size_5plus','cluster_size_6plus']"""),
+    # The breakdown holds only what moved the score. Anything else was written by
+    # an older model; `backfill_signals.py` with no range rebuilds every row.
+    ("signals: score_breakdown holds a key the current model cannot produce",
+     """SELECT count(*) v FROM signals WHERE EXISTS (
+          SELECT 1 FROM jsonb_object_keys(score_breakdown) k
+          WHERE k NOT IN ('discount_rank', 'price_context_missing'))"""),
+    ("signals: evidence carries a live market price (not stored data)",
+     """SELECT count(*) v FROM signals
+        WHERE evidence ?| ARRAY['current_price', 'near_52wk_low', 'price_52wk_low']"""),
     # The score is a percentile now, so it uses the whole range and a high one is
     # a real ranking rather than a leftover. What must not happen is a signal
     # scored without the input the score is made of.

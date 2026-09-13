@@ -28,8 +28,13 @@ export const insiderSchema = z.object({
   shares_bought: z.number().optional().nullable(),
   purchase_count: z.number().optional().nullable(),
   transaction_date: z.string().optional().nullable(),
-  is_10b51: z.boolean().optional().nullable(),
   in_scoring_window: z.boolean().optional().nullable(),
+  role_category: z.string().optional().nullable(),
+  /** Below the 52-week high on the trade date, stored at ingest. */
+  pct_below_52wk_high: z.number().optional().nullable(),
+  is_direct: z.boolean().optional().nullable(),
+  /** One of the TIMING_* values in `src/signals/scorer.py`; null for a cluster-only buyer. */
+  timing: z.string().optional().nullable(),
 });
 export type Insider = z.infer<typeof insiderSchema>;
 
@@ -59,13 +64,8 @@ export type Cluster = z.infer<typeof clusterSchema>;
 export const evidenceSchema = z.object({
   company_name: z.string().optional().nullable(),
   cap_tier: z.string().optional().nullable(),
-  market_cap: z.number().optional().nullable(),
   filed_date: z.string().optional().nullable(),
   signal_date: z.string().optional().nullable(),
-  current_price: z.number().optional().nullable(),
-  near_52wk_low: z.boolean().optional().nullable(),
-  pct_above_52wk_low: z.number().optional().nullable(),
-  price_52wk_low: z.number().optional().nullable(),
   insiders: z.array(insiderSchema).optional().nullable(),
   cluster: clusterSchema.optional().nullable(),
   research_basis: z.array(z.string()).optional().nullable(),

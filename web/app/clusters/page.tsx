@@ -25,8 +25,9 @@ async function Content() {
       </div>
 
       <p className="text-sm text-muted-foreground text-pretty">
-        Three or more insiders buying the same stock inside 14 days has historically carried about
-        twice the alpha of a single insider buy. The pipeline only counts direct open-market
+        Three or more insiders buying the same stock inside 14 days. A cluster decides whether a
+        signal is a CLUSTER_BUY and adds no points: measured on this data, the number of buyers does
+        not order returns. The pipeline only counts direct open-market
         purchases of at least $25,000, and discards blocks where three or more buyers took the same
         price on the same day — those are offering allocations, not independent decisions.
       </p>

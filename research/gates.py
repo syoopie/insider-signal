@@ -140,6 +140,18 @@ def coin_flip(seed: int = 20260905) -> Mask:
     return mask
 
 
+def not_large_cap_cluster(frame: pd.DataFrame) -> pd.Series:
+    """
+    Drop large-cap purchases made inside a cluster of 3 or more buyers.
+
+    Production downgrades a large-cap CLUSTER_BUY to WATCH on a hit rate that was
+    measured under the retired factor model. The archive has no point-in-time
+    cap tier, so only the database sample can speak to it.
+    """
+    tier = frame.get("cap_tier", pd.Series("", index=frame.index)).fillna("")
+    return ~((tier == "large") & (_num(frame, "cluster_n_buyers") >= 3))
+
+
 # Gates over the purchases the pipeline already scores. These are proposals.
 GATES: dict[str, Mask] = {
     "keep everything": keep_everything,
@@ -150,6 +162,7 @@ GATES: dict[str, Mask] = {
     "an officer, not a plain director": officers_only,
     "buyers are 25% of the roster": small_roster,
     "not averaging down": not_averaging_down,
+    "not a large-cap cluster": not_large_cap_cluster,
 }
 
 # Gates the pipeline already applies, measured on the purchases it throws away.

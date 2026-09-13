@@ -64,5 +64,5 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          echo "Running: backfill_signals.py --days ${{ github.event.inputs.days }} --force"
-          uv run python scripts/backfill_signals.py --days ${{ github.event.inputs.days }} --force
+          echo "Running: backfill_signals.py --days ${{ github.event.inputs.days }}"
+          uv run python scripts/backfill_signals.py --days ${{ github.event.inputs.days }}
