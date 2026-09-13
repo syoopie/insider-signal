@@ -147,8 +147,8 @@ def match_rows(stored_keys: list, parsed_keys: list) -> Optional[list]:
     somebody else's purchase, so this refuses rather than guesses.
 
     Where the key is unique on both sides it identifies the row outright, and a
-    parsed row with no stored counterpart is fine: `purge_debt_transactions.py`
-    deleted rows the parser now skips anyway. Where a key repeats, only order
+    parsed row with no stored counterpart is fine: debt rows written before
+    the parser skipped them were purged. Where a key repeats, only order
     can separate the duplicates, and order is trustworthy only if both sequences
     agree element for element.
     """

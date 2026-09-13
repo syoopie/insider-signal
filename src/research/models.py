@@ -1,15 +1,6 @@
 """
-The three candidate model forms, and the fitting they share.
-
-  A  recalibrated additive score — the current point system, weights refitted
-  B  regularised logistic regression on standardised features
-  C  gradient-boosted trees, as a ceiling check only
-
-The plan recommends B for production and C only to learn what the achievable
-ceiling looks like. The training split holds a few thousand observations
-clustered into far fewer independent cells, and a model with tree capacity will
-fit noise the protocol cannot reliably catch. B also keeps coefficients
-readable, which matters because /how-it-works explains the model to a person.
+The fitted model forms the ranking candidates use: a regularised logistic on
+standardised features, and a ridge on rank-transformed ones.
 
 Everything is fitted on the training split alone. Standardisation constants,
 winsorisation quantiles and the ridge penalty all come from training and are
@@ -25,7 +16,7 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from src.research.estimate import logistic_score, ols_clustered, ridge_logistic
+from src.research.estimate import logistic_score, ridge_logistic
 from src.research.features import log_scale, winsorize
 
 
@@ -84,38 +75,14 @@ class FittedModel:
     name: str
     standardizer: Standardizer
     beta: np.ndarray
-    kind: str  # "logistic" | "linear"
 
     def raw_score(self, frame: pd.DataFrame) -> np.ndarray:
-        X = self.standardizer.transform(frame)
-        if self.kind == "logistic":
-            return logistic_score(X, self.beta)
-        return np.column_stack([np.ones(len(X)), X]) @ self.beta
-
-    def points(self, frame: pd.DataFrame, reference: Optional[np.ndarray] = None) -> np.ndarray:
-        """
-        The raw score mapped onto 0-100 by its percentile in `reference`.
-
-        A percentile map is what makes the number a ranking again. The current
-        score tops out at 61 against a threshold of 60, so it is a conjunction
-        wearing a scale; anything replacing it has to spread across the range it
-        claims to use.
-        """
-        values = self.raw_score(frame)
-        base = reference if reference is not None else values
-        ranks = np.searchsorted(np.sort(base), values, side="right") / max(len(base), 1)
-        return np.clip(ranks * 100.0, 0.0, 100.0)
-
-    def coefficient_table(self) -> pd.DataFrame:
-        return pd.DataFrame({
-            "feature": self.standardizer.columns,
-            "beta": self.beta[1:],
-        }).sort_values("beta", key=lambda s: s.abs(), ascending=False)
+        return logistic_score(self.standardizer.transform(frame), self.beta)
 
 
 def fit_logistic(train: pd.DataFrame, columns: Sequence[str], label: str,
                  alpha: float) -> Optional[FittedModel]:
-    """Model B. Predicts P(excess return > 0)."""
+    """Predicts P(excess return > 0)."""
     standardizer = fit_standardizer(train, columns)
     if not standardizer.columns:
         return None
@@ -124,30 +91,7 @@ def fit_logistic(train: pd.DataFrame, columns: Sequence[str], label: str,
     beta = ridge_logistic(X, y, alpha=alpha)
     if beta is None:
         return None
-    return FittedModel(f"logistic(alpha={alpha:g})", standardizer, beta, "logistic")
-
-
-def fit_linear(train: pd.DataFrame, columns: Sequence[str], label: str,
-               clusters: Optional[np.ndarray] = None) -> Optional[FittedModel]:
-    """
-    Model A's engine. Predicts the excess return itself.
-
-    Coefficients come from the same clustered OLS the factor table uses, so the
-    weights a recalibrated point system would carry are the weights that were
-    reported as significant, rather than a second set fitted a different way.
-    """
-    standardizer = fit_standardizer(train, columns)
-    if not standardizer.columns:
-        return None
-    X = standardizer.transform(train)
-    y = train[label].to_numpy(dtype="float64")
-    groups = clusters if clusters is not None else train["ticker"].to_numpy()
-    coefficients = ols_clustered(X, y, groups, standardizer.columns)
-    if not coefficients:
-        return None
-    intercept = float(y.mean())
-    beta = np.concatenate([[intercept], np.array([c.beta for c in coefficients])])
-    return FittedModel("linear", standardizer, beta, "linear")
+    return FittedModel(f"logistic(alpha={alpha:g})", standardizer, beta)
 
 
 @dataclass(frozen=True)
@@ -184,10 +128,6 @@ class RankModel:
     def raw_score(self, frame: pd.DataFrame) -> np.ndarray:
         return self._ranked(frame) @ self.beta
 
-    def coefficient_table(self) -> pd.DataFrame:
-        return pd.DataFrame({"feature": self.columns, "beta": self.beta}) \
-            .sort_values("beta", key=lambda s: s.abs(), ascending=False)
-
 
 def fit_rank_model(train: pd.DataFrame, columns: Sequence[str], label: str,
                    alpha: float = 10.0) -> Optional[RankModel]:
@@ -220,25 +160,3 @@ def fit_rank_model(train: pd.DataFrame, columns: Sequence[str], label: str,
         return None
     return RankModel(kept, knots, beta)
 
-
-def fit_linear_significant_only(train: pd.DataFrame, columns: Sequence[str],
-                                label: str) -> Optional[FittedModel]:
-    """
-    Model A, restricted to features that survived multiple-comparison correction.
-
-    Fitting on everything and shipping everything is how 27 candidates became a
-    weight table. Anything that did not clear the false-discovery rate gets a
-    weight of zero, which is the honest encoding of "we could not measure it".
-    """
-    standardizer = fit_standardizer(train, columns)
-    if not standardizer.columns:
-        return None
-    X = standardizer.transform(train)
-    y = train[label].to_numpy(dtype="float64")
-    coefficients = ols_clustered(X, y, train["ticker"].to_numpy(), standardizer.columns)
-    if not coefficients:
-        return None
-    kept = [c.name for c in coefficients if c.significant]
-    if not kept:
-        return None
-    return fit_linear(train, kept, label)

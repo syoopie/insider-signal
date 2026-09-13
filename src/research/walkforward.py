@@ -653,7 +653,6 @@ def stable_across_folds(frame: pd.DataFrame, columns: Sequence[str],
     Features whose average holds still from the first fold's training window to
     the last fold's prediction window.
 
-    The drift guard in `protocol.stable_features` compares two fixed splits.
     Walk-forward refits every month, so the comparison that matters is between
     the earliest thing a model is fitted on and the latest thing it is asked to
     score. `first_purchase_unverifiable` fires on 62% of the earliest window and

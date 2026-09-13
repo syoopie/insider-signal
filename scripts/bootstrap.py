@@ -42,7 +42,7 @@ from src.ingest.common import (
     EdgarRateLimitError, EdgarBlockedError, EdgarServerError,
 )
 from src.ingest.edgar import fetch_form4_index
-from src.db.store import write_filing
+from src.db.store import fill_missing_price_context, write_filing
 from src.db.connection import apply_schema, get_conn
 
 log_path = setup_log_tee("bootstrap")
@@ -342,6 +342,11 @@ def main():
             flush()
             log(f"  Window {window_idx+1} done.  stored={filings_stored:,}  "
                 f"tx={tx_stored:,}  elapsed={fmt_elapsed(time.time()-run_start)}")
+
+    if not args.dry_run:
+        phase("PRICE CONTEXT")
+        attempted, ranked = fill_missing_price_context(start_date, limit=None)
+        log(f"Price context: {ranked:,}/{attempted:,} purchases rankable")
 
     elapsed = time.time() - run_start
     phase("COMPLETE")

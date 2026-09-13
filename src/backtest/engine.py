@@ -495,10 +495,8 @@ def save_backtest_results(results: List[Dict], threshold: int,
 
 
 # Column order for both signal queries below. `id` is carried through into the
-# per-signal `detail` rows so analysis can join on it. Without it,
-# analyze_factors.py had to guess which signal a return belonged to by searching
-# for a signal_date within 8 days of exec_date - 4, which mismatches whenever a
-# ticker has several signals in a fortnight.
+# per-signal `detail` rows so analysis can join a return to its signal
+# exactly, rather than guessing from dates when a ticker has several signals.
 _SIGNAL_COLS = ["signal_id", "ticker", "signal_date", "score", "signal_type",
                 "cluster_flag", "cap_tier", "filed_date"]
 

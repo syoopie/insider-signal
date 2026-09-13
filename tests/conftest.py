@@ -2,7 +2,7 @@
 
 import importlib.util
 import sys
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -56,16 +56,5 @@ def make_tx():
         }
         tx.update(overrides)
         return tx
-
-    return _make
-
-
-@pytest.fixture
-def prior_on():
-    """A prior-purchase dict `n` days before `ref` (default: today)."""
-
-    def _make(days_ago, ref=None):
-        ref = ref or date.today()
-        return {"transaction_date": (ref - timedelta(days=days_ago)).isoformat()}
 
     return _make

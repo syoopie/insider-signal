@@ -18,8 +18,6 @@ from src.research.models import fit_logistic, fit_rank_model
 from src.signals.discount import discount_score
 from src.research.walkforward import Fitter, Scorer, feature_fitter, score_of
 
-RAW_TERMS_PRESENT = ["pct_holdings_increase", "total_value"]
-
 # Everything except the timing factors, whose prevalence tracks how far back
 # ingest reaches rather than anything an insider did.
 STABLE_ALL = [c for c in ALL_CANDIDATES
@@ -128,12 +126,6 @@ def only_where(inner: Fitter, column: str, keep: Sequence) -> Fitter:
                 if column in frame.columns else np.ones(len(frame), dtype=bool)
             return np.where(eligible, values, -np.inf)
         return score
-    return fitter
-
-
-def constant() -> Fitter:
-    def fitter(_train: pd.DataFrame, _label: str) -> Scorer:
-        return lambda frame: np.zeros(len(frame))
     return fitter
 
 

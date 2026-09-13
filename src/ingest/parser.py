@@ -17,7 +17,6 @@ insider_name for such a filing is whichever owner EDGAR listed first.
 
 import re
 import xml.etree.ElementTree as ET
-from datetime import date
 from typing import Optional
 
 
@@ -49,16 +48,6 @@ def _text(element, tag: str, default=None):
     if node is None or node.text is None:
         return default
     return node.text.strip()
-
-
-def _float(element, tag: str) -> Optional[float]:
-    val = _text(element, tag)
-    if val is None:
-        return None
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return None
 
 
 def _bool_flag(element, tag: str) -> bool:

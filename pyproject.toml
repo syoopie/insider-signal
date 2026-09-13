@@ -51,6 +51,3 @@ select = ["F", "E9"]
 # common.py deliberately re-exports the EDGAR error types and helpers that the
 # entrypoint scripts import from here rather than reaching into each module.
 "src/ingest/common.py" = ["F401"]
-# parser.py: `date` import and `plan_val` binding are load-bearing for
-# in-progress work; left as-is until that lands.
-"src/ingest/parser.py" = ["F401", "F841"]

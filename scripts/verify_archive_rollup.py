@@ -166,8 +166,7 @@ def main() -> None:
     #
     # The archive's version is the point-in-time correct one and that is worth
     # keeping rather than reconciling away: filtering history by today's index
-    # membership is survivorship bias, which is the exact error
-    # `walkforward.stable_features` exists to catch elsewhere.
+    # membership is survivorship bias.
     unmatched = len(absent) - len(renamed)
     log(f"  {unmatched:,} more sit under a CIK whose ticker differs between the "
         f"filing and `companies` today ({_share(unmatched, len(database)):.2%})")

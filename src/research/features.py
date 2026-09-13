@@ -1,10 +1,9 @@
 """
 The candidate feature set, in one place.
 
-Named here rather than in each script so the estimation, the model fit and the
-evaluation all see the same columns. `analyze_factors.py` kept its own
-hard-coded ALL_FACTORS list, which drifted until it was computing lift for
-factors the scorer could no longer emit.
+Named here rather than in each script so every candidate sees the same columns.
+A hard-coded list kept anywhere else drifts until it names factors that no
+longer exist.
 """
 
 from __future__ import annotations

@@ -47,36 +47,6 @@ from src.signals.constants import (
 from src.signals.discount import discount_score
 
 
-# Role → base score delta.
-# Round 4 (2026-05-25): factor-lift analysis on 300/251 signals across 60d/90d.
-# role_ceo: -17.3%/-13.4% lift → moderate penalty (-5) to suppress CEO-only signals.
-# role_chairman: -4.4%/-10.1% → keep at 0 (n=2, too small to penalize confidently).
-# role_officer: +20.8%/−10.5% → mixed; keep at 12.
-# role_other: -24.4%/-11.9% → confirmed noise, keep at 0 (n=5, noisy).
-ROLE_SCORES = {
-    "cfo":       15,  # -0.2%/+6.8% — good at 90d, keep
-    "director":  16,  # -2.4%/+0.9% — slight positive, keep
-    "coo":       15,  # -1.3%/+6.4% — good at 90d, keep
-    "chairman":   0,  # -4.4%/-10.1% — negative but n=2; keep at 0
-    "officer":   12,  # +20.8%/-10.5% — mixed; keep
-    "ceo":       -5,  # -17.3%/-13.4% — confirmed negative; moderate penalty
-    "other":      0,  # -24.4%/-11.9% — noise; n=5 too small to penalize further
-}
-
-# Market cap tier → score delta.
-# cap_mid removed (0): -2.8%/-7.6% — confirmed negative at both horizons.
-# cap_unknown restored to 5: empirical lift shows +2.6% at 60d, +6.9% at 90d.
-CAP_SCORES = {
-    "small":    15,  # +0.6%/-0.1% — slightly positive, keep
-    "mid":       0,  # -2.8%/-7.6% — confirmed negative; removed
-    "large":     0,
-    "unknown":   5,  # +2.6%/+6.9% — positive; restored from 0
-}
-
-# Indirect purchase penalty confirmed at -15.
-# Empirical lift: -10.2% at 60d, -18.2% at 90d — severe and consistent.
-INDIRECT_PENALTY = -15
-
 # A single insider purchase above this is a filing error, not a signal.
 MAX_PLAUSIBLE_PURCHASE = 1_000_000_000
 
@@ -310,22 +280,6 @@ def classify_signal(
     if score >= WATCH_SCORE:
         return "WATCH"
     return "LOW"
-
-
-def cluster_size_bonus(insider_count: int) -> tuple:
-    """
-    Disabled in round 5: cluster_size_5plus had -1.5%/-0.3% lift — not discriminating.
-    Returns (0, "") for all inputs.
-    """
-    return 0, ""
-
-
-def filing_lag_bonus(min_lag_days: int) -> tuple:
-    """
-    Disabled in round 4: fast_filing_0_1d had -2.5%/-1.1% lift while firing on 61% of
-    signals — too broad to discriminate. Returns (0, "") for all inputs.
-    """
-    return 0, ""
 
 
 def _parse_date(date_str: Optional[str]) -> Optional[date]:

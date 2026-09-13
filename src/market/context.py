@@ -99,7 +99,3 @@ def context_for(ticker: Optional[str], as_of: Optional[date]) -> dict:
     if not ticker or as_of is None:
         return dict.fromkeys(CONTEXT_FIELDS)
     return context_from_series(_series(ticker, as_of), as_of)
-
-
-def reset_cache() -> None:
-    _series_cache.clear()

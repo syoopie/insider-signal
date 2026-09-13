@@ -61,7 +61,7 @@ def test_distinct_rows_match_by_key_whatever_order_they_arrive_in():
 
 
 def test_a_parsed_row_with_no_stored_counterpart_does_not_block_the_match():
-    """purge_debt_transactions.py deleted rows the parser now skips anyway."""
+    """Debt rows written before the parser skipped them were purged from the database."""
     stored = [_stored(shares=100.0)]
     parsed = [_parsed(shares=100.0), _parsed(shares=999.0)]
     assert _match(stored, parsed) == [0]

@@ -457,63 +457,6 @@ def mark_signal_alerted(signal_id: int) -> None:
             cur.execute("UPDATE signals SET alerted = TRUE WHERE id = %s", (signal_id,))
 
 
-def backfill_routine_flags(batch_size: int = 500) -> int:
-    """
-    Batch-compute is_routine for all P transactions where is_routine IS NULL.
-
-    Run this once after bootstrap to pre-populate the flag before the
-    2-year retention window starts pruning historical data that the live
-    routine check depends on. Commits in batches of batch_size to avoid
-    long-running transactions.
-
-    Returns the number of transactions updated.
-    """
-    # Fetch all candidates first (read-only pass).
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT t.id, t.insider_name, t.transaction_date, f.cik
-                FROM transactions t
-                JOIN form4_filings f ON f.id = t.filing_id
-                WHERE t.transaction_code = 'P'
-                  AND t.is_10b51 = FALSE
-                  AND t.is_routine IS NULL
-                ORDER BY t.transaction_date
-                """
-            )
-            candidates = cur.fetchall()
-
-    if not candidates:
-        return 0
-
-    updated = 0
-    batch: list = []
-    for tx_id, insider_name, tx_date, cik in candidates:
-        # Each flag computation opens its own short connection.
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                flag = _compute_is_routine(cur, insider_name, cik, tx_date)
-        if flag is not None:
-            batch.append((flag, tx_id))
-        if len(batch) >= batch_size:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    for flag_val, tid in batch:
-                        cur.execute("UPDATE transactions SET is_routine = %s WHERE id = %s", (flag_val, tid))
-            updated += len(batch)
-            batch = []
-
-    if batch:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                for flag_val, tid in batch:
-                    cur.execute("UPDATE transactions SET is_routine = %s WHERE id = %s", (flag_val, tid))
-        updated += len(batch)
-
-    return updated
-
-
 # Four years, and the number is set by `_compute_is_routine`, not by taste.
 #
 # The routine disqualifier asks whether an insider bought the same calendar
@@ -568,25 +511,6 @@ def prune_old_data(months: int = RETENTION_MONTHS) -> Tuple[int, int, int]:
     return tx_deleted, filing_deleted, signal_deleted
 
 
-def get_unalerted_signals(min_score: int = 45) -> List[dict]:
-    from psycopg2.extras import RealDictCursor
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT id, ticker, signal_date, score, signal_type, cluster_flag,
-                       score_breakdown, evidence
-                FROM signals
-                WHERE alerted = FALSE
-                  AND (score >= %s OR cluster_flag = TRUE)
-                ORDER BY score DESC, signal_date DESC
-                """,
-                (min_score,),
-            )
-            rows = cur.fetchall()
-    return [dict(r) for r in rows]
-
-
 def get_active_telegram_subscribers(cur) -> List[int]:
     """
     Chat ids the alerter should fan out to. Takes an open RealDictCursor so the
@@ -601,14 +525,15 @@ def get_active_telegram_subscribers(cur) -> List[int]:
     return [int(r["chat_id"]) for r in cur.fetchall()]
 
 
-def fill_missing_price_context(since_date, limit: int = 5000) -> tuple:
+def fill_missing_price_context(since_date, limit: Optional[int] = 5000) -> tuple:
     """
-    Give every recently-filed purchase the price context the scorer ranks on.
+    Give every purchase filed since `since_date` the price context the scorer ranks on.
 
-    Returns (attempted, ranked). Called by the daily ingest between writing
+    Returns (attempted, ranked). The daily ingest calls it between writing
     filings and scoring them, so a purchase written this morning is rankable
-    this morning. It is idempotent and cheap on a normal day, because
-    price_context_bars is only NULL for rows nobody has looked at yet.
+    this morning; `bootstrap.py` calls it over its whole range with no limit.
+    It is idempotent and cheap on a normal day, because price_context_bars is
+    only NULL for rows nobody has looked at yet.
 
     A purchase left without context scores zero and is never alerted. That is
     the conservative failure, but it is silent, so the count returned here is

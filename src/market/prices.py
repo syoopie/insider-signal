@@ -161,32 +161,6 @@ def get_market_data(ticker: str) -> dict:
         return {}
 
 
-def get_price_on_date(ticker: str, target_date: date) -> Optional[float]:
-    """Closing price on or just after target_date (up to 7 calendar days)."""
-    try:
-        start_ts = int(time.mktime(target_date.timetuple()))
-        end_ts   = int(time.mktime((target_date + timedelta(days=7)).timetuple()))
-        _throttle()
-        resp = requests.get(
-            f"{_YF_CHART_URL}/{ticker}",
-            params={"interval": "1d", "period1": start_ts, "period2": end_ts},
-            headers=_YF_HEADERS,
-            timeout=8,
-        )
-        closes = (
-            resp.json()
-                .get("chart", {})
-                .get("result", [{}])[0]
-                .get("indicators", {})
-                .get("quote", [{}])[0]
-                .get("close", [])
-        )
-        closes = [c for c in closes if c is not None]
-        return float(closes[0]) if closes else None
-    except Exception:
-        return None
-
-
 class PriceChange(NamedTuple):
     """
     pct is the return; status says why it is missing when it is.
@@ -271,14 +245,3 @@ def get_price_change(ticker: str, start_date: date, end_date: date) -> PriceChan
     if not valid or not price_start:
         return PriceChange(None, "no_data")
     return PriceChange((valid[-1] - price_start) / price_start * 100, "ok")
-
-
-def get_price_change_pct(ticker: str, start_date: date, end_date: date) -> Optional[float]:
-    """Percentage price change between start_date and end_date, or None."""
-    return get_price_change(ticker, start_date, end_date).pct
-
-
-def is_near_52wk_low(current_price: Optional[float], low_52wk: Optional[float], threshold_pct: float = 10.0) -> bool:
-    if current_price is None or low_52wk is None or low_52wk == 0:
-        return False
-    return (current_price - low_52wk) / low_52wk * 100 <= threshold_pct
