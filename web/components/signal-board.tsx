@@ -94,7 +94,7 @@ export function SignalBoard({ signals }: { signals: Signal[] }) {
         <h2 className="mb-2 text-sm font-medium">
           All signals
           <span className="ml-2 font-normal text-muted-foreground">
-            {rows.length}, highest conviction first
+            {rows.length}, newest first
           </span>
         </h2>
         <div className="space-y-2">

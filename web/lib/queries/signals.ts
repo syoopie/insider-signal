@@ -10,6 +10,7 @@ import {
   type SignalType,
 } from "@/lib/types";
 import type { SignalFilters } from "@/lib/signal-filters";
+import { byDate } from "@/lib/signal-order";
 
 /**
  * Two choices here look avoidable and are not:
@@ -88,7 +89,7 @@ const SIGNALS_SQL = `
     AND s.score >= $2::int
     AND s.signal_type = ANY($3::text[])
     AND COALESCE(c.cap_tier, s.evidence->>'cap_tier', 'unknown') = ANY($4::text[])
-  ORDER BY s.score DESC, s.signal_date DESC, s.id DESC
+  ORDER BY s.signal_date DESC, s.score DESC, s.id DESC
   LIMIT ${ROW_LIMIT}
 `;
 
@@ -100,7 +101,7 @@ const SIGNALS_SQL = `
 export const getSignals = unstable_cache(
   async (days: number, minScore: number, types: string[], caps: string[]): Promise<Signal[]> => {
     const rows = await query<SignalRow>(SIGNALS_SQL, [days, minScore, types, caps]);
-    return rows.map(toSignal).sort(compareSignals);
+    return rows.map(toSignal).sort(byDate);
   },
   ["signals-list"],
   { tags: ["signals"], revalidate: 900 },
@@ -127,30 +128,6 @@ function toSignal(row: SignalRow): Signal {
     totalValue: values.length > 0 ? values.reduce((a, b) => a + b, 0) : null,
     filedDate: evidence.filed_date ?? null,
   };
-}
-
-/**
- * Cluster signals lead, ranked by how much the cluster's shape supports it (a tight window and
- * an executive participant are the two flags that separated winners from losers
- * in the backtest), then everything else by score.
- */
-function clusterRank(s: Signal): number {
-  if (s.signalType !== "CLUSTER_BUY") return 10;
-  const tight = !!s.evidence.cluster?.tight_cluster;
-  const exec = !!s.evidence.cluster?.executive_cluster;
-  if (tight && exec) return 0;
-  if (tight) return 1;
-  if (exec) return 2;
-  return 3;
-}
-
-function compareSignals(a: Signal, b: Signal): number {
-  return (
-    clusterRank(a) - clusterRank(b) ||
-    b.score - a.score ||
-    b.signalDate.localeCompare(a.signalDate) ||
-    b.id - a.id
-  );
 }
 
 /**

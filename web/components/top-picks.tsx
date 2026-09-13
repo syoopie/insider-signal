@@ -5,6 +5,7 @@ import { ConvictionBadge, convictionFor } from "@/components/badges";
 import { fmtCurrency, fmtDate } from "@/lib/format";
 import type { Signal } from "@/lib/queries/signals";
 import { titleCase } from "@/lib/format";
+import { byConviction } from "@/lib/signal-order";
 
 /**
  * The three signals worth opening first. Cluster buys lead — three or more
@@ -15,8 +16,9 @@ import { titleCase } from "@/lib/format";
  * the evidence, so there is exactly one place a signal is explained.
  */
 export function TopPicks({ signals }: { signals: Signal[] }) {
-  const clusters = signals.filter((s) => s.signalType === "CLUSTER_BUY").slice(0, 3);
-  const top = clusters.length > 0 ? clusters : signals.filter((s) => s.signalType === "BUY").slice(0, 3);
+  const ranked = [...signals].sort(byConviction);
+  const clusters = ranked.filter((s) => s.signalType === "CLUSTER_BUY").slice(0, 3);
+  const top = clusters.length > 0 ? clusters : ranked.filter((s) => s.signalType === "BUY").slice(0, 3);
 
   if (top.length === 0) return null;
 

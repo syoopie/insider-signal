@@ -53,7 +53,7 @@ export default async function Page({ searchParams }: PageProps<"/">) {
   return (
     <PageShell
       title="Signals"
-      subtitle="Open-market insider purchases from SEC Form 4, scored and ranked. Highest conviction first."
+      subtitle="Open-market insider purchases from SEC Form 4, scored and ranked. Newest first."
       icon={LayoutGrid}
     >
       <div className="space-y-6">
