@@ -1,78 +1,112 @@
 # FAQ
 
-**Q: What's the difference between legal insider trading (what this tracks) and illegal insider trading?**
+**Q: What's the difference between the insider trading this tracks and illegal insider trading?**
 
-Illegal insider trading means buying or selling based on *material non-public information* — a secret merger, earnings that will miss estimates, a drug trial result that hasn't been announced. The insiders this system tracks are disclosing legal trades. They can legally trade based on their general business judgment about the company's direction, even if they know things the public doesn't about industry trends or strategic plans. The SEC requires these Form 4 disclosures specifically to create public transparency about those trades.
+Illegal insider trading means trading on *material non-public information*: a secret merger,
+earnings that will miss, a drug trial result nobody has announced. The insiders this system
+tracks are disclosing legal trades. They may trade on their general judgment about the company,
+and the SEC requires the Form 4 precisely so those trades are public.
 
 ---
 
-**Q: Won't the market immediately price in insider buys the moment the Form 4 is filed?**
+**Q: Won't the market price in an insider buy the moment the Form 4 is filed?**
 
-For very high-profile cases it partially does, yes. But research shows that in aggregate, insider purchase signals continue to predict outperformance for 60–90 days after filing. The largest alpha is in small- and mid-cap stocks where fewer people are watching. This system focuses on those. A hedge fund seeing a CFO buy a $200K position in a $500M company isn't going to move the needle on their billion-dollar book — which leaves the signal intact for smaller participants.
+Not in aggregate. Every entry here is made four days after the filing date, and the top decile of
+purchases still returns well above its peers over the following 90 days. The effect does depend
+on the price: a purchase in a stock near its 52-week high carries almost nothing, and one deep
+below it carries almost all of the measured return. [findings.md](findings.md) has the numbers.
 
 ---
 
 **Q: What's the suggested holding period?**
 
-Jeng, Metrick & Zeckhauser (2003) found the optimal window is **60–90 days**. The signal is a medium-term thesis: the insider bought because they have a specific view, and the market hasn't fully priced it in yet. It's not a short-term trade.
+**90 days.** Measured over 124 months of purchases, the edge over other purchases peaks at 90
+days on both significance and median. At 180 days the average keeps rising but the median turns
+negative, because a handful of large winners carry it. Stop-losses were tested at every level
+from −10% to −30% and made every number worse.
 
 ---
 
-**Q: Why does the CFO score higher than the CEO?**
+**Q: Does it matter whether the CFO, the CEO or a director bought?**
 
-This is the most counterintuitive finding in the research (TipRanks/ResearchGate study). CFOs have the most complete real-time view of company finances — revenues, expenses, cash burn, and the gap between what's reported and what's real. CEOs spend more time on external relationships, strategy, and public positioning.
-
-There's also a scrutiny effect: CEO trades attract immediate media and analyst attention, which may cause CEOs to trade more carefully (and thus less informationally) than CFOs who fly under the radar. See [scoring.md](scoring.md) for the full role breakdown.
+Not to the score. The old model weighted roles on a published study, and measured on this data
+the ordering could not be recovered. The role is still shown on every signal, because it is useful
+context, but it moves nothing. The same is true of company size and position size.
 
 ---
 
-**Q: Why only S&P 500 + Russell 2000?**
+**Q: Why is a cluster of insiders shown as WATCH instead of CLUSTER_BUY?**
 
-The free Neon database tier is 0.5 GB. There are ~2,000 Form 4 filings per day across all US public companies. Without a universe filter, the database fills up in a few months. The S&P 500 + Russell 2000 covers ~3,500 companies — all large/mid-caps and the most liquid small-caps where insider signals have been studied. The storage estimate with this filter is ~160 MB at steady state, well within the limit.
+Three reasons, checked in this order. The buyers as a group were not buying into weakness: the
+average of their scores is under 80. Or the cluster was spread out and nobody's score reached 85.
+Or the company is a large-cap, which is always a WATCH. The number of buyers alone never promotes
+a signal, because on this data it does not predict returns.
 
-If you want to track a company outside these indexes, add its ticker to `data/tickers.txt`.
+---
+
+**Q: Why only the S&P 500 and Russell 2000?**
+
+The free Neon tier is 0.5 GB and there are roughly 2,000 Form 4 filings a day across all US public
+companies. Filtering to about 3,500 companies keeps 48 months of history near 200 MB.
+
+To track a company outside these indexes, add its ticker to `data/tickers.txt`.
 
 ---
 
 **Q: Can I track insider sales too?**
 
-Sales are stored in the database (transaction code `S`) but not scored. Insiders sell for many reasons — diversification, taxes, estate planning, life expenses — that have nothing to do with their view of the company. The academic research on sale informativeness is weak and inconsistent compared to purchases. The current system focuses where the research is strongest.
+Sales are stored (transaction code `S`) but not scored. Insiders sell for taxes, diversification
+and life expenses as often as for a view on the company. Net selling at a firm was tested as a
+filter on purchases and measured as zero.
 
 ---
 
 **Q: How do I know the daily ingest is running?**
 
-Three ways:
-1. GitHub Actions tab in your repo — green checkmark or red X per run.
-2. You'll receive a daily Telegram summary even on days with no signals.
-3. If the ingest crashes, you get an immediate Telegram error message with the stack trace.
+1. The Actions tab in the repository shows a green check or a red cross per run.
+2. A daily Telegram summary arrives even on days with no signals.
+3. If the ingest crashes, a Telegram error message arrives with the stack trace.
 
 ---
 
 **Q: The dashboard is slow on the first load sometimes.**
 
-Vercel does not sleep, but Neon scales the database to zero after a few minutes idle. The first query after a quiet period has to wake it, which takes a few seconds. Everything after that is fast, and most pages serve from cache anyway.
+Neon scales the database to zero after a few idle minutes, and the first query has to wake it.
+Everything after that is fast, and most pages serve from cache.
 
 ---
 
 **Q: The backtest shows no data.**
 
-The backtest needs signals that are at least 33 days old (30-day horizon + 3-day execution lag). If you just set the system up, there's nothing to backtest yet. The weekly Sunday job will start producing results once enough signals have aged out. Run a 365-day bootstrap to backfill enough historical data to see immediate results.
+The backtest needs signals at least 33 days old (a 30-day horizon plus the 3-day execution lag).
+On a fresh setup there is nothing to measure until the Sunday job runs with old enough signals.
+Bootstrap a year or more of history to see results immediately.
 
 ---
 
 **Q: A ticker I care about isn't appearing in signals.**
 
-Either: (a) it's not in `data/tickers.txt` — add it manually, or (b) there have been no open-market purchases by insiders of that company in the tracked window. The system only alerts on actual filings; it doesn't synthesize signals.
+One of these:
+
+1. It is not in `data/tickers.txt`.
+2. No insider made an eligible open-market purchase in the window.
+3. The stock has less than a year of trading history, so it has no 52-week high to rank against
+   and scores 0.
 
 ---
 
-**Q: What does "routine trader" disqualified mean?**
+**Q: What does "routine trader" mean?**
 
-An insider who buys in the same calendar month year after year (e.g. every May for 3 years) is classified as a routine trader. Research (Cohen, Malloy & Pomorski 2012) shows these mechanical trades have essentially zero predictive value. They're excluded before scoring so they don't dilute the signal quality. The disqualification requires 3 years of history per insider — it won't fire until enough historical data is loaded.
+An insider who buys in the same calendar month in at least two of the three previous years, such
+as every May. Cohen, Malloy & Pomorski (2012) find those mechanical trades carry essentially no
+information, so they are excluded before scoring. The check needs three years of history for that
+insider, and it records "unknown" rather than guessing when the data does not reach that far.
 
 ---
 
 **Q: The bootstrap is taking a long time.**
 
-`--days 730` takes 3–5 hours at 3 req/sec (intentionally slow to avoid EDGAR IP blocks during large bursts). Run it with `nohup` in the background and use `tail -f bootstrap.log` to watch progress. If you only want to start receiving today's signals, `--days 14` finishes in ~5 minutes and is enough for the system to work correctly.
+A two-year load fetches every Form 4 in the window from EDGAR, under its 10 requests a second
+limit, and takes hours. Run it in the background with `nohup` and follow the log. `--days 14`
+finishes in minutes and is enough for the daily job to work. Run `scripts/backfill_signals.py`
+afterwards to build signals from what was loaded.

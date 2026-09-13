@@ -8,8 +8,8 @@ Telegram alert.
 additive table of role, market cap, holdings increase and timing factors against a BUY
 threshold of 60. That table was measured walk-forward and returned +0.78pp of selection
 alpha at a permutation p of 0.27, which is a coin flip, so it was replaced rather than
-retuned. [`scoring-improvement-plan.md`](scoring-improvement-plan.md) section 7b is the
-measurement and [`beyond-price.md`](beyond-price.md) is what happens next.
+retuned. [`findings.md`](findings.md) has the measurements, and
+[`history/`](history/) the runs behind them.
 
 ---
 
@@ -25,10 +25,9 @@ signal.
 | **Routine trader** | The insider bought in the same calendar month in ≥2 of the preceding 3 years. Requires 3 years of history and silently skips the check when the data does not span that far, so it never produces a false positive. |
 | **Under $2,000** | Dividend reinvestment, fractional share plans and payroll contributions. |
 
-Measured on the purchases they discard, on 2026-09-08: excluding 10b5-1 trades is worth
-+0.37pp against the months those trades came from, at the 100th percentile of its null.
-Excluding routine buyers scores −0.19pp at the 0th percentile, which is the wrong sign.
-Neither clears Benjamini-Hochberg at 5%. `research/scripts/gates.py` is the measurement.
+Measured on the purchases they discard with `research/scripts/gates.py`, excluding routine
+buyers is a measured zero on 124 months of the archive. The 10b5-1 rule cannot be read there
+yet. Both stay on the literature; [findings.md](findings.md) has the numbers.
 
 ---
 
@@ -64,10 +63,10 @@ ever scored anything.
 
 ### Why there is only one factor
 
-`role_*`, `cap_*`, `holdings_increase_5pct`, `indirect_purchase`, `sequenced_buying_30d`,
-`prior_purchase_31_365d`, `first_purchase_12mo` and `first_purchase_unverifiable` are still
-emitted into `score_breakdown` at **0 points**, because they describe a filing and the
-dashboard shows them. They do not rank it.
+`score_breakdown` holds only the rank: `{"discount_rank": N}`, or `{"price_context_missing": 0}`
+when there is no 52-week high. The buyer's role, whether the purchase was direct, how much it
+added to the position and whether they had bought recently are recorded on each buyer in
+`evidence.insiders[]`, because they describe the filing. They do not rank it.
 
 Adding the old score back as a tiebreak inside the discount gate drops the result from
 +11.13pp to +7.62pp. Tier-1 insider features inside the gate drop it to +6.80pp. Inside the
@@ -117,10 +116,11 @@ The cluster bar uses the **average** of participant scores, not the maximum, so 
 whether the group as a whole was buying weakness. Three insiders buying a stock at its
 52-week high is a WATCH.
 
-**The large-cap downgrade lives in the callers, not in `classify_signal()`.** Both
-`run_ingest.py` and `backfill_signals.py` turn a large-cap CLUSTER_BUY into a WATCH straight
-after the call, on a measured 0% hit rate at 90 days and −16% average excess return. Anything
-else that classifies signals has to do the same or it will disagree with the stored data.
+**A large-cap cluster is a WATCH.** `classify_signal()` applies it, and every signal is
+classified there. The rule was set on a hit rate measured under the retired factor model.
+Re-measured on 2026-09-13 it is below resolution: the database holds 9 large-cap cluster
+purchases where the rule can bind, and the archive has no cap tiers. It stays until there is
+data to decide it.
 
 ---
 

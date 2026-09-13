@@ -1,5 +1,7 @@
 # Web Dashboard Migration (Streamlit → Next.js on Vercel)
 
+> **Historical record.** Dated working notes, kept for the runs behind the numbers. What is current is in [`../findings.md`](../findings.md); paths and flags named below may have moved since.
+
 Record of the completed migration: what was decided, what was built, and the
 things a future change needs to know. Branch: `feat/web-vercel-migration`.
 

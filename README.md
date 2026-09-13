@@ -1,158 +1,114 @@
 # Insider Signal
 
-Tracks when company executives and directors buy stock in their own companies, scores
-each purchase against a research-backed model, and alerts on the ones worth looking at.
+Tracks open-market stock purchases by company insiders, scores each one on the single factor
+that measured, and alerts on the ones worth a look.
 
 **Runs unattended on free tiers. Sends Telegram alerts. Read-only dashboard on Vercel.**
 
 ---
 
-## What This Is
+## What it does
 
-When a CFO buys $500,000 of their own company's stock out of personal savings, that is a
-meaningful signal. They know the company better than anyone, they are betting their own
-money, and by law they must disclose the purchase within two business days on a
-[Form 4](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=4&dateb=&owner=include&count=40).
-
-The pipeline:
-
-1. Pulls new Form 4 filings from SEC EDGAR every weekday morning.
-2. Discards anything that is not an open-market purchase, plus pre-arranged 10b5-1 plan
-   trades, routine seasonal buyers, and trivial amounts.
-3. Rolls each insider's broker fills up into one purchase, then scores it on role,
-   company size, position sizing, and prior-purchase history.
-4. Detects clusters: three or more independent insiders buying the same company inside a
-   14-day window.
-5. Sends a Telegram alert for BUY and CLUSTER_BUY, and publishes everything to the
+1. Every weekday morning it pulls new Form 4 filings from SEC EDGAR for the S&P 500 and
+   Russell 2000.
+2. It keeps open-market purchases and discards pre-arranged 10b5-1 plan trades, routine
+   same-month buyers and trivial amounts.
+3. It scores each remaining purchase by how far below its 52-week high the stock sat on the day
+   the insider bought, as a percentile of the purchases disclosed in the previous 30 days.
+4. It sends a Telegram alert for a BUY, which is the top decile, and for a CLUSTER_BUY, which is
+   three or more insiders buying into weakness together. Every signal is published to the
    dashboard.
 
-A weekly backtest re-evaluates every historical signal against realised prices, measured
-as excess return over SPY.
+A weekly backtest measures past signals against SPY.
 
 ---
 
-## Why Insider Buying Works
+## Why this factor
 
-Opportunistic, non-routine, open-market insider purchases are one of the few documented
-legal edges in public equity:
+The literature supports the eligibility rules. Opportunistic purchases carry information and
+routine or pre-planned ones do not (Cohen, Malloy & Pomorski 2012; Jeng, Metrick & Zeckhauser
+2003).
 
-- Small-cap insider buys: **+7.4% abnormal return** at 12 months (Lakonishok & Lee 2001)
-- Opportunistic trades: **82 bps/month** versus roughly zero for routine trades
-  (Cohen, Malloy & Pomorski 2012)
-- Purchase portfolios: **~6% annualised alpha** (Jeng, Metrick & Zeckhauser 2003)
-- Cluster buys: roughly **2x the alpha** of a single insider buy
-
-Filtering is most of the work. Pre-arranged plans, routine seasonal trades, option
-exercises, and awards carry near-zero predictive value, so they are excluded before
-anything is scored.
+The ranking rests on this repository's own walk-forward test. Over 18 months out of sample, the
+top decile of the 52-week discount returned +11.13 percentage points above purchases of the same
+month and volatility, with a median of +7.39pp. The same screen run on stocks nobody bought has a
+median of −1.30pp, so the filing itself carries the effect. Role, company size, position size and
+cluster size were each measured and none of them ranks purchases.
+[`docs/findings.md`](docs/findings.md) has every number and where it came from.
 
 ---
 
-## Repository Layout
+## Repository layout
 
 | Path | What lives there |
 |---|---|
-| `src/ingest/` | EDGAR client and Form 4 XML parser |
-| `src/db/` | Connection, schema, writes, and the purchase-rollup query |
-| `src/signals/` | Scoring model, cluster detection, evidence blob |
-| `src/backtest/` | Backtest engine and metric computation |
-| `src/market/` | Yahoo Finance price and market-cap lookups |
-| `src/alerts/` | Telegram Bot API client |
-| `scripts/` | Entrypoints and operational tooling; see [scripts/README.md](scripts/README.md) |
-| `tests/` | pytest suite, no database required |
-| `web/` | Next.js dashboard deployed to Vercel, read-only |
+| `src/` | The production pipeline: ingest, database, scoring, backtest, alerts |
+| `scripts/` | Operational entrypoints. [scripts/README.md](scripts/README.md) says when to run each |
+| `research/` | Offline research: the rulers, the Form 4 archive, the labelled dataset. [research/README.md](research/README.md) |
+| `tests/` | pytest suite, no database needed |
+| `web/` | Next.js dashboard on Vercel, read-only. [web/README.md](web/README.md) |
 | `docs/` | Long-form documentation |
-| `data/` | The ticker universe |
-| `.github/workflows/` | The three scheduled workflows |
+| `data/` | The ticker universe. Research data is built here locally and never committed |
+| `.github/workflows/` | Daily ingest, weekly backtest, rescore on push, bootstrap, tests, keepalive |
 
 ---
 
 ## Documentation
 
-| Document | What's in it |
+| Document | What is in it |
 |---|---|
-| [docs/setup.md](docs/setup.md) | Setup, bootstrap, verification |
-| [docs/scoring.md](docs/scoring.md) | Disqualifiers, the one scoring factor, signal thresholds |
+| [docs/setup.md](docs/setup.md) | One-time setup, bootstrap, verification |
+| [docs/scoring.md](docs/scoring.md) | Disqualifiers, the score, clusters, signal types |
+| [docs/findings.md](docs/findings.md) | What the measurements say, dated |
+| [docs/research.md](docs/research.md) | The literature each rule rests on, and what was measured away |
 | [docs/architecture.md](docs/architecture.md) | Plain-language overview, free-tier limits, glossary |
-| [docs/research.md](docs/research.md) | What each rule rests on, and what was measured away |
-| [docs/faq.md](docs/faq.md) | Common questions about day-to-day operation |
-| [docs/web-migration.md](docs/web-migration.md) | How the dashboard moved from Streamlit to Next.js |
-| [docs/scoring-improvement-plan.md](docs/scoring-improvement-plan.md) | Round 7. How the old weight table was disproved and the price screen found. Sections 7a and 7b are the evidence the code cites |
-| [docs/beyond-price.md](docs/beyond-price.md) | Round 8, current. Why the search for non-price metrics was underpowered, and what buying power found |
-| [scripts/README.md](scripts/README.md) | When to run each script |
-| [web/README.md](web/README.md) | Local dev, environment variables, deployment |
-| [CLAUDE.md](CLAUDE.md) | Authoritative reference for AI agents working on this codebase |
+| [docs/faq.md](docs/faq.md) | Common questions |
+| [docs/history/](docs/history/) | Dated research journals and the web migration record |
+| [CLAUDE.md](CLAUDE.md) | Rules and a map for AI agents working in this repository |
 
 ---
 
-## Quick Start
+## Quick start
 
-Prerequisites: Python 3.11+, [uv](https://docs.astral.sh/uv/), Node 20+, pnpm, and free
-accounts at GitHub, [neon.tech](https://neon.tech), [vercel.com](https://vercel.com),
-and Telegram.
+Prerequisites: [uv](https://docs.astral.sh/uv/), Node 20+ and pnpm, and free accounts at GitHub,
+[neon.tech](https://neon.tech), [vercel.com](https://vercel.com) and Telegram.
 
 ```bash
-uv sync                                   # install the Python environment
-uv run pytest -q                          # 76 tests, no database needed
-uv run python scripts/bootstrap.py --days 730   # seed historical filings
+uv sync                                          # Python environment, including research tools
+git config core.hooksPath .githooks              # lint and test before every push
+uv run pytest -q
+uv run python scripts/bootstrap.py --days 730    # seed historical filings
+uv run python scripts/backfill_signals.py        # build signals from them
 ```
 
-See [docs/setup.md](docs/setup.md) for the full guide. At a high level:
+[docs/setup.md](docs/setup.md) is the full guide. In short:
 
-1. Push this code to a public GitHub repo.
-2. Add two GitHub Secrets: `DATABASE_URL` and `TELEGRAM_BOT_TOKEN`.
-   Use Neon's **direct** URL, not the pooled one.
-3. Deploy `web/` to Vercel with **Root Directory = `web`** and its own `DATABASE_URL`.
+1. Push the code to a public GitHub repository.
+2. Add the `DATABASE_URL` and `TELEGRAM_BOT_TOKEN` secrets. Use Neon's direct URL, not the
+   pooled one.
+3. Deploy `web/` to Vercel with Root Directory set to `web` and its own `DATABASE_URL`.
 4. Bootstrap locally to seed history.
-5. GitHub Actions takes it from there.
 
-Credentials live only in GitHub Actions Secrets and Vercel environment variables. The
-repo is public; `.env` is gitignored and local-only.
+Credentials live only in GitHub Actions secrets and Vercel environment variables. The repository
+is public, and `.env` is gitignored.
 
 ---
 
-## Scheduled Jobs
+## Scheduled jobs
 
 | Workflow | When | What it does |
 |---|---|---|
-| `daily_ingest.yml` | Weekdays 11:00 UTC | Fetch, score, alert, then bust the dashboard cache |
+| `daily_ingest.yml` | Weekdays 11:00 UTC | Fetch, rebuild the week's signals, alert, bust the dashboard cache |
 | `weekly_backtest.yml` | Sundays 12:00 UTC | Refresh market caps, then re-run the backtest |
-| `bootstrap.yml` | Manual | Historical load over a configurable date range |
-
-GitHub Actions disables scheduled workflows after 60 days of repository inactivity, so
-the daily ingest commits `last_run.txt` to keep the repo live.
-
----
-
-## After Changing the Scoring Model
-
-Any edit under `src/signals/` leaves every stored signal stale. The full sequence:
-
-```bash
-uv run pytest -q
-uv run python scripts/backfill_signals.py --days 730 --force   # ~8 min
-uv run python scripts/run_backtest.py                          # ~30 min
-uv run python scripts/audit_data.py                            # data-quality check
-```
-
----
-
-## Stack
-
-| Layer | Service | Cost |
-|---|---|---|
-| Compute and scheduler | GitHub Actions (public repo) | Free |
-| Database | Neon PostgreSQL, 0.5 GB free tier | Free |
-| Dashboard | Next.js 16 on Vercel | Free |
-| Alerts | Telegram Bot API | Free |
-| Filing data | SEC EDGAR API | Free |
-| Prices and market caps | Yahoo Finance chart API, EDGAR XBRL frames | Free |
+| `rescore.yml` | Every push that changes how a signal is built | Rebuild every stored signal, then re-run the backtest |
+| `keepalive.yml` | Monthly | Re-enable the scheduled workflows, which GitHub disables after 60 idle days |
+| `bootstrap.yml` | Manual | Historical load over a chosen range |
+| `tests.yml` | Every push and pull request | ruff, then pytest |
 
 ---
 
 ## Disclaimer
 
-This system surfaces publicly disclosed SEC Form 4 filings as informational research
-signals. It is not financial advice and does not constitute a recommendation to buy or
-sell any security. Past performance of insider buying signals does not guarantee future
-results. Always conduct your own research before making investment decisions.
+This system surfaces publicly disclosed SEC Form 4 filings as informational research signals. It
+is not financial advice and does not recommend buying or selling any security. Past performance
+of insider buying signals does not guarantee future results.

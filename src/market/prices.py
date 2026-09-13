@@ -44,7 +44,7 @@ MIN_PLAUSIBLE_MARKET_CAP = 10_000_000
 
 
 def sanitize_market_cap(market_cap: Optional[int]) -> Optional[int]:
-    """None for an implausible cap, so it stores as unknown and scores at +5."""
+    """None for an implausible cap, so it stores as unknown."""
     if market_cap is None or market_cap < MIN_PLAUSIBLE_MARKET_CAP:
         return None
     return market_cap

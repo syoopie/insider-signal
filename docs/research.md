@@ -8,8 +8,8 @@ were implemented as scoring weights, measured on our own data, and found to be
 indistinguishable from zero or to have the wrong sign. They are kept here with what happened
 to them, because deleting them would invite someone to add them back.
 
-`docs/scoring-improvement-plan.md` section 7b is the measurement. `docs/beyond-price.md` is
-the plan built on it.
+[`findings.md`](findings.md) has the measurements, dated. [`history/`](history/) has the
+runs behind them.
 
 ---
 
@@ -25,10 +25,11 @@ matters more than role or company size.
 **Applied as** two hard disqualifiers, checked before scoring: the 10b5-1 plan flag, and the
 routine-trader rule (bought the same calendar month in ≥2 of the preceding 3 years).
 
-**Measured here, 2026-09-08.** Excluding 10b5-1 trades is worth +0.37pp against the months
-those trades came from, at the 100th percentile of its null but q=0.28. Excluding routine
-buyers scores **−0.19pp at the 0th percentile**, the wrong sign, also at q=0.28. Neither is
-conclusive on 16 months. The routine rule is the first thing to re-test when the sample grows.
+**Measured here.** On 124 months of the Form 4 archive, excluding routine buyers measures
++0.039pp against a resolution of 0.146: a measured zero, neither earning nor costing anything.
+An earlier −0.19pp reading on 22 months of the database did not replicate. The 10b5-1 rule
+cannot be read on the archive until it implements the production flag's footnote branch. Both
+rules stay, on the literature.
 
 ### Jeng, Metrick & Zeckhauser (2003)
 *"Estimating the Returns to Insider Trading."* Review of Economics and Statistics, 85(2).
@@ -36,8 +37,9 @@ conclusive on 16 months. The routine rule is the first thing to re-test when the
 **Finding:** insider purchase portfolios earn roughly 6% annualised alpha. Optimal holding
 horizon 60 to 90 days.
 
-**Applied as** the reason only purchases are scored, and the 60 to 90 day hold shown in every
-alert. The backtest's primary horizon is 90 days for the same reason.
+**Applied as** the reason only purchases are scored. **Measured here**, the edge peaks at 90
+days on both significance and median over 124 months, which is the hold every alert shows and
+the backtest's primary horizon.
 
 ---
 
@@ -71,8 +73,9 @@ median is the filing.
 
 ## Implemented, then measured away
 
-Every entry here was once a scoring weight. All of them now score 0 points and remain in
-`score_breakdown` only because the dashboard describes the filing with them.
+Every entry here was once a scoring weight. None of them scores anything now. Role, ownership
+form, holdings increase and purchase timing are still recorded on each buyer in the signal's
+evidence, because they describe the filing.
 
 ### Lakonishok & Lee (2001)
 *"Are Insider Trades Informative?"* Review of Financial Studies, 14(1), 79–111.
@@ -180,8 +183,8 @@ Controls that apply to both:
 - **Delisted stocks.** No prices for the window is charged as a −50% loss. A *failed request*
   is a different thing, is not charged −50%, and drops the signal from the sample.
 - **Completed exits only.** Signals whose exit is still in the future are excluded and counted.
-- **Coverage drift.** Any feature whose prevalence tracks how far back ingest reaches is
-  dropped by `protocol.stable_features`. `first_purchase_12mo` never fires in one window and
-  fires on 46% of the next, purely because of when ingest started.
+- **Coverage drift.** A feature whose prevalence tracks how far back ingest reaches is kept out
+  of the stable candidate sets in `research/candidates.py`. `first_purchase_12mo` never fires in
+  one window and fires on 46% of the next, purely because of when ingest started.
 
 Horizons: 30, 60, 90 and 180 days, with 90 as primary.

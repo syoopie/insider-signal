@@ -183,9 +183,9 @@ The daily ingest only fetches new filings (since the last run). On first run the
 
 | `--days` | Time | What it enables |
 |---|---|---|
-| **14** (minimum) | ~5 min | Cluster detection works immediately. Some scoring factors (first purchase in 12+ months, routine-trader filter) are understated until more history accumulates. |
-| **365** | ~1–2 hours | Full annual scoring accuracy including routine-trader detection. |
-| **730** | ~3–5 hours | Full 2-year backtest history visible in the dashboard. |
+| **14** (minimum) | minutes | Cluster detection works immediately. The routine-trader filter cannot decide anything until three years of history exist. |
+| **365** | an hour or two | A year of signals and a first backtest. |
+| **730** | several hours | Two years of backtest history on the dashboard. |
 
 ```bash
 # Install dependencies (run once). uv creates and manages the .venv.
@@ -203,14 +203,17 @@ uv run python scripts/bootstrap.py --dry-run --days 14
 # Minimum bootstrap (~5 min)
 uv run python scripts/bootstrap.py --days 14
 
-# Full 2-year backfill in background (~3–5 hours)
+# Full 2-year backfill in the background
 nohup uv run python -u scripts/bootstrap.py --days 730 > bootstrap.log 2>&1 &
 tail -f bootstrap.log
+
+# Build signals from everything loaded
+uv run python scripts/backfill_signals.py
 ```
 
 > **Resuming after interruption:** Re-running skips already-stored filings. Safe to re-run at any time.
 
-> **Why so slow for long backfills?** SEC limits requests to 10/sec. Bootstrap runs at 3/sec during large bursts to avoid IP blocks. The daily ingest runs at 8/sec because it only fetches a small number of new filings each day.
+> **Why so slow for long backfills?** SEC limits requests to 10 a second, and a long backfill fetches every Form 4 in its window one document at a time. The daily ingest fetches only a few days of filings.
 
 ---
 

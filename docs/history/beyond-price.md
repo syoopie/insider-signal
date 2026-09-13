@@ -1,5 +1,7 @@
 # Beyond Price
 
+> **Historical record.** Dated working notes, kept for the runs behind the numbers. What is current is in [`../findings.md`](../findings.md); paths and flags named below may have moved since.
+
 The plan for the next scoring iteration.
 
 Written 2026-09-05, executed from 2026-09-08. The successor to

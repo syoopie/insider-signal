@@ -2,9 +2,9 @@
 Signal-classification thresholds — the score cutoffs that turn a number into a
 BUY / WATCH / CLUSTER_BUY label.
 
-Changing any value here invalidates every signal already in the database. The
-golden rule applies: rerun `scripts/backfill_signals.py --days 730 --force`
-then `scripts/run_backtest.py`.
+Changing any value here invalidates every signal already in the database.
+Pushing the change runs `.github/workflows/rescore.yml`, which rebuilds them and
+re-runs the backtest.
 
 Cluster *detection* parameters (window length, minimum insiders, minimum value)
 live in `cluster.py` — they define what a cluster is, not how a score maps to a
@@ -19,7 +19,7 @@ label.
 # top decile is where the whole measured effect lives: within-month deciles 1
 # through 9 return between -0.8% and +2.9% with a negative median in every one,
 # and the tenth returns +17.5% mean and +6.6% median. See
-# `docs/scoring-improvement-plan.md` section 7b.
+# `docs/findings.md`.
 #
 # The previous cutoffs were 60 and 45 against a score whose theoretical maximum
 # was 61, so BUY was a four-factor conjunction rather than a rank. That score

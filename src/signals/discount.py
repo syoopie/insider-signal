@@ -13,8 +13,7 @@ same holding windows, returns +5.55pp on the mean and **−1.30pp on the median*
 Deeply discounted stocks in general are a lottery ticket. Deeply discounted
 stocks an insider bought are not. The Form 4 is the gate and this is the ranker.
 
-Full account and every robustness check in `docs/scoring-improvement-plan.md`
-section 7b.
+The measurements and every robustness check are summarised in `docs/findings.md`.
 
 **The effect is a threshold, not a slope.** Within-month deciles 1 through 9 are
 flat, mean between −0.8% and +2.9% with a negative median in every one of them,

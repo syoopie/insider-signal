@@ -1,5 +1,7 @@
 # Scoring Improvement Plan
 
+> **Historical record.** Dated working notes, kept for the runs behind the numbers. What is current is in [`../findings.md`](../findings.md); paths and flags named below may have moved since.
+
 Written 2026-08-29, against the clean post-audit baseline (backtest run_date 2026-08-29).
 
 This plan argues that **the scoring model cannot be improved by changing weights or adding

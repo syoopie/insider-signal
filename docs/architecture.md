@@ -1,9 +1,8 @@
 # Architecture
 
 The plain-language overview, for a reader who has not opened the code.
-**`CLAUDE.md` owns the data flow, the project layout and the database schema.** They used
-to be repeated here as well, which meant two copies drifting apart, and this file was the
-one that went stale.
+[`CLAUDE.md`](../CLAUDE.md) owns the data flow, the project layout and the database notes, and
+`src/db/schema.sql` is the schema. They are not repeated here, so they cannot drift apart.
 
 ## System diagram
 
@@ -16,9 +15,12 @@ GitHub Actions (free scheduled compute)
   ├── Fetch new Form 4 filings from EDGAR
   ├── Filter to the S&P 500 + Russell 2000 universe
   ├── Parse XML → insider, role, shares, price, 10b5-1 flag
-  ├── Score each open-market purchase (0–100)
-  ├── Detect cluster signals (3+ buyers, 14-day window)
-  └── Send Telegram alerts for BUY / CLUSTER_BUY
+  ├── Store how far below its 52-week high each purchased stock sat
+  ├── Rebuild the week's signals: score 0–100, detect clusters, classify
+  └── Send Telegram alerts for new BUY / CLUSTER_BUY
+
+  Sundays: refresh market caps, re-run the backtest
+  On any push that changes scoring: rebuild every signal, re-run the backtest
         │
         ▼
 Neon PostgreSQL (free cloud database)

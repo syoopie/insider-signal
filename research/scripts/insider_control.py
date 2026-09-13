@@ -1,7 +1,7 @@
 """
 Does the insider matter, or would any beaten-down stock have done as well?
 
-The result in `docs/scoring-improvement-plan.md` section 7b says that among
+The result in `docs/findings.md` says that among
 insider purchases, the deeply discounted ones beat their month-and-risk-matched
 peers by 11 percentage points. That is a better ranking of insider purchases,
 which is the job the product does, and it is not on its own evidence that the
