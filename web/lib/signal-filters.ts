@@ -17,10 +17,9 @@ import { CAP_TIERS, SIGNAL_TYPES, type CapTier, type SignalType } from "@/lib/ty
 export const LOOKBACK_OPTIONS = [7, 14, 30, 90] as const;
 
 /**
- * Score cut-offs worth offering. A slider invites false precision — the score is
- * a sum of fixed integer factors, so only a handful of thresholds mean anything.
- * 50 is the default: it cuts roughly 60% of the noise (see the Streamlit caption
- * this replaces) without hiding downgraded clusters.
+ * Score cut-offs worth offering. A slider invites false precision, so only a
+ * handful of thresholds are offered. 50 is the default because it does not hide
+ * downgraded clusters.
  */
 export const MIN_SCORE_OPTIONS = [0, 45, 50, 60, 70] as const;
 

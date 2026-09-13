@@ -12,8 +12,7 @@ import {
 import type { SignalFilters } from "@/lib/signal-filters";
 
 /**
- * Signal triage reads. Ports the Streamlit `tab_signals` query with two
- * corrections:
+ * Two choices here look avoidable and are not:
  *
  * 1. The join to `companies` is a LATERAL pick-one. `companies` is keyed by CIK,
  *    so a plain `ON c.ticker = s.ticker` duplicates a signal row whenever two
@@ -131,8 +130,7 @@ function toSignal(row: SignalRow): Signal {
 }
 
 /**
- * Quality ordering, mirroring `_qkey()` in the Streamlit app: cluster signals
- * lead, ranked by how much the cluster's shape supports it (a tight window and
+ * Cluster signals lead, ranked by how much the cluster's shape supports it (a tight window and
  * an executive participant are the two flags that separated winners from losers
  * in the backtest), then everything else by score.
  */

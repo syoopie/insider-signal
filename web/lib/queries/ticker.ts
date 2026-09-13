@@ -3,8 +3,6 @@ import { query, queryOne } from "@/lib/db";
 import { capTier, type CapTier, type SignalType } from "@/lib/types";
 
 /**
- * Per-ticker research reads. Ports the Streamlit `tab_history` queries.
- *
  * Everything here keys off `companies.ticker`. That column is not unique — a CIK
  * can be superseded — so the company lookup picks one deterministically and the
  * transaction query joins through every matching CIK, which is what a reader

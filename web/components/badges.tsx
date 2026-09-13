@@ -70,13 +70,9 @@ export function ConvictionBadge({ conviction, className }: { conviction: Convict
 }
 
 /**
- * Mirrors `_conviction()` in the Streamlit app, with one correction: WATCH and
- * LOW return null.
- *
- * The Streamlit version was only ever called on BUY and CLUSTER_BUY, so its
- * fall-through returned "BUY" for anything else. Called on a WATCH — a
- * large-cap cluster downgraded precisely because it underperformed — that
- * labels it a buy.
+ * WATCH and LOW return null rather than falling through to "BUY". A WATCH can be
+ * a large-cap cluster downgraded because it underperformed, and must never be
+ * labelled a buy.
  */
 export function convictionFor(
   signalType: SignalType,

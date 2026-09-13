@@ -8,8 +8,6 @@ import { NextResponse } from "next/server";
  * here lets the CDN hold one response for five minutes instead of every visitor
  * hitting Yahoo. Prices are never stored — the decision on this project is that
  * quotes are fetched on demand and nothing else.
- *
- * Mirrors `_fetch_current_price()` in the Streamlit app it replaces.
  */
 
 const UPSTREAM = "https://query1.finance.yahoo.com/v8/finance/chart";

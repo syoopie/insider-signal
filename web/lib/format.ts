@@ -1,5 +1,3 @@
-/** Display formatting. Ported from the Streamlit dashboard's `_fmt_*` helpers. */
-
 export function fmtCurrency(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "N/A";
   const v = Number(value);
