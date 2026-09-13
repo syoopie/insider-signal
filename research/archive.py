@@ -106,6 +106,12 @@ def connect(archive: Path = ARCHIVE) -> duckdb.DuckDBPyConnection:
     filings = (archive / "filings" / "part-*.parquet").as_posix()
     transactions = (archive / "transactions" / "part-*.parquet").as_posix()
     conn = duckdb.connect()
+    # A parallel aggregate adds floating-point fills in a different order each
+    # run, so two builds of the same archive disagreed in the last bits of
+    # `shares` and `total_value`, and a purchase whose `shares_after` equals its
+    # `shares` flipped between a 0% and a 5e17% holdings increase. One thread
+    # makes the sum order, and every number built on it, repeatable.
+    conn.execute("SET threads TO 1")
     conn.execute(_FILINGS_VIEW.format(filings=filings))
     conn.execute(_TRANSACTIONS_VIEW.format(transactions=transactions))
     conn.execute(_COMPANIES_VIEW.format(filings=filings))
