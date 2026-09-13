@@ -14,7 +14,6 @@ error notification so pipeline issues are never silent.
 """
 
 import sys
-import os
 import time
 from collections import Counter
 from datetime import date, timedelta, datetime
@@ -231,11 +230,6 @@ def main():
     total = new["CLUSTER_BUY"] + new["BUY"] + new["WATCH"]
     sent = send_daily_summary(total, new["BUY"], new["CLUSTER_BUY"], new["WATCH"])
     _log(f"Daily summary Telegram {'SENT' if sent else 'FAILED (not configured or error)'}")
-
-    ts_path = os.path.join(os.path.dirname(__file__), "..", "last_run.txt")
-    with open(ts_path, "w") as f:
-        f.write(f"{today.isoformat()}\n")
-    _log("last_run.txt updated")
 
     total_elapsed = time.time() - t_start
     _log(f"=== Done in {total_elapsed:.1f}s ===")

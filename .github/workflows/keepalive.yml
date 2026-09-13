@@ -1,0 +1,26 @@
+name: Keepalive
+
+# GitHub disables scheduled workflows in a repository with no activity for 60
+# days. Re-enabling them through the API resets that clock without a commit, so
+# the history is not a daily "ingest run" commit any more.
+
+on:
+  schedule:
+    - cron: '0 10 1 * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-enable the scheduled workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for workflow in daily_ingest.yml weekly_backtest.yml keepalive.yml; do
+            gh api -X PUT "repos/${{ github.repository }}/actions/workflows/${workflow}/enable"
+            echo "enabled ${workflow}"
+          done

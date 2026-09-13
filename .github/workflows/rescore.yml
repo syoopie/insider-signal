@@ -1,19 +1,28 @@
-name: Daily Ingest
+name: Rescore
+
+# Any change to how a signal is built leaves every stored signal stale. This
+# rebuilds them and re-runs the backtest, so nobody has to remember to.
 
 on:
-  schedule:
-    # 11:00 UTC = 6:00 AM ET (EST) / 7:00 AM ET (EDT)
-    # Runs Monday–Friday only
-    - cron: '0 11 * * 1-5'
-  workflow_dispatch:  # Allow manual trigger from GitHub UI
+  push:
+    branches: [main]
+    paths:
+      - 'src/signals/**'
+      - 'src/db/purchases.py'
+      - 'src/db/signals.py'
+  workflow_dispatch:
+
+concurrency:
+  group: rescore
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  ingest:
+  rescore:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -25,19 +34,23 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --no-default-groups
+        run: uv sync
 
-      - name: Run ingest
+      - name: Tests
+        run: uv run pytest -q
+
+      - name: Rebuild every stored signal
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/backfill_signals.py
+
+      - name: Backtest
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        run: uv run python scripts/run_ingest.py
+        run: uv run python scripts/run_backtest.py
 
       - name: Refresh dashboard cache
-        # The dashboard caches query results for 15 minutes. Without this it
-        # would serve yesterday's signals for a quarter of an hour after the
-        # ingest that produced today's. Never fails the run: the cache expires
-        # on its own, so a missed bust is a delay, not an outage.
         if: success() && env.REVALIDATE_URL != ''
         continue-on-error: true
         env:
