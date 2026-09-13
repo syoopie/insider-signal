@@ -4,7 +4,7 @@ The estimators are hand-rolled on numpy, so they get pinned against known answer
 import numpy as np
 import pytest
 
-from src.research.estimate import (
+from research.estimate import (
     benjamini_hochberg,
     logistic_score,
     normal_sf,

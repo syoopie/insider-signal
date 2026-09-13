@@ -16,8 +16,8 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from src.research.estimate import logistic_score, ridge_logistic
-from src.research.features import log_scale, winsorize
+from research.estimate import logistic_score, ridge_logistic
+from research.features import log_scale, winsorize
 
 
 @dataclass(frozen=True)

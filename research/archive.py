@@ -168,7 +168,7 @@ def priced_purchases(conn: duckdb.DuckDBPyConnection,
     `routine_flags` is given the whole frame on purpose. Judging a subset
     shortens the history each row can see and turns decided rows into pd.NA.
     """
-    from src.research.routine import routine_flags
+    from research.routine import routine_flags
 
     # One archived Form 4 in 71,930 reports a purchase with no transaction date.
     # Everything downstream is keyed on it — the price context as of the trade,

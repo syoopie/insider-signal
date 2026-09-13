@@ -1,7 +1,7 @@
 """
 The DuckDB translation of the purchase rollup.
 
-`src/research/archive.py` runs `PURCHASE_ROLLUP_SQL` unchanged against parquet.
+`research/archive.py` runs `PURCHASE_ROLLUP_SQL` unchanged against parquet.
 The risk is not that the query fails, it is that it succeeds and means something
 slightly different, because the archive has no serial filing id and the two
 engines break ties their own way. Both behaviours the rollup exists for are
@@ -13,8 +13,8 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from src.research.archive import connect, purchases
-from tests.conftest import SCRIPTS, load_script
+from research.archive import connect, purchases
+from tests.conftest import RESEARCH_SCRIPTS, load_script
 
 
 def _archive(tmp_path, filings, transactions):
@@ -125,7 +125,7 @@ def test_price_context_is_filled_from_the_panel(tmp_path):
     import numpy as np
 
     from src.market.panel import PanelSeries
-    from src.research.archive import with_price_context
+    from research.archive import with_price_context
 
     # Flat at 50, with two spikes. The 200 sits far outside the trailing
     # 52 weeks and the 80 sits well inside it, so a window that reached back
@@ -155,7 +155,7 @@ def test_a_ticker_the_panel_does_not_cover_stays_null(tmp_path):
     never alerted, which is the conservative failure; a substituted median would
     place it in WATCH on no evidence.
     """
-    from src.research.archive import with_price_context
+    from research.archive import with_price_context
 
     frame = purchases(connect(_archive(tmp_path, [FILING], [_fill(100.0, 10.0)])))
     got = with_price_context(frame, {})
@@ -171,7 +171,7 @@ def test_too_little_history_before_the_date_stays_null(tmp_path):
     import numpy as np
 
     from src.market.panel import PanelSeries
-    from src.research.archive import with_price_context
+    from research.archive import with_price_context
 
     days = pd.date_range("2024-02-01", periods=40, freq="B")
     series = PanelSeries(symbol="DDD", dates=days.to_numpy(dtype="datetime64[D]"),
@@ -205,7 +205,7 @@ def test_a_row_whose_10b51_flag_is_unknown_stays_in_the_reference():
     footnotes; a quarter shipping no FOOTNOTES.tsv would bring the case back,
     and a purchase nobody can rule out belongs in the reference either way.
     """
-    from src.research.archive import discount_series
+    from research.archive import discount_series
 
     _dates, values = discount_series(_priced([
         (date(2018, 5, 1), 10.0, 50_000.0, None),
@@ -217,7 +217,7 @@ def test_a_row_whose_10b51_flag_is_unknown_stays_in_the_reference():
 
 def test_the_reference_drops_unpriced_and_sub_threshold_rows():
     """Mirrors store._load_discount_series: DRIP noise must not rank real purchases."""
-    from src.research.archive import discount_series
+    from research.archive import discount_series
 
     _dates, values = discount_series(_priced([
         (date(2024, 5, 1), None, 50_000.0, False),
@@ -229,7 +229,7 @@ def test_the_reference_drops_unpriced_and_sub_threshold_rows():
 
 def test_the_reference_is_ordered_by_filing_date():
     """`reference_window` binary-searches the dates, so unordered input is silently wrong."""
-    from src.research.archive import discount_series
+    from research.archive import discount_series
 
     dates, values = discount_series(_priced([
         (date(2024, 5, 3), 30.0, 50_000.0, False),
@@ -248,7 +248,7 @@ def test_records_hand_back_plain_dates_and_none(tmp_path):
     loop asks that of every row; `bool(pd.NA)` raises, and `_eligible` asks that
     of is_10b51 and is_routine, which the archive leaves nullable.
     """
-    builder = load_script(SCRIPTS / "build_research_dataset.py")
+    builder = load_script(RESEARCH_SCRIPTS / "build_research_dataset.py")
     frame = purchases(connect(_archive(tmp_path, [FILING], [_fill(1000.0, 10.0)])))
     frame["is_routine"] = pd.array([pd.NA], dtype="boolean")
 

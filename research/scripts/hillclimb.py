@@ -1,8 +1,8 @@
 """
 The frozen ruler. One command, one table, walk-forward and month-neutral.
 
-  uv run python scripts/hillclimb.py
-  uv run python scripts/hillclimb.py --only "current score" --horizon 60
+  uv run python research/scripts/hillclimb.py
+  uv run python research/scripts/hillclimb.py --only "current score" --horizon 60
 
 Two numbers decide everything. Rank IC is the mean within-month Spearman
 correlation between a ranking and what happened next. Selection alpha is what
@@ -11,8 +11,8 @@ Both are averaged over months and tested on the spread between them, and both
 are computed only on predictions made by a model refitted on data that closed
 before the month opened.
 
-Changing anything in `src/research/walkforward.py` invalidates every number this
-has printed. Add hypotheses to `src/research/candidates.py` instead.
+Changing anything in `research/walkforward.py` invalidates every number this
+has printed. Add hypotheses to `research/candidates.py` instead.
 """
 
 from __future__ import annotations
@@ -26,11 +26,11 @@ import numpy as np
 import pandas as pd
 
 from src.backtest.engine import HORIZONS
-from src.ingest.common import log, phase, setup_log_tee
+from src.log import log, phase, setup_log_tee
 from src.market.panel import PANEL_PATH
-from src.research.candidates import CANDIDATES
-from src.research.protocol import LABEL_FAMILIES, PRIMARY_HORIZON, evaluable, label_column
-from src.research.walkforward import (
+from research.candidates import CANDIDATES
+from research.protocol import LABEL_FAMILIES, PRIMARY_HORIZON, evaluable, label_column
+from research.walkforward import (
     folds,
     minimum_detectable_effect,
     percentile_of,
@@ -102,7 +102,7 @@ def main() -> None:
     label = label_column(args.horizon, args.label)
     if label not in frame.columns:
         raise SystemExit(f"{args.dataset} has no {label}; rebuild it with "
-                         "scripts/build_research_dataset.py")
+                         "research/scripts/build_research_dataset.py")
     usable = evaluable(frame, args.horizon, label)
     made = folds(usable, args.horizon)
     predicted = sum(len(f.predict) for f in made)

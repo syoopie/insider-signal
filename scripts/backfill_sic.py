@@ -22,7 +22,7 @@ import time
 import requests
 
 from src.db.connection import get_conn
-from src.ingest.common import log, phase
+from src.log import log, phase
 
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 HEADERS = {

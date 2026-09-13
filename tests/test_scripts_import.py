@@ -1,5 +1,5 @@
 """
-Every entrypoint in scripts/ must import cleanly.
+Every entrypoint in scripts/ and research/scripts/ must import cleanly.
 
 `backfill_sic.py` sat broken for months because nothing ever loaded it: the
 store.py move could have done the same to any of these. Importing is not
@@ -10,9 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import SCRIPTS, load_script
+from tests.conftest import RESEARCH_SCRIPTS, SCRIPTS, load_script
 
-ENTRYPOINTS = sorted(SCRIPTS.glob("*.py"))
+ENTRYPOINTS = sorted([*SCRIPTS.glob("*.py"), *RESEARCH_SCRIPTS.glob("*.py")])
+
+
+def test_the_glob_finds_both_directories():
+    assert {p.parent for p in ENTRYPOINTS} == {SCRIPTS, RESEARCH_SCRIPTS}
 
 
 @pytest.mark.parametrize("script", ENTRYPOINTS, ids=lambda p: p.stem)

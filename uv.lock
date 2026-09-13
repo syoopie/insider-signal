@@ -237,7 +237,6 @@ name = "insider-signal"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "duckdb" },
     { name = "lxml" },
     { name = "pandas" },
     { name = "psycopg2-binary" },
@@ -248,14 +247,16 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "pyarrow" },
     { name = "pytest" },
     { name = "ruff" },
+]
+research = [
+    { name = "duckdb" },
+    { name = "pyarrow" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "duckdb", specifier = ">=1.5.5" },
     { name = "lxml", specifier = ">=5.0" },
     { name = "pandas", specifier = ">=2.0,<3" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
@@ -266,9 +267,12 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pyarrow", specifier = ">=17" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "ruff", specifier = ">=0.6" },
+]
+research = [
+    { name = "duckdb", specifier = ">=1.5.5" },
+    { name = "pyarrow", specifier = ">=17" },
 ]
 
 [[package]]

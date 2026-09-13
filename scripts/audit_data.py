@@ -20,7 +20,7 @@ CHECKS = [
     # Filers type the issuer ticker by hand and EDGAR accepts it. '(CALX)',
     # 'N O G', 'NYSE/TRN' and 'BFA, BFB' are all stored. Each means the company
     # has no market cap, no price context, and unlabelable purchases.
-    # _clean_ticker now rejects these at ingest; existing rows need a repair.
+    # clean_ticker now rejects these at ingest; existing rows need a repair.
     ("companies: ticker not resolvable by any price API",
      "SELECT count(*) v FROM companies WHERE ticker IS NOT NULL AND ticker <> '' "
      "AND ticker !~ '^[A-Z0-9][A-Z0-9.\\-]{0,5}$'"),

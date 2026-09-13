@@ -15,7 +15,7 @@ Four label families come out of it: excess over SPY, over IWM, over the SPDR
 fund for the issuer's own SIC division, and the SPY excess divided by realised
 volatility at the trade date. The last two exist because the raw label is
 heteroscedastic and because industry is the confound the placebo control could
-not remove. `src/research/protocol.LABEL_FAMILIES` names them.
+not remove. `research/protocol.LABEL_FAMILIES` names them.
 
 Neon retains 48 months, which is less history than the research needs, so the
 same dataset builds from `data/form4/` — the DERA archive, back to 2016 — under
@@ -23,9 +23,9 @@ same dataset builds from `data/form4/` — the DERA archive, back to 2016 — un
 loop, the labels and the features are one implementation either way.
 
 Usage:
-  python3 scripts/build_research_dataset.py
-  python3 scripts/build_research_dataset.py --source archive
-  python3 scripts/build_research_dataset.py --out data/prices/dataset.parquet
+  python3 research/scripts/build_research_dataset.py
+  python3 research/scripts/build_research_dataset.py --source archive
+  python3 research/scripts/build_research_dataset.py --out data/prices/dataset.parquet
 """
 
 from __future__ import annotations
@@ -46,13 +46,13 @@ from src.backtest.engine import EXEC_LAG_DAYS, HORIZONS
 from src.db.connection import get_conn
 from src.db.purchases import purchase_rollup
 from src.db.store import get_discount_reference, get_history_start
-from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
+from src.log import setup_log_tee, log, phase, fmt_elapsed
 from src.market.features import price_context, price_on, window_return
 from src.market.panel import PANEL_PATH, load_panel
-from src.research import archive
-from src.research.protocol import PRIMARY_HORIZON
-from src.research.sectors import sector_etf
-from src.research.tier1 import (
+from research import archive
+from research.protocol import PRIMARY_HORIZON
+from research.sectors import sector_etf
+from research.tier1 import (
     averaging_down,
     cluster_intensity,
     insider_roster,

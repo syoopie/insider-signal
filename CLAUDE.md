@@ -95,19 +95,19 @@ and `backfill_signals.py` — there is no second copy to keep in sync.
 | Dashboard pages | `web/app/*/page.tsx`; data in `web/lib/queries/`, charts in `web/components/charts.tsx` |
 | GitHub Actions config | `.github/workflows/` — 4 workflow files |
 | Backtest lookback window | `scripts/run_backtest.py` → `LOOKBACK_DAYS = 730` |
-| The ruler for rankings | `scripts/hillclimb.py`; hypotheses in `src/research/candidates.py` |
-| The ruler for exclusions | `scripts/gates.py`; hypotheses in `src/research/gates.py` |
+| The ruler for rankings | `research/scripts/hillclimb.py`; hypotheses in `research/candidates.py` |
+| The ruler for exclusions | `research/scripts/gates.py`; hypotheses in `research/gates.py` |
 | What the ruler can resolve | `walkforward.minimum_detectable_effect`; `hillclimb.py --mde` |
-| Benchmark legs a purchase is charged against | `src/research/protocol.py` → `LABEL_FAMILIES`; `--label` on both rulers |
-| SIC code to sector fund | `src/research/sectors.py` → `SIC_RANGES` |
-| Form 4 history beyond Neon retention | `scripts/build_form4_archive.py` + `src/ingest/dera.py` → `data/form4/` |
-| Purchases out of the archive | `src/research/archive.py` → `connect()`, `purchases()`; DuckDB over the parquet |
+| Benchmark legs a purchase is charged against | `research/protocol.py` → `LABEL_FAMILIES`; `--label` on both rulers |
+| SIC code to sector fund | `research/sectors.py` → `SIC_RANGES` |
+| Form 4 history beyond Neon retention | `research/scripts/build_form4_archive.py` + `research/dera.py` → `data/form4/` |
+| Purchases out of the archive | `research/archive.py` → `connect()`, `purchases()`; DuckDB over the parquet |
 | Price context for archive rows | `archive.with_price_context()`; calls `market.context.context_from_series`, the ingest path's own function |
-| Proof the archive rolls up like the DB | `scripts/verify_archive_rollup.py` |
+| Proof the archive rolls up like the DB | `research/scripts/verify_archive_rollup.py` |
 | Repairing stale `is_10b51` / `is_routine` | `scripts/repair_transaction_flags.py`; dry run by default, `--apply` writes |
 | Archive rows, rolled up, priced and routine-flagged | `archive.priced_purchases()` |
-| The routine rule over the archive's decade | `src/research/routine.py` → `routine_flags()` |
-| The labelled research dataset from the archive | `scripts/build_research_dataset.py --source archive` |
+| The routine rule over the archive's decade | `research/routine.py` → `routine_flags()` |
+| The labelled research dataset from the archive | `research/scripts/build_research_dataset.py --source archive` |
 
 **Key thresholds (do not change without re-running full backfill + backtest):**
 - The score is `pct_below_52wk_high` as a percentile of the last 30 days of filings
@@ -478,7 +478,7 @@ factor. This section is the rules an agent must not break.
    effect from zero. A candidate under the resolution reports `BELOW RESOLUTION`, not a
    failure. In the same run `noise` scored +2.19 at t=+2.15, which is why that distinction
    is not pedantry.
-2. **Ask about exclusions before rankings.** `scripts/gates.py` measures whether dropping a
+2. **Ask about exclusions before rankings.** `research/scripts/gates.py` measures whether dropping a
    class raises what is left. It spends every row instead of a 37-row decile, so it
    resolves 0.2 to 0.8pp. That is also the shape the evidence says the Form 4 has: the
    placebo control says the filing supplies the median while insider attributes fail to
@@ -488,10 +488,10 @@ factor. This section is the rules an agent must not break.
    up to 12 points apart depending on which entry point saw it, and they compared against
    *today's* low rather than the low as of the trade.
 
-Hypotheses go in `src/research/candidates.py` and `src/research/gates.py`, never in the
-harness. Changing `src/research/walkforward.py` invalidates every number it has printed.
-Do not change a weight without re-running `scripts/build_price_panel.py`,
-`build_research_dataset.py`, then `scripts/hillclimb.py`.
+Hypotheses go in `research/candidates.py` and `research/gates.py`, never in the
+harness. Changing `research/walkforward.py` invalidates every number it has printed.
+Do not change a weight without re-running `research/scripts/build_price_panel.py`,
+`build_research_dataset.py`, then `research/scripts/hillclimb.py`.
 
 ### Hard disqualifiers (checked in order, early-exit with score 0)
 
@@ -621,7 +621,7 @@ not decide: 3,603 of 13,355 stored P transactions carried NULL and only 517 were
 ever True. 48 months is the smallest window that contains the check's own lookback.
 At 24 months the database sat at 103MB of Neon's 500MB, so expect roughly 206MB.
 Re-check that headroom before raising it again. This does not recover history
-already deleted; `scripts/build_form4_archive.py` is the only thing that does.
+already deleted; `research/scripts/build_form4_archive.py` is the only thing that does.
 - `NULL` = legacy row (pre-schema); falls back to live calc from `prior_purchases`
 - `TRUE` / `FALSE` = definitive; never re-computed
 
@@ -631,7 +631,7 @@ history the database held then, and `prune_old_data` later deletes that history.
 now return `None`. They were decided against a window that no longer exists, so an unknown
 share of the 9,260 stored `False` values on P transactions are fossils. Treat the column as a
 record of what the database could see at ingest, not as a fact about the filing.
-`src/research/routine.py` computes the rule over `data/form4/`, which does reach three years
+`research/routine.py` computes the rule over `data/form4/`, which does reach three years
 back, and finds 7,626 routine buyers against this column's 414. Recomputing the production
 column from it is a hard-disqualifier change and needs the full backfill and backtest.
 

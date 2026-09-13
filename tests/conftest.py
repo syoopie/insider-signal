@@ -7,12 +7,14 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS = Path(__file__).parent.parent / "scripts"
+ROOT = Path(__file__).parent.parent
+SCRIPTS = ROOT / "scripts"
+RESEARCH_SCRIPTS = ROOT / "research" / "scripts"
 
 
 def load_script(path: Path):
     """
-    Execute a file in scripts/ as a module and hand it back.
+    Execute an entrypoint script as a module and hand it back.
 
     Registering it in `sys.modules` first is not optional: a dataclass resolves
     its annotations through `sys.modules[cls.__module__]`, so a module executed

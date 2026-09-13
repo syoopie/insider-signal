@@ -24,7 +24,7 @@ import time
 
 import requests
 
-from src.ingest.common import setup_log_tee, log, phase
+from src.log import setup_log_tee, log, phase
 from src.db.connection import get_conn
 from src.market.prices import MIN_PLAUSIBLE_MARKET_CAP, get_cap_tier, sanitize_market_cap
 

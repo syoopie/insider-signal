@@ -37,7 +37,7 @@ from typing import Callable, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from src.research.protocol import EMBARGO_DAYS, PRIMARY_HORIZON, label_column
+from research.protocol import EMBARGO_DAYS, PRIMARY_HORIZON, label_column
 
 # A month is only predicted once the expanding window behind it holds enough
 # closed holds to fit on. Below this the coefficients are noise and the fold

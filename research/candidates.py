@@ -2,7 +2,7 @@
 The rankings being raced, each one a function from a training fold to a scorer.
 
 Registering them here rather than inside the harness keeps the ruler frozen
-while the hypotheses change. `scripts/hillclimb.py` imports this dict and knows
+while the hypotheses change. `research/scripts/hillclimb.py` imports this dict and knows
 nothing else about what it is measuring.
 """
 
@@ -13,10 +13,10 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from src.research.features import ALL_CANDIDATES, CURRENT_FACTORS, TIER1, TIER2
-from src.research.models import fit_logistic, fit_rank_model
+from research.features import ALL_CANDIDATES, CURRENT_FACTORS, TIER1, TIER2
+from research.models import fit_logistic, fit_rank_model
 from src.signals.discount import discount_score
-from src.research.walkforward import Fitter, Scorer, feature_fitter, score_of
+from research.walkforward import Fitter, Scorer, feature_fitter, score_of
 
 # Everything except the timing factors, whose prevalence tracks how far back
 # ingest reaches rather than anything an insider did.

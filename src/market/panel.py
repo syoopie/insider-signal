@@ -187,7 +187,7 @@ def read_panel_frame(path: Path = PANEL_PATH) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(
             f"No price panel at {path}. Build it with "
-            "'uv run python scripts/build_price_panel.py'."
+            "'uv run python research/scripts/build_price_panel.py'."
         )
     return pd.read_parquet(path)
 

@@ -22,7 +22,7 @@ into the first real run, which abandoned the window it was on.
 
 DERA publishes the same filings already parsed, one zip per quarter, about 10MB
 each. Ten years is roughly forty requests instead of several hundred thousand,
-and it finishes in minutes. `src/ingest/dera.py` has the equivalence check
+and it finishes in minutes. `research/dera.py` has the equivalence check
 against EDGAR's daily index.
 
 The archive is deliberately not in Neon. The database is on a 0.5GB free tier
@@ -44,9 +44,9 @@ the quarters that finished, plus the downloaded zips kept on disk, so a re-run
 costs nothing for the quarters already done.
 
 Usage:
-  uv run python scripts/build_form4_archive.py --start 2016-01-01 --end 2024-09-02
-  uv run python scripts/build_form4_archive.py --start 2022-01-01   # to today
-  uv run python scripts/build_form4_archive.py --start ... --force  # ignore the manifest
+  uv run python research/scripts/build_form4_archive.py --start 2016-01-01 --end 2024-09-02
+  uv run python research/scripts/build_form4_archive.py --start 2022-01-01   # to today
+  uv run python research/scripts/build_form4_archive.py --start ... --force  # ignore the manifest
 """
 
 from __future__ import annotations
@@ -59,8 +59,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.ingest.common import fmt_elapsed, load_ticker_universe, log, phase, setup_log_tee
-from src.ingest.dera import (
+from src.log import fmt_elapsed, log, phase, setup_log_tee
+from src.tickers import load_ticker_universe
+from research.dera import (
     download_quarter,
     quarters_between,
     read_quarter,

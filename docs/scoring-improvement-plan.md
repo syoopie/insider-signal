@@ -197,7 +197,7 @@ what the rest of the repo cites.
 | 1 | Adjusted closes; `signal_id` in backtest detail; purge stale signals | Done. Dividend adjustment moved the backtest +0.02 / +0.13 / +0.28 / +0.62pp at 30/60/90/180d |
 | 2 | Price panel, `build_research_dataset.py` | Done. 7,576 labelled purchases at 90d; the existing backtest reproduced to 0.003pp |
 | 3 | Score the negative class | Done, and with no new table. The backfill's scoring loop moved to `src/signals/batch.py` and the research builder calls it, so there is one definition and no second writer. 9,336 scored, 99.08% parity with the pipeline |
-| 4 | Evaluation protocol as a committed script | Done. Splits 2,925 / 1,536 / 762 with purge and embargo. **Superseded by `src/research/walkforward.py`; see 7b for why a single split was not enough** |
+| 4 | Evaluation protocol as a committed script | Done. Splits 2,925 / 1,536 / 762 with purge and embargo. **Superseded by `research/walkforward.py`; see 7b for why a single split was not enough** |
 | 5 | Tier 1 features, multivariate estimation | Done. 6 of 38 candidates survived FDR 5%, two of them the same finding at r=+0.92 |
 | 6 | Tier 2 features | Done in the research dataset only. The `price_context` columns on `transactions` were deliberately not added, because no model shipped that read them |
 | 7 | Fit A / B / C, select on validation | Done. B selected at +23.83% against the score's +5.13%. C was never fitted, sample too small. A stability guard was added mid-phase |
@@ -300,8 +300,8 @@ whose median is +8.2%, and that single draw was reported as the floor a
 challenger had to clear.
 
 A ruler that cannot separate a model from a lucky draw returns a null result
-whatever is put in front of it. `src/research/walkforward.py` replaces it, and
-`scripts/hillclimb.py` is the one frozen command that reads it.
+whatever is put in front of it. `research/walkforward.py` replaces it, and
+`research/scripts/hillclimb.py` is the one frozen command that reads it.
 
 ### What the new ruler does
 
@@ -402,7 +402,7 @@ t=−1.85, against the CLUSTER_BUY thesis the model is built on.
 ### The placebo control: the Form 4 is doing the work
 
 Distance below the 52-week high is a known equity effect, so the screen had to
-be run on stocks nobody bought. `scripts/insider_control.py` takes every real
+be run on stocks nobody bought. `research/scripts/insider_control.py` takes every real
 purchase and draws placebo observations on a different ticker, the same
 transaction date, the same exec date and the same horizon. Calendar, month
 structure and holding windows are identical; the only difference is the filing.
@@ -584,7 +584,7 @@ Nothing that changes a score. What landed is the apparatus and five corrections:
 - a local price panel proven equivalent to the network path to 0.003pp
 - the negative class scored, with `verify_scoring_parity.py` holding the research
   path and the pipeline to 99% agreement
-- `_clean_ticker` refusing tickers no price API can resolve
+- `clean_ticker` refusing tickers no price API can resolve
 
 ## 8. Risks
 

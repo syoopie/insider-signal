@@ -20,7 +20,7 @@ import os
 import requests
 
 from src.config import telegram_credentials
-from src.ingest.common import log
+from src.log import log
 
 TELEGRAM_API = "https://api.telegram.org"
 

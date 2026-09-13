@@ -8,7 +8,7 @@ purchases cannot be labelled at all.
 """
 import pytest
 
-from src.ingest.common import _clean_ticker
+from src.tickers import clean_ticker
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -22,7 +22,7 @@ from src.ingest.common import _clean_ticker
     ("BF-A", "BF-A"),
 ])
 def test_unambiguous_noise_is_stripped(raw, expected):
-    assert _clean_ticker(raw) == expected
+    assert clean_ticker(raw) == expected
 
 
 @pytest.mark.parametrize("raw", ["BFA, BFB", "WLY, WLYB"])
@@ -32,19 +32,19 @@ def test_two_tickers_in_one_field_are_refused_not_guessed(raw):
     insider purchases under BFA, an unrelated ETF. A missing ticker costs one
     company's signals; a wrong one corrupts another company's.
     """
-    assert _clean_ticker(raw) is None
+    assert clean_ticker(raw) is None
 
 
 @pytest.mark.parametrize("raw", ["", "   ", "NONE", "N/A", "NULL", "na"])
 def test_sentinels_are_not_tickers(raw):
-    assert _clean_ticker(raw) is None
+    assert clean_ticker(raw) is None
 
 
 @pytest.mark.parametrize("raw", ["TOOLONGTICKER", "AB CD, EF", "###"])
 def test_anything_still_unparseable_is_refused(raw):
-    assert _clean_ticker(raw) is None
+    assert clean_ticker(raw) is None
 
 
 def test_none_and_empty_are_handled():
-    assert _clean_ticker(None) is None
-    assert _clean_ticker("") is None
+    assert clean_ticker(None) is None
+    assert clean_ticker("") is None

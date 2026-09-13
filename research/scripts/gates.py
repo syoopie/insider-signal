@@ -1,8 +1,8 @@
 """
 The frozen ruler, asked the other question. One command, one table.
 
-  uv run python scripts/gates.py
-  uv run python scripts/gates.py --statistic median --label vol
+  uv run python research/scripts/gates.py
+  uv run python research/scripts/gates.py --statistic median --label vol
 
 `hillclimb.py` asks which purchases to put at the top. This asks which to throw
 away. A gate is charged against the whole month it came from, including the rows
@@ -15,8 +15,8 @@ column is why this exists at all: the ranking metric spends the sample on a
 37-row decile, a gate spends every row, and the difference is roughly three
 times the precision for no new data.
 
-Changing anything in `src/research/walkforward.py` invalidates every number this
-has printed. Add hypotheses to `src/research/gates.py` instead.
+Changing anything in `research/walkforward.py` invalidates every number this
+has printed. Add hypotheses to `research/gates.py` instead.
 """
 
 from __future__ import annotations
@@ -30,17 +30,17 @@ import numpy as np
 import pandas as pd
 
 from src.backtest.engine import HORIZONS
-from src.ingest.common import log, phase, setup_log_tee
+from src.log import log, phase, setup_log_tee
 from src.market.panel import PANEL_PATH
-from src.research.estimate import benjamini_hochberg, normal_sf
-from src.research.gates import DISQUALIFIERS, GATES
-from src.research.protocol import (
+from research.estimate import benjamini_hochberg, normal_sf
+from research.gates import DISQUALIFIERS, GATES
+from research.protocol import (
     LABEL_FAMILIES,
     PRIMARY_HORIZON,
     evaluable,
     label_column,
 )
-from src.research.walkforward import (
+from research.walkforward import (
     STATISTICS,
     class_alpha,
     class_alpha_null,
@@ -164,7 +164,7 @@ def main() -> None:
     label = label_column(args.horizon, args.label)
     if label not in frame.columns:
         raise SystemExit(f"{args.dataset} has no {label}; rebuild it with "
-                         "scripts/build_research_dataset.py")
+                         "research/scripts/build_research_dataset.py")
     narrow = evaluable(frame, args.horizon, label)
     wide = _wide(frame, args.horizon, label)
     log(f"{len(narrow):,} eligible rows and {len(wide):,} of any kind at "

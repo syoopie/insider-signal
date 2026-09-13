@@ -9,8 +9,8 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from src.research.gates import DISQUALIFIERS, GATES, LATE_FILING_DAYS, NET_BUYING
-from src.research.sectors import SIC_RANGES, sector_etf
+from research.gates import DISQUALIFIERS, GATES, LATE_FILING_DAYS, NET_BUYING
+from research.sectors import SIC_RANGES, sector_etf
 from src.market.panel import BENCHMARK_SYMBOLS
 
 

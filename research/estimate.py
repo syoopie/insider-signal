@@ -1,7 +1,7 @@
 """
 The numerical pieces the research harness shares, on numpy.
 
-Benjamini-Hochberg is what `scripts/gates.py` applies across its candidate set,
+Benjamini-Hochberg is what `research/scripts/gates.py` applies across its candidate set,
 so a table of raw p-values is not read as if each stood alone. The ridge
 logistic backs the regularised candidates in `candidates.py`.
 

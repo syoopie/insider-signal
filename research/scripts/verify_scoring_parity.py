@@ -21,8 +21,8 @@ own filed_date. Roughly 1% of signals land that way.
 Exits non-zero if agreement is below --min-agreement.
 
 Usage:
-  python3 scripts/verify_scoring_parity.py
-  python3 scripts/verify_scoring_parity.py --min-agreement 99.0
+  python3 research/scripts/verify_scoring_parity.py
+  python3 research/scripts/verify_scoring_parity.py --min-agreement 99.0
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.db.connection import get_conn
-from src.ingest.common import setup_log_tee, log, phase
+from src.log import setup_log_tee, log, phase
 from src.market.panel import PANEL_PATH
 from src.signals.batch import window_start_for
 from src.signals.constants import BUY_SCORE, WATCH_SCORE

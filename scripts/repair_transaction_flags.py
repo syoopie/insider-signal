@@ -19,7 +19,7 @@ and is stored False; 0000950170-25-081785 (TKO) has a plan footnote on its
 looks back three years and returns None rather than guess when the database
 cannot see that far. `prune_old_data` then deletes the history it read, so a
 stored False can no longer be reproduced by the function that wrote it.
-`src/research/routine.py` answers the same rule over `data/form4/`, which
+`research/routine.py` answers the same rule over `data/form4/`, which
 reaches back to 2016.
 
 **The stored routine flag is merged, not replaced, and the reason is measured.**
@@ -66,11 +66,11 @@ from typing import Optional
 import pandas as pd
 
 from src.db.connection import get_conn
-from src.ingest.common import fmt_elapsed, log, phase, setup_log_tee
+from src.log import fmt_elapsed, log, phase, setup_log_tee
 from src.ingest.edgar import EdgarBlockedError, EdgarRateLimitError, fetch_filing_xml
 from src.ingest.parser import parse_form4
-from src.research.archive import connect
-from src.research.routine import routine_flags
+from research.archive import connect
+from research.routine import routine_flags
 from src.signals.scorer import score_transaction
 
 setup_log_tee("repair_transaction_flags")

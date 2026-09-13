@@ -11,10 +11,10 @@ Partial progress is written every --checkpoint symbols, so an interrupted run
 loses at most that many.
 
 Usage:
-  python3 scripts/build_price_panel.py                # build or resume
-  python3 scripts/build_price_panel.py --force        # refetch everything
-  python3 scripts/build_price_panel.py --days 1100    # widen the window
-  python3 scripts/build_price_panel.py --coverage     # report, fetch nothing
+  python3 research/scripts/build_price_panel.py                # build or resume
+  python3 research/scripts/build_price_panel.py --force        # refetch everything
+  python3 research/scripts/build_price_panel.py --days 1100    # widen the window
+  python3 research/scripts/build_price_panel.py --coverage     # report, fetch nothing
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from datetime import date, timedelta
 import pandas as pd
 
 from src.db.connection import get_conn
-from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
+from src.log import setup_log_tee, log, phase, fmt_elapsed
 from src.market.panel import (
     BENCHMARK_SYMBOLS,
     PANEL_PATH,
@@ -57,7 +57,7 @@ def _archive_tickers() -> list[str]:
     actually bore, which is also what avoids scoring a decade of history against
     today's index membership.
     """
-    from src.research.archive import connect
+    from research.archive import connect
 
     rows = connect().execute("""
         SELECT DISTINCT f.ticker

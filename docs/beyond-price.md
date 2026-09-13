@@ -40,9 +40,9 @@ findings correct this document, and one changes the priority order.
 
 ### The resolution is about 3pp, not 5 to 14, and section 2.1 was wrong
 
-`minimum_detectable_effect` in `src/research/walkforward.py` permutes labels inside each
+`minimum_detectable_effect` in `research/walkforward.py` permutes labels inside each
 month, refits the whole walk-forward, and reports 2.80 times the spread of the result.
-`scripts/hillclimb.py --mde` prints it. Measured at 90d:
+`research/scripts/hillclimb.py --mde` prints it. Measured at 90d:
 
 | candidate | alpha | t | permutation null sd | **MDE at 80% power** | observed sd of alpha/t |
 |---|---|---|---|---|---|
@@ -69,7 +69,7 @@ would have passed a coin flip.
 
 ### The gate estimand is worth four times the precision, and it was free
 
-`class_alpha` charges a class against the whole month it came from. `scripts/gates.py` races
+`class_alpha` charges a class against the whole month it came from. `research/scripts/gates.py` races
 the exclusions the way `hillclimb.py` races the rankings. Its resolutions:
 
 | gate | kept | dropped | alpha | t | **MDE** | verdict |
@@ -154,7 +154,7 @@ filings by a scheduled job, and **the history that would break the deadlock is b
 daily.** A4 is not an accelerator, it is the only way any of this improves, and every day it
 is deferred costs a day of the archive it is meant to build.
 
-`scripts/build_form4_archive.py` is written for exactly this: resumable parquet under
+`research/scripts/build_form4_archive.py` is written for exactly this: resumable parquet under
 `data/form4/`, a manifest so an interrupted build costs one quarter, and nothing in Neon. It
 also stores `is_director`, `is_officer` and `is_ten_percent`, which the parser has always read
 and `write_filing` has always discarded.
@@ -167,16 +167,16 @@ It got there by abandoning the per-filing fetch. That path was measured at three
 historical filing and was rate-limited by EDGAR twenty-two minutes into its first real run,
 on a projected nine hours for two years. **SEC DERA publishes the same filings already
 parsed**, one zip per quarter, and the whole decade took 41 requests and 50 seconds.
-`src/ingest/dera.py` checks equal to EDGAR's daily index on distinct accessions, and
+`research/dera.py` checks equal to EDGAR's daily index on distinct accessions, and
 `verify_form4_archive.py` passes against the database on the overlap.
 
-**The rollup gate is closed too.** `src/research/archive.py` presents the parquet as the
+**The rollup gate is closed too.** `research/archive.py` presents the parquet as the
 three tables `PURCHASE_ROLLUP_SQL` reads and runs that query unmodified in DuckDB, so there
 is still one definition of "an insider's purchase on a day" rather than a second pandas one.
 **71,929 rolled-up purchases in 1.1 seconds**, against roughly 8,000 in the database over the
 same filing window.
 
-`scripts/verify_archive_rollup.py` is the proof, and it took four rounds to make the
+`research/scripts/verify_archive_rollup.py` is the proof, and it took four rounds to make the
 comparison mean anything. On the purchases both sides hold, the two engines agree to
 **0.0018% on shares and 0.0027% on value**. Three things that looked like archive gaps and
 were not:
@@ -202,7 +202,7 @@ the price panel is the next step, and it will also catch the 13 filer data-entry
 archive inherits, where a reported price of $5,000,000 a share for KYN is plainly the trade's
 total rather than its price.
 
-`scripts/verify_form4_archive.py` is the gate and the pilot passes it. Over 2026-08-04 to
+`research/scripts/verify_form4_archive.py` is the gate and the pilot passes it. Over 2026-08-04 to
 2026-08-06: the archive is missing **0.00%** of comparable stored filings, **0 of 870** shared
 filings disagree on transaction count, and purchase value matches the database **exactly**.
 
@@ -263,9 +263,9 @@ The sample grew from 22 months to 124. Here is what it said.
 
 ### The routine disqualifier measures as zero
 
-`scripts/build_research_dataset.py --source archive` builds the same labelled parquet from
+`research/scripts/build_research_dataset.py --source archive` builds the same labelled parquet from
 `data/form4/` instead of Neon. Same scoring, same four label families, same tier-1 block, so
-`scripts/gates.py --dataset data/prices/research_dataset_archive.parquet` runs unmodified.
+`research/scripts/gates.py --dataset data/prices/research_dataset_archive.parquet` runs unmodified.
 
 | routine gate | dropped | months | alpha | t | MDE | percentile |
 |---|---|---|---|---|---|---|
@@ -305,7 +305,7 @@ Sixty stored `False` values were sampled and re-run through the database's own f
 top of 3,645 NULLs.
 
 So the 289 rows the gate dropped were not the routine class. They were whatever survived a
-window that had already moved. `src/research/routine.py` computes the flag over the archive's
+window that had already moved. `research/routine.py` computes the flag over the archive's
 decade instead and finds 7,626 routine buyers where the database holds 414.
 
 **Recomputing the production column from the archive is the follow-up.** It changes a hard
@@ -541,7 +541,7 @@ That asymmetry is the whole problem this document exists to attack.
 
 ### 2.1 What the ruler can actually see
 
-`scripts/hillclimb.py` computes, for each of 18 out-of-sample months, the risk-matched
+`research/scripts/hillclimb.py` computes, for each of 18 out-of-sample months, the risk-matched
 selection alpha of a ranking, then t-tests the 18 monthly numbers. Its pre-registered bar is
 t ≥ 2 with a positive median.
 
@@ -639,11 +639,11 @@ each one turned out to be worth is in section 0a, which is the part worth readin
 | | What | Where it landed |
 |---|---|---|
 | A1 | Publish the minimum detectable effect | `walkforward.minimum_detectable_effect`, `hillclimb.py --mde`. **It disproved this document's own section 2.1**, which divided alpha by t and got 5 to 14pp where the permutation null says 3.4 to 3.9 |
-| A2 | Change the estimand from ranker to gate | `walkforward.class_alpha`, `scripts/gates.py`, `src/research/gates.py`. Resolves 0.2 to 0.8pp against a ranking's 3.4, because it spends every row rather than a 37-row decile |
-| A3 | A homoscedastic second label | `LABEL_FAMILIES` in `src/research/protocol.py`, `--label` on both rulers. Under the vol label `noise` finally reads as noise, t=−0.43 against t=+2.15 on SPY |
+| A2 | Change the estimand from ranker to gate | `walkforward.class_alpha`, `research/scripts/gates.py`, `research/gates.py`. Resolves 0.2 to 0.8pp against a ranking's 3.4, because it spends every row rather than a 37-row decile |
+| A3 | A homoscedastic second label | `LABEL_FAMILIES` in `research/protocol.py`, `--label` on both rulers. Under the vol label `noise` finally reads as noise, t=−0.43 against t=+2.15 on SPY |
 | A4 | More history, in a local research archive | `data/form4/`, 901,760 filings and 1,513,233 transactions from 2016. Built from SEC DERA quarterly datasets in 50 seconds after the per-filing fetch was rate-limited |
 | A5 | Re-run the existing candidate set at the new power | Done. `ridge tier1` crosses its resolution for the first time, +4.47 at t=+1.77 |
-| A6 | Roll the archive up through the shared SQL | `src/research/archive.py` runs `PURCHASE_ROLLUP_SQL` unmodified in DuckDB. 71,929 purchases; the two engines agree to 0.003%. Added after the fact: the archive is inert without it |
+| A6 | Roll the archive up through the shared SQL | `research/archive.py` runs `PURCHASE_ROLLUP_SQL` unmodified in DuckDB. 71,929 purchases; the two engines agree to 0.003%. Added after the fact: the archive is inert without it |
 | A7 | Price context for the archive rows | `archive.with_price_context()` calls `market.context.context_from_series`, the ingest path's own function, over a panel widened to 2,260 symbols and 2014-12-01. **65,201 of 71,930 purchases (90.6%) carry a 52-week discount**, and on the 8,909 that overlap the database, 8,907 agree with what ingest stored to 0.01pp |
 
 **Phase A exit, met.** The ruler now reports what it can resolve, measures exclusions as
@@ -706,7 +706,7 @@ stored.~~ **Wrong, and moved to B2. 2026-09-08.** The raw title cannot express i
 `officerTitle` with the literal "Director" when there is no title. A CFO on the board and a
 CFO who is not are the same stored row. Searching the title for both words matches 11 rows out
 of 7,633, which is noise. The nearest computable cut, officers against plain directors, was
-run instead: +0.12pp against a 1.87pp resolution. `scripts/build_form4_archive.py` stores all
+run instead: +0.12pp against a 1.87pp resolution. `research/scripts/build_form4_archive.py` stores all
 three flags, so the real cut arrives with A4 at no extra fetch.
 
 **B1.5 Amendments.** A 4/A restates a transaction under a new accession number.

@@ -15,7 +15,7 @@ Usage:
 """
 from src.config import telegram_credentials
 from src.db.connection import get_conn
-from src.ingest.common import log
+from src.log import log
 
 
 def main() -> int:

@@ -11,7 +11,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from src.ingest.dera import (
+from research.dera import (
     FOOTNOTE_ID_COLUMNS,
     quarter_url,
     quarters_between,

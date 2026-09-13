@@ -50,7 +50,7 @@ from datetime import date, timedelta
 
 from psycopg2.extras import RealDictCursor
 
-from src.ingest.common import setup_log_tee, log, phase, fmt_elapsed
+from src.log import setup_log_tee, log, phase, fmt_elapsed
 from src.db.connection import get_conn
 from src.db.purchases import purchase_rollup
 from src.db.store import batch_save_signals, get_discount_reference, get_history_start

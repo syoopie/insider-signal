@@ -18,8 +18,8 @@ and the only thing that differs is that nobody filed a Form 4.
 Then it runs the same decile table and the same walk-forward selection alpha on
 both, and prints them side by side.
 
-  uv run python scripts/insider_control.py
-  uv run python scripts/insider_control.py --controls 5 --horizon 180
+  uv run python research/scripts/insider_control.py
+  uv run python research/scripts/insider_control.py --controls 5 --horizon 180
 """
 
 from __future__ import annotations
@@ -32,11 +32,11 @@ import numpy as np
 import pandas as pd
 
 from src.backtest.engine import EXEC_LAG_DAYS, HORIZONS
-from src.ingest.common import log, phase, setup_log_tee
+from src.log import log, phase, setup_log_tee
 from src.market.features import price_context, window_return
 from src.market.panel import PANEL_PATH, load_panel
-from src.research.protocol import PRIMARY_HORIZON, evaluable, label_column
-from src.research.walkforward import (
+from research.protocol import PRIMARY_HORIZON, evaluable, label_column
+from research.walkforward import (
     feature_fitter, month_of, percentile_of, random_selection_alpha,
     selection_alpha, walk_forward,
 )

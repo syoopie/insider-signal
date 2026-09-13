@@ -11,7 +11,7 @@ import argparse
 import sys
 from datetime import date, datetime
 
-from src.ingest.common import setup_log_tee, log, phase
+from src.log import setup_log_tee, log, phase
 from src.backtest.engine import SCHEDULED_LABEL, run_backtest, save_backtest_results
 from src.alerts.telegram import send_error
 from src.signals.constants import BUY_SCORE

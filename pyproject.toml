@@ -13,17 +13,22 @@ dependencies = [
     # constituent tables, and read_html needs a parser (lxml).
     "pandas>=2.0,<3",
     "lxml>=5.0",
-    "duckdb>=1.5.5",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "ruff>=0.6",
-    # Scoring research only: the local price panel is parquet. The pipeline never
-    # reads it, and CI installs with --no-dev, so Actions stays lean.
+]
+# research/ only: the Form 4 archive is DuckDB over parquet. The scheduled
+# workflows install with --no-default-groups and never import it.
+research = [
+    "duckdb>=1.5.5",
     "pyarrow>=17",
 ]
+
+[tool.uv]
+default-groups = ["dev", "research"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -31,11 +36,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "research*"]
 
 [tool.pytest.ini_options]
-# `src` is a real installed package after `uv sync`, so no path juggling is
-# needed. Tests never import the scripts/ entrypoints.
 testpaths = ["tests"]
 
 [tool.ruff]
@@ -46,8 +49,3 @@ target-version = "py311"
 # Pyflakes only for now (real problems: unused names, undefined names, bad
 # f-strings). The wider style ruleset is a separate cleanup.
 select = ["F", "E9"]
-
-[tool.ruff.lint.per-file-ignores]
-# common.py deliberately re-exports the EDGAR error types and helpers that the
-# entrypoint scripts import from here rather than reaching into each module.
-"src/ingest/common.py" = ["F401"]

@@ -10,8 +10,8 @@ A large disagreement means the panel is wrong and nothing downstream can be
 trusted. Exits with status 1 if the agreement is worse than --tolerance.
 
 Usage:
-  python3 scripts/verify_price_panel.py
-  python3 scripts/verify_price_panel.py --label adjclose-check --tolerance 0.5
+  python3 research/scripts/verify_price_panel.py
+  python3 research/scripts/verify_price_panel.py --label adjclose-check --tolerance 0.5
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from datetime import date, timedelta
 
 from src.backtest.engine import SCHEDULED_LABEL, SPY_TICKER
 from src.db.connection import get_conn
-from src.ingest.common import setup_log_tee, log, phase
+from src.log import setup_log_tee, log, phase
 from src.market.features import window_return
 from src.market.panel import PANEL_PATH, load_panel
 

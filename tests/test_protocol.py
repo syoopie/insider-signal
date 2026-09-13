@@ -3,7 +3,7 @@ from datetime import date
 
 import pandas as pd
 
-from src.research.protocol import evaluable, label_column
+from research.protocol import evaluable, label_column
 
 
 def _frame(exec_dates, excess=None, horizon=90):

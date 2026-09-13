@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Optional
 
-from src.ingest.common import log
+from src.log import log
 from src.market.features import price_context
 from src.market.panel import PanelFetchError, PanelSeries, fetch_symbol_history
 

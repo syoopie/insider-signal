@@ -9,7 +9,7 @@ from datetime import date
 
 import pandas as pd
 
-from src.research.routine import routine_flags
+from research.routine import routine_flags
 
 COLUMNS = ["cik", "insider_name", "transaction_date"]
 

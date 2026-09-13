@@ -11,8 +11,8 @@ The overlap is whatever both cover. The database keeps 24 months because
 `prune_old_data` deletes the rest, so the overlap shrinks by a day every day and
 the check has to be run against a window still inside it.
 
-  uv run python scripts/verify_form4_archive.py
-  uv run python scripts/verify_form4_archive.py --tolerance 0.01
+  uv run python research/scripts/verify_form4_archive.py
+  uv run python research/scripts/verify_form4_archive.py --tolerance 0.01
 """
 
 from __future__ import annotations
@@ -23,7 +23,8 @@ from pathlib import Path
 import pandas as pd
 
 from src.db.connection import get_conn
-from src.ingest.common import load_ticker_universe, log, phase, setup_log_tee
+from src.log import log, phase, setup_log_tee
+from src.tickers import load_ticker_universe
 
 setup_log_tee("verify_form4_archive")
 

@@ -62,7 +62,7 @@ over binary ones.
 
 ### The placebo control
 
-`scripts/insider_control.py`. The same screen on stocks nobody bought, matched on date and
+`research/scripts/insider_control.py`. The same screen on stocks nobody bought, matched on date and
 holding window, returns +5.55pp mean and a **−1.30pp median at a 49.3% hit rate**, against the
 real purchases' +11.13 and +7.39 at 57.7%. Half the mean is the discount alone; all of the
 median is the filing.
@@ -147,7 +147,7 @@ is stored at ingest so both paths read one number.
 - **Officer who also sits on the board.** Not computable from stored data. `parse_form4`
   reads `isDirector`, `isOfficer` and `isTenPercentOwner`, and `write_filing` stores none of
   them, so a CFO on the board and a CFO who is not are the same row.
-  `scripts/build_form4_archive.py` keeps all three.
+  `research/scripts/build_form4_archive.py` keeps all three.
 - **13F institutional ownership.** Quarterly and stale by up to 45 days, which cannot resolve
   a 90-day hold.
 - **News and sentiment.** No free source with the coverage and point-in-time integrity this
@@ -159,11 +159,11 @@ is stored at ingest so both paths read one number.
 
 Two rulers, and they answer different questions.
 
-**`scripts/hillclimb.py` selects models.** Walk-forward with a rolling origin, refitting every
+**`research/scripts/hillclimb.py` selects models.** Walk-forward with a rolling origin, refitting every
 month on holds that had already closed. Each pick is judged against the other purchases of its
 own month and its own volatility quintile, on the median as well as the mean, and the whole
 fit is re-run under permuted labels so every candidate pays the same price in model search.
-`scripts/gates.py` asks the same question about exclusions. Both print the minimum detectable
+`research/scripts/gates.py` asks the same question about exclusions. Both print the minimum detectable
 effect, because a null result without one cannot be distinguished from a null instrument.
 
 **`scripts/run_backtest.py` reports the product.** Pooled excess return against SPY across the

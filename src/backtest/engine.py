@@ -35,7 +35,7 @@ from typing import List, Dict, Optional
 
 from src.db.connection import get_conn
 from src.market.prices import get_price_change
-from src.ingest.common import log, phase, fmt_elapsed
+from src.log import log, phase, fmt_elapsed
 from src.signals.constants import BUY_SCORE
 
 

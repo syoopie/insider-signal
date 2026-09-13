@@ -1,7 +1,7 @@
 """
 Prove the archive rolls purchases up the way the database does.
 
-`src/research/archive.py` exists so there is still exactly one definition of
+`research/archive.py` exists so there is still exactly one definition of
 "an insider's purchase on a day". It presents parquet as the three tables
 `PURCHASE_ROLLUP_SQL` reads and runs that query unmodified, in DuckDB instead of
 Postgres. Unmodified is a claim, and two engines agreeing on a query is not
@@ -12,8 +12,8 @@ So this runs both and compares them on the window they share, keyed the way the
 rollup groups. The database is the reference because it is what every stored
 signal was built from.
 
-  uv run python scripts/verify_archive_rollup.py
-  uv run python scripts/verify_archive_rollup.py --tolerance 0.005
+  uv run python research/scripts/verify_archive_rollup.py
+  uv run python research/scripts/verify_archive_rollup.py --tolerance 0.005
 """
 
 from __future__ import annotations
@@ -25,8 +25,9 @@ import pandas as pd
 
 from src.db.connection import get_conn
 from src.db.purchases import purchase_rollup
-from src.ingest.common import load_ticker_universe, log, phase, setup_log_tee
-from src.research.archive import connect, purchases
+from src.log import log, phase, setup_log_tee
+from src.tickers import load_ticker_universe
+from research.archive import connect, purchases
 
 setup_log_tee("verify_archive_rollup")
 

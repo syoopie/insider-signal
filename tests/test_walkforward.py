@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.research.walkforward import (
+from research.walkforward import (
     amputation_curve,
     class_alpha,
     minimum_detectable_effect,

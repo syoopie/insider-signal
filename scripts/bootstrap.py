@@ -35,13 +35,10 @@ from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import psycopg2
 
-from src.ingest.common import (
-    setup_log_tee, log, phase, fmt_elapsed,
-    load_ticker_universe, load_cik_map, in_universe, fetch_and_parse,
-    DERIV_ONLY, XML_MISSING, PARSE_ERROR, _clean_ticker, resolve_ticker,
-    EdgarRateLimitError, EdgarBlockedError, EdgarServerError,
-)
-from src.ingest.edgar import fetch_form4_index
+from src.log import setup_log_tee, log, phase, fmt_elapsed
+from src.tickers import load_ticker_universe, in_universe, clean_ticker, resolve_ticker
+from src.ingest.fetch import load_cik_map, fetch_and_parse, DERIV_ONLY, XML_MISSING, PARSE_ERROR
+from src.ingest.edgar import EdgarBlockedError, EdgarRateLimitError, EdgarServerError, fetch_form4_index
 from src.db.store import fill_missing_price_context, write_filing
 from src.db.connection import apply_schema, get_conn
 
@@ -240,7 +237,7 @@ def main():
             for filing_meta, parsed, tk in results_buf:
                 issuer = parsed.get("issuer", {})
                 owner  = parsed.get("owner", {})
-                ticker = _clean_ticker(issuer.get("ticker") or tk) or ""
+                ticker = clean_ticker(issuer.get("ticker") or tk) or ""
                 log(f"  [DRY] {ticker} | {owner.get('name')} ({owner.get('role_category')}) "
                     f"| {len(parsed['transactions'])} tx | {filing_meta.get('filed_date')}")
                 filings_stored += 1

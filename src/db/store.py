@@ -11,7 +11,7 @@ from typing import Optional, Tuple, List
 from src.db.connection import get_conn
 from src.signals.discount import REFERENCE_DAYS as DISCOUNT_REFERENCE_DAYS
 from src.signals.discount import reference_window
-from src.ingest.common import _clean_ticker
+from src.tickers import clean_ticker
 
 _SIGNAL_COOLDOWN_DAYS = 7   # suppress follow-up signals within this window
 _SIGNAL_SCORE_JUMP    = 10  # unless score increased by at least this much
@@ -148,7 +148,7 @@ def write_filing(cur, filing_meta: dict, parsed: dict, ticker: str,
     owner   = parsed.get("owner", {})
     raw_cik = filing_meta.get("cik_raw", "").lstrip("0")
     cik     = issuer.get("cik") or raw_cik
-    tkr     = _clean_ticker(issuer.get("ticker") or ticker) or ""
+    tkr     = clean_ticker(issuer.get("ticker") or ticker) or ""
 
     if known_ciks is not None:
         if cik not in known_ciks:
@@ -162,7 +162,7 @@ def write_filing(cur, filing_meta: dict, parsed: dict, ticker: str,
         cur.execute(
             "INSERT INTO companies (cik, ticker, name) VALUES (%s,%s,%s) "
             "ON CONFLICT (cik) DO UPDATE SET ticker=EXCLUDED.ticker, name=EXCLUDED.name",
-            (cik, _clean_ticker(tkr), issuer.get("name", "")),
+            (cik, clean_ticker(tkr), issuer.get("name", "")),
         )
 
     cur.execute(
@@ -353,7 +353,7 @@ def batch_save_signals(signals: list) -> int:
                 cur.executemany(sql, rows)
 
     if suppressed:
-        from src.ingest.common import log
+        from src.log import log
         log(f"  Suppressed {suppressed} near-duplicate signals (cooldown={_SIGNAL_COOLDOWN_DAYS}d)")
     return len(rows)
 
@@ -475,7 +475,7 @@ def mark_signal_alerted(signal_id: int) -> None:
 # It has a second effect worth knowing. `prune_old_data` is why the research
 # sample slides rather than accumulating, and why the ruler sat at 16 predictable
 # months. This does not recover what is already deleted; only
-# `scripts/build_form4_archive.py` does that.
+# `research/scripts/build_form4_archive.py` does that.
 RETENTION_MONTHS = 48
 
 

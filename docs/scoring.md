@@ -28,7 +28,7 @@ signal.
 Measured on the purchases they discard, on 2026-09-08: excluding 10b5-1 trades is worth
 +0.37pp against the months those trades came from, at the 100th percentile of its null.
 Excluding routine buyers scores −0.19pp at the 0th percentile, which is the wrong sign.
-Neither clears Benjamini-Hochberg at 5%. `scripts/gates.py` is the measurement.
+Neither clears Benjamini-Hochberg at 5%. `research/scripts/gates.py` is the measurement.
 
 ---
 
@@ -79,7 +79,7 @@ t=−1.85.
 
 ### What the Form 4 is actually doing
 
-`scripts/insider_control.py` runs the same discount screen on stocks nobody bought, matched
+`research/scripts/insider_control.py` runs the same discount screen on stocks nobody bought, matched
 on date, execution date and horizon.
 
 | Top decile of discount | mean | median | hit rate |
