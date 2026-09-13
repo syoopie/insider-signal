@@ -26,8 +26,8 @@ export const MIN_SCORE_OPTIONS = [0, 45, 50, 60, 70] as const;
 export const DEFAULT_LOOKBACK = 14;
 export const DEFAULT_MIN_SCORE = 50;
 export const DEFAULT_TYPES: SignalType[] = ["CLUSTER_BUY", "BUY"];
-/** Large-cap is off by default. Whether that helps is unmeasured; see docs/findings.md. */
-export const DEFAULT_CAPS: CapTier[] = ["small", "mid", "unknown"];
+/** Every tier. Hiding large caps measured below resolution; see docs/findings.md. */
+export const DEFAULT_CAPS: CapTier[] = [...CAP_TIERS];
 
 export const signalFilterParsers = {
   days: parseAsInteger.withDefault(DEFAULT_LOOKBACK),

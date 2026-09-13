@@ -119,7 +119,7 @@ The rule stays, and `research/gates.py` carries it as `not a large-cap cluster`.
 
 ### Hiding large caps on the dashboard, 2026-09-13
 
-The dashboard's cap filter leaves large caps out by default. The reason it cited, a 0% hit rate
+The dashboard's cap filter left large caps out by default. The reason it cited, a 0% hit rate
 and −16% average excess return at 90 days, was measured under the retired factor model.
 
 `research/gates.py` now carries `not large cap`. On the database sample it drops 623 of 7,677
@@ -132,6 +132,9 @@ more returned a 90-day mean of −9.4pp, a median of −7.1pp and a 31% hit rate
 +1.1pp and 50% for small caps. But restricting the discount ranking to purchases that are not
 large cap lowers its matched alpha from +12.84pp to +8.46pp (`hillclimb.py`, 2026-09-08). The
 cap tier is today's, not the tier at the trade.
+
+The dashboard now shows every cap tier by default, matching Telegram, which already alerts
+large-cap BUY signals.
 
 ---
 

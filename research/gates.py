@@ -154,7 +154,7 @@ def not_large_cap_cluster(frame: pd.DataFrame) -> pd.Series:
 
 def not_large_cap(frame: pd.DataFrame) -> pd.Series:
     """
-    Drop every large-cap purchase, the dashboard's default cap filter.
+    Drop every large-cap purchase, the dashboard's default until 2026-09-13.
 
     `cap_tier` is today's tier, not the tier at the trade, which is also what the
     dashboard filters on.
